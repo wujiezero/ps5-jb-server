@@ -1,0 +1,20 @@
+[Unit]
+Description=ps5-jb-server manuals host (PS5 User's Guide over HTTPS)
+Documentation=https://github.com/wujiezero/ps5-jb-server
+After=network-online.target ps5-jb-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 @OPT@/host.py --ip @HOST_IP@ --no-dns --http-port @HTTP_PORT@ --cert @CERTS@/manuals.crt --key @CERTS@/manuals.key --no-color --verbose
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+User=root
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

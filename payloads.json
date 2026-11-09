@@ -1,0 +1,216 @@
+{
+  "schema": 1,
+  "generated_at": "2026-11-09",
+  "note": "Payload binaries are third-party projects; this manifest only records download URLs and SHA-256. Nothing is redistributed.",
+  "payloads": [
+    {
+      "id": "etahen",
+      "name": "etaHEN",
+      "filename": "etaHEN_2.5B.bin",
+      "url": "etaHEN_2.5B.bin",
+      "version": "2.5B",
+      "category": "Loader",
+      "description": "越狱后必备的插件框架：内置 kstuff、ftp、作弊、金手指等，面板可管理。",
+      "author": "etaHEN",
+      "checksum": "4845cac45095361b8983b14d6690622183b0dcfbf6d7fda16e161aa91ff0531e"
+    },
+    {
+      "id": "kstuff-lite",
+      "name": "kstuff-lite",
+      "filename": "kstuff-lite_v1.11.elf",
+      "url": "kstuff-lite_v1.11.elf",
+      "version": "v1.11",
+      "category": "Kernel",
+      "description": "精简版内核态 kstuff，体积小、启动快。",
+      "author": "EchoStretch",
+      "checksum": "ab9a6cb4d3b1daf139d4d646e402b1cf569071acd64599c936d7a3a6164dc779"
+    },
+    {
+      "id": "elfldr",
+      "name": "elfldr",
+      "filename": "elfldr_v0.27.elf",
+      "url": "elfldr_v0.27.elf",
+      "version": "v0.27",
+      "category": "Loader",
+      "description": "ELF 加载器（监听 9021），把 ELF 注入 PS5 进程的底层工具。",
+      "author": "ps5-payload-dev",
+      "checksum": "82f6227610172c98bad6efe68219fc93a10027035991f47eb4b75532d023407d"
+    },
+    {
+      "id": "pldmgr",
+      "name": "Payload Manager",
+      "filename": "pldmgr_v0.6.3.elf",
+      "url": "pldmgr_v0.6.3.elf",
+      "version": "v0.6.3",
+      "category": "Loader",
+      "description": "Payload Manager 最新版面板（比内置版新，可管理仓库/自启动/收藏）。",
+      "author": "itsPLK",
+      "checksum": "2a42054fd9725e1d9595ff4add95abc30e5b49446fcdcb96c06775a376a841c4"
+    },
+    {
+      "id": "ftpsrv",
+      "name": "FTP Server",
+      "filename": "ftpsrv_v0.21.1.elf",
+      "url": "ftpsrv_v0.21.1.elf",
+      "version": "v0.21.1",
+      "category": "Networking",
+      "description": "FTP 服务器，端口 2121，从电脑传文件/装插件到 PS5 的主通道。",
+      "author": "ps5-payload-dev",
+      "checksum": "7d4b31c83eae4e056580482a3a074e1db25922efc74ac1e439473b45d71a5938"
+    },
+    {
+      "id": "ftpsrv-drakmor",
+      "name": "FTP Server (drakmor)",
+      "filename": "ftpsrv-drakmor_1.16-ng-stable.elf",
+      "url": "ftpsrv-drakmor_1.16-ng-stable.elf",
+      "version": "1.16-ng-stable",
+      "category": "Networking",
+      "description": "另一个维护分支的 FTP 服务器，兼容性好。",
+      "author": "drakmor",
+      "checksum": "f19ae469b25453a7a4af4529527521d31f143100f18a2c6839666e7121c8bd32"
+    },
+    {
+      "id": "websrv",
+      "name": "Web Server",
+      "filename": "websrv_v0.34.elf",
+      "url": "websrv_v0.34.elf",
+      "version": "v0.34",
+      "category": "Networking",
+      "description": "在 PS5 上起 HTTP/DB 后台服务，供 cheat/封面等工具调用。",
+      "author": "ps5-payload-dev",
+      "checksum": "54730c867c6e1148536fdcb370e63a7762d989ea87b62488ad4caff64d43f263"
+    },
+    {
+      "id": "shsrv",
+      "name": "Shell Server",
+      "filename": "shsrv_v0.20.elf",
+      "url": "shsrv_v0.20.elf",
+      "version": "v0.20",
+      "category": "Networking",
+      "description": "远程 shell（端口 9020），命令行操作 PS5 文件系统。",
+      "author": "ps5-payload-dev",
+      "checksum": "fa4ccb2587bb61be317df0d001f668b17ebf9b4aafad87acf691b1fb8da0bd2d"
+    },
+    {
+      "id": "klogsrv",
+      "name": "Kernel Log Server",
+      "filename": "klogsrv_v0.9.elf",
+      "url": "klogsrv_v0.9.elf",
+      "version": "v0.9",
+      "category": "Diagnostics",
+      "description": "把内核日志转发到网络，排查崩溃/失败时最有用。",
+      "author": "ps5-payload-dev",
+      "checksum": "e828ec144231f81547cb58bc7d2c396fa984be0c2295f31364b58017816dcceb"
+    },
+    {
+      "id": "ps5upload",
+      "name": "ps5upload",
+      "filename": "ps5upload_v11.5.2.elf",
+      "url": "ps5upload_v11.5.2.elf",
+      "version": "v11.5.2",
+      "category": "Files",
+      "description": "带 Web 界面的上传/管理工具，手机电脑都能用。",
+      "author": "seregonwar",
+      "checksum": "1c2a6fe82de8438219c01c8c866deffd2b88ec3896bccb649601ef1fe1bc84c5"
+    },
+    {
+      "id": "pkg-manager",
+      "name": "PKG Manager",
+      "filename": "PKG-Manager_v1.5.1.elf",
+      "url": "PKG-Manager_v1.5.1.elf",
+      "version": "v1.5.1",
+      "category": "Files",
+      "description": "管理/安装 PKG，查看已装内容与更新。",
+      "author": "ps5-payload-dev",
+      "checksum": "82e3548edcc41419b644482cccaef65689334fc0315dc20247f48b90bf182dca"
+    },
+    {
+      "id": "app-dumper",
+      "name": "App Dumper",
+      "filename": "ps5-app-dumper_v2.10.elf",
+      "url": "ps5-app-dumper_v2.10.elf",
+      "version": "v2.10",
+      "category": "Files",
+      "description": "把已安装游戏/应用 dump 成文件。",
+      "author": "ps5-payload-dev",
+      "checksum": "c850f1df6f2787824d6ddeeed69ce4144e00569b32135973401c2985cfb0345b"
+    },
+    {
+      "id": "ps4mount",
+      "name": "PS4 Mount",
+      "filename": "ps4mount_v0.7.3.elf",
+      "url": "ps4mount_v0.7.3.elf",
+      "version": "v0.7.3",
+      "category": "Files",
+      "description": "挂载 PS4 游戏格式，让 PS5 直接读。",
+      "author": "ps5-payload-dev",
+      "checksum": "f107a443aa83196744deeefe748a7f09d8b8b340a30df1b232535b6ee0f15127"
+    },
+    {
+      "id": "date-time-sync",
+      "name": "Date/Time Sync",
+      "filename": "ps5-date-time-sync_v1.0.0.elf",
+      "url": "ps5-date-time-sync_v1.0.0.elf",
+      "version": "v1.0.0",
+      "category": "System",
+      "description": "无外网时同步系统时间（越狱环境常需要）。",
+      "author": "ps5-payload-dev",
+      "checksum": "91806229803845930b2173174e1afeadf509e4c171f6396788f929558fad6849"
+    },
+    {
+      "id": "linux-loader",
+      "name": "Linux Loader",
+      "filename": "ps5-linux-loader_v2.5.elf",
+      "url": "ps5-linux-loader_v2.5.elf",
+      "version": "v2.5",
+      "category": "System",
+      "description": "加载 PS5 Linux 引导。",
+      "author": "ps5-payload-dev",
+      "checksum": "9fc48733077145d1d204a4c9cdb879baaab1e711a604dd73af0dd4a807d6bc49"
+    },
+    {
+      "id": "exporter",
+      "name": "Exporter",
+      "filename": "ps5-exporter_v0.3.1.elf",
+      "url": "ps5-exporter_v0.3.1.elf",
+      "version": "v0.3.1",
+      "category": "System",
+      "description": "导出系统信息/注册表等诊断数据。",
+      "author": "ps5-payload-dev",
+      "checksum": "ff0c36333ba44da20a05039f148b644225edfeeac80e7c12006f767681739862"
+    },
+    {
+      "id": "nanodns",
+      "name": "nanoDNS",
+      "filename": "nanoDNS_0.4.elf",
+      "url": "nanoDNS_0.4.elf",
+      "version": "0.4",
+      "category": "Networking",
+      "description": "极简 DNS 服务器（在 PS5 上运行）。",
+      "author": "ps5-payload-dev",
+      "checksum": "dcb845f3570771275b22b37534bf924a7f8ae219fb91ef00c6bccab85d1c2420"
+    },
+    {
+      "id": "web-file-manager",
+      "name": "Web File Manager",
+      "filename": "ps5-web-file-manager_v1.13-rc2.elf",
+      "url": "ps5-web-file-manager_v1.13-rc2.elf",
+      "version": "v1.13-rc2",
+      "category": "Files",
+      "description": "浏览器里管理 PS5 文件。",
+      "author": "ps5-payload-dev",
+      "checksum": "91f8e7f52183ce624651b779016bb48cbe7adaad278833a1191ad2e8fc6fbfe3"
+    },
+    {
+      "id": "webkit-installer",
+      "name": "WebKit Autoloader Installer",
+      "filename": "WebKit-Autoloader-Installer_v0.7.1.elf",
+      "url": "WebKit-Autoloader-Installer_v0.7.1.elf",
+      "version": "v0.7.1",
+      "category": "Loader",
+      "description": "把离线站点正式写进主机并重建主界面图标（越狱后再跑一次更稳）。",
+      "author": "itsPLK",
+      "checksum": "df60538570e9811bb0b4652a3fdb3e1a35ec3455b3ca7c80edc4140c5bb47ce2"
+    }
+  ]
+}

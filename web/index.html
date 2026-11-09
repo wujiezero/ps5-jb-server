@@ -1,0 +1,1117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f2f5f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b111d" media="(prefers-color-scheme: dark)">
+  <title>PS5 网络访问控制</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.2 7.4a2.2 2.2 0 0 1 2.2-2.2h3.9l2 2.4h7.3a2.2 2.2 0 0 1 2.2 2.2v7.8a2.2 2.2 0 0 1-2.2 2.2H5.4a2.2 2.2 0 0 1-2.2-2.2Z"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.2 3.2h7.3l4.3 4.3v12.1a1.4 1.4 0 0 1-1.4 1.4H6.2a1.4 1.4 0 0 1-1.4-1.4V4.6a1.4 1.4 0 0 1 1.4-1.4Z"/><path d="M13.5 3.4v4.4h4.4"/></symbol>
+    <symbol id="i-drive" viewBox="0 0 24 24"><rect x="3.2" y="4.6" width="17.6" height="14.8" rx="2.4"/><path d="M3.4 14.2h17.2M7.2 17.2h.01M10.8 17.2h.01"/></symbol>
+    <symbol id="i-usb" viewBox="0 0 24 24"><path d="M12 3.4v14.4M12 3.4 10 6.4h4ZM12 12.4l-3.8-1.9V8.3M12 15l3.8-1.9v-2.2"/><circle cx="12" cy="19.6" r="1.7"/><rect x="6.9" y="6.8" width="2.2" height="2.2"/><circle cx="16.4" cy="9.8" r="1.1"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24"><rect x="3.4" y="7.8" width="17.2" height="8.4" rx="1.8"/><path d="M7.2 16.4v2.2M11.4 16.4v2.2M15.6 16.4v2.2M7.2 12h.01M16.8 11.2h1.8v1.8h-1.8z"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16.2V4.6M7.4 9.2 12 4.6l4.6 4.6M4.4 18.8h15.2"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6.4v4.8h-4.8M4 17.6v-4.8h4.8"/><path d="M18.8 11.2A7.2 7.2 0 0 0 5.6 8.4M5.2 12.8a7.2 7.2 0 0 0 13.2 2.8"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.4"/><path d="m20 20-4.2-4.2"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4.4v11.4M7.4 11.2 12 15.8l4.6-4.6M4.4 19.6h15.2"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4.2 19.8h4.1L19.6 8.5l-4.1-4.1L4.2 15.7Z"/><path d="m13.6 6.3 4.1 4.1"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.8" y="8.8" width="11" height="11" rx="2"/><path d="M5.2 15.2H4.4a1 1 0 0 1-1-1V4.4a1 1 0 0 1 1-1h9.8a1 1 0 0 1 1 1v.8"/></symbol>
+    <symbol id="i-move" viewBox="0 0 24 24"><path d="M3.4 12h12.8M11.6 7.4l4.6 4.6-4.6 4.6M20.4 5v14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.2 7.2h15.6M9.8 10.8v6.4M14.2 10.8v6.4M6.2 7.2l.9 12.2h9.8l.9-12.2M9.2 7.2V4.4h5.6v2.8"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><circle cx="6.2" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="17.8" cy="12" r="1.3" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-off" viewBox="0 0 24 24"><path d="M12 3.4v8.2M7 7.2a7 7 0 1 0 10 0"/></symbol>
+    <symbol id="i-host" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="11.2" rx="2.2"/><path d="M8.2 19.6h7.6M12 15.8v3.8"/></symbol>
+  </svg>
+
+  <a class="skip-link" href="#main">跳至主要内容</a>
+
+  <div id="boot-loading" class="boot" role="status">
+    <span class="spinner" aria-hidden="true"></span>
+    <span>正在连接管理服务…</span>
+  </div>
+
+  <div id="login-view" class="login-view" hidden>
+    <main class="login-main">
+      <section class="login-intro" aria-labelledby="login-heading">
+        <span class="eyebrow">家庭网络 · 访问策略</span>
+        <h1 id="login-heading">让联网范围<br>清楚可控。</h1>
+        <p class="login-lead">管理 PS5 的 DNS 与网关白名单，<br class="desktop-break">只放行你允许的互联网访问。</p>
+        <ul class="login-facts">
+          <li><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.2 5 6.1v5.3c0 4 3.4 7.1 7 8.4 3.6-1.3 7-4.4 7-8.4V6.1L12 3.2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="m9.1 11.8 2.1 2.1 3.8-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>默认拒绝互联网访问 · 局域网保持可达</span></li>
+          <li><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.4" stroke="currentColor" stroke-width="1.5"/><path d="M3.9 12h16.2M12 3.7c2.1 2.2 3.2 5.1 3.2 8.3s-1.1 6.1-3.2 8.3c-2.1-2.2-3.2-5.1-3.2-8.3S9.9 5.9 12 3.7Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span>仅约束经过本机网关的 IPv4 流量</span></li>
+        </ul>
+      </section>
+      <section class="card login-card" aria-labelledby="login-title">
+        <h2 id="login-title">管理员登录</h2>
+        <p class="muted">输入管理密码以查看和调整访问策略。</p>
+        <form id="login-form" novalidate>
+          <label for="password">管理密码</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024" placeholder="请输入管理密码" aria-describedby="login-error">
+          <p id="login-error" class="field-error" role="alert" hidden></p>
+          <p id="login-message" class="login-message" role="status" hidden></p>
+          <button class="button button-primary login-submit" type="submit" data-act="login" data-label="登录控制台">
+            <span class="spinner" aria-hidden="true" hidden></span>
+            <span class="button-label">登录控制台</span>
+            <span class="button-arrow" aria-hidden="true">→</span>
+          </button>
+        </form>
+        <p class="login-footer">管理主机 <span class="mono" data-host-ip>—</span> · HTTPS 8443</p>
+      </section>
+    </main>
+  </div>
+
+  <div id="app-shell" class="app-shell" hidden>
+    <aside class="sidebar" aria-label="侧边栏">
+      <a class="brand" href="#/overview" aria-label="PS5 网络访问控制 · 概览">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 3 4.5 6v6c0 4.2 4 7.5 7.5 9 3.5-1.5 7.5-4.8 7.5-9V6L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m8.5 12 2.3 2.3 4.7-4.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="brand-text"><strong>PS5</strong><span>网络访问控制</span></span>
+      </a>
+      <nav class="nav" aria-label="功能导航">
+        <a class="nav-item" href="#/overview" data-section="overview" aria-label="概览" title="概览">
+          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.6" y="3.6" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="13.4" y="3.6" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="3.6" y="13.4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="13.4" y="13.4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/></svg></span>
+          <span class="nav-label">概览</span>
+        </a>
+        <a class="nav-item" href="#/policy" data-section="policy" aria-label="访问策略" title="访问策略">
+          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 3.2 5 6.1v5.3c0 4 3.4 7.1 7 8.4 3.6-1.3 7-4.4 7-8.4V6.1L12 3.2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m9.1 11.8 2.1 2.1 3.8-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <span class="nav-label">访问策略</span>
+        </a>
+        <a class="nav-item" href="#/activity" data-section="activity" aria-label="网络活动" title="网络活动">
+          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M3.5 12h3.1l2.2-5.2 3.5 10.4 2.2-5.2h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <span class="nav-label">网络活动</span>
+          <span class="nav-badge" data-badge="activity" hidden></span>
+        </a>
+        <a class="nav-item" href="#/ps5" data-section="ps5" aria-label="PS5 主机" title="PS5 主机">
+          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.4" y="5.4" width="17.2" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.6"/><path d="M8.4 20.6h7.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.6 9.4h6.2M7.6 12.8h3.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="16.6" cy="12.8" r="1.15" fill="currentColor"/></svg></span>
+          <span class="nav-label">PS5 主机</span>
+        </a>
+        <a class="nav-item" href="#/files" data-section="files" aria-label="PS5 文件" title="PS5 文件">
+          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><use href="#i-folder"></use></svg></span>
+          <span class="nav-label">PS5 文件</span>
+        </a>
+        <a class="nav-item" href="#/repository" data-section="repository" aria-label="插件仓库" title="插件仓库">
+          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="m12 3.4 7.6 3.9v9.4L12 20.6l-7.6-3.9V7.3L12 3.4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4.7 7.5 7.3 3.8 7.3-3.8M12 11.3v9" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
+          <span class="nav-label">插件仓库</span>
+          <span class="nav-badge" data-badge="repository" hidden></span>
+        </a>
+        <a class="nav-item" href="#/settings" data-section="settings" aria-label="设置" title="设置">
+          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M4 7.6h8.4M17.2 7.6H20M4 16.4h2.6M11.4 16.4H20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="14.8" cy="7.6" r="2.2" stroke="currentColor" stroke-width="1.6"/><circle cx="9.2" cy="16.4" r="2.2" stroke="currentColor" stroke-width="1.6"/></svg></span>
+          <span class="nav-label">设置</span>
+        </a>
+      </nav>
+      <div class="sidebar-footer">
+        <p class="host-line"><span class="host-label">管理主机</span><span class="mono" data-host-ip>—</span></p>
+        <button class="button button-secondary sidebar-logout" type="button" data-act="logout" data-label="退出登录">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.4 4.6h2.9A1.7 1.7 0 0 1 19 6.3v11.4a1.7 1.7 0 0 1-1.7 1.7h-2.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="m10.6 8.2-3.9 3.8 3.9 3.8M6.9 12H15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">退出登录</span>
+        </button>
+      </div>
+    </aside>
+
+    <div class="content">
+      <header class="app-bar">
+        <div class="app-bar-text">
+          <h1 id="app-title" tabindex="-1">概览</h1>
+          <p id="app-subtitle">服务状态、运行时间与最近请求</p>
+        </div>
+        <div class="app-bar-actions">
+          <span id="connection-dot" class="sync-dot" data-tone="neutral" role="img" aria-label="同步状态未知" title="同步状态未知"></span>
+          <button class="button button-secondary button-icon" type="button" data-act="refresh" id="app-refresh" aria-label="刷新" title="刷新">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M20 4.4v5.2h-5.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="spinner" aria-hidden="true" hidden></span>
+          </button>
+          <button class="button button-secondary" type="button" data-act="rollback" id="app-rollback" data-label="回退上一版" aria-label="回退上一版">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4.4 9.6h9.4a5.4 5.4 0 0 1 0 10.8H8.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="m8.4 5.6-4 4 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="spinner" aria-hidden="true" hidden></span>
+            <span class="button-label">回退上一版</span>
+          </button>
+          <button class="button button-primary" type="button" data-act="save" id="app-save" data-label="保存并应用">
+            <span class="spinner" aria-hidden="true" hidden></span>
+            <span class="button-label">保存并应用</span>
+          </button>
+          <button class="button button-primary" type="button" data-act="upload" id="app-upload" data-label="上传插件">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15.4V4.6M7.9 8.7 12 4.6l4.1 4.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.6 15.2v3.1A1.6 1.6 0 0 0 6.2 20h11.6a1.6 1.6 0 0 0 1.6-1.7v-3.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <span class="spinner" aria-hidden="true" hidden></span>
+            <span class="button-label">上传插件</span>
+          </button>
+        </div>
+      </header>
+
+      <main id="main" tabindex="-1">
+        <section id="view-overview" class="view" data-section="overview" hidden>
+          <p id="status-diagnostics" class="banner banner-error" role="alert" aria-atomic="true" hidden></p>
+
+          <div class="stat-grid">
+            <article class="card stat-card">
+              <p class="stat-label">DNS 服务</p>
+              <p id="dns-status" class="stat-value service-value" data-tone="neutral">等待状态</p>
+              <p class="stat-hint">UDP / TCP 53</p>
+            </article>
+            <article class="card stat-card">
+              <p class="stat-label">IPv4 网关</p>
+              <p id="gateway-status" class="stat-value service-value" data-tone="neutral">等待状态</p>
+              <p class="stat-hint">nftables 默认拒绝</p>
+            </article>
+            <article class="card stat-card">
+              <p class="stat-label">破解托管</p>
+              <p id="host-status" class="stat-value service-value" data-tone="neutral">等待状态</p>
+              <p class="stat-hint">ps5-host.service</p>
+            </article>
+            <article class="card stat-card">
+              <p class="stat-label">插件仓库</p>
+              <p id="repo-status" class="stat-value">—</p>
+              <p id="repo-status-hint" class="stat-hint">等待读取仓库…</p>
+            </article>
+          </div>
+
+          <div class="overview-columns">
+            <div class="stack">
+              <section class="card" aria-labelledby="runtime-title">
+                <header class="card-head">
+                  <h2 id="runtime-title">运行信息</h2>
+                  <span id="connection-state" class="state-chip" data-tone="neutral">等待同步</span>
+                </header>
+                <dl class="metric-list">
+                  <div><dt>运行时间</dt><dd id="uptime" class="mono">—</dd></div>
+                  <div><dt>最近应用</dt><dd><time data-field="last-applied">尚无记录</time></dd></div>
+                  <div><dt>动态授权地址</dt><dd id="dynamic-addresses" class="mono">—</dd></div>
+                  <div><dt>刷新</dt><dd id="sync-time">登录后每 8 秒刷新</dd></div>
+                </dl>
+              </section>
+
+              <section class="card" aria-labelledby="logs-title">
+                <header class="card-head">
+                  <div>
+                    <h2 id="logs-title">最近 DNS 请求</h2>
+                    <p class="card-sub">预览最新 5 条；计数仅统计当前返回的日志。</p>
+                  </div>
+                </header>
+                <dl class="query-counters">
+                  <div><dt>近期查询</dt><dd id="query-total">—</dd></div>
+                  <div><dt>已允许</dt><dd id="query-allowed">—</dd></div>
+                  <div><dt>已拒绝</dt><dd id="query-blocked">—</dd></div>
+                  <div><dt>其他 / 异常</dt><dd id="query-other">—</dd></div>
+                </dl>
+                <ul id="overview-logs" class="log-list" aria-label="最近 DNS 请求预览"></ul>
+              </section>
+            </div>
+
+            <div class="stack">
+              <section class="card" aria-labelledby="links-title">
+                <header class="card-head"><h2 id="links-title">快捷入口</h2></header>
+                <div class="quick-links">
+                  <a class="quick-link" href="#/activity">
+                    <span class="quick-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M3.5 12h3.1l2.2-5.2 3.5 10.4 2.2-5.2h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                    <span class="quick-text"><strong>网络活动</strong><span>查看经本机的连接并批量放行</span></span>
+                    <span class="quick-arrow" aria-hidden="true">→</span>
+                  </a>
+                  <a class="quick-link" href="#/policy">
+                    <span class="quick-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 3.2 5 6.1v5.3c0 4 3.4 7.1 7 8.4 3.6-1.3 7-4.4 7-8.4V6.1L12 3.2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m9.1 11.8 2.1 2.1 3.8-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                    <span class="quick-text"><strong>访问策略</strong><span>编辑域名白名单与上游 DNS</span></span>
+                    <span class="quick-arrow" aria-hidden="true">→</span>
+                  </a>
+                  <a class="quick-link" href="#/ps5">
+                    <span class="quick-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.4" y="5.4" width="17.2" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.6"/><path d="M8.4 20.6h7.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.6 9.4h6.2M7.6 12.8h3.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="16.6" cy="12.8" r="1.15" fill="currentColor"/></svg></span>
+                    <span class="quick-text"><strong>PS5 主机</strong><span>发现主机、安装载荷与配置自动加载</span></span>
+                    <span class="quick-arrow" aria-hidden="true">→</span>
+                  </a>
+                  <a class="quick-link" href="#/files">
+                    <span class="quick-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><use href="#i-folder"></use></svg></span>
+                    <span class="quick-text"><strong>PS5 文件</strong><span>浏览主机存储、上传与整理文件</span></span>
+                    <span class="quick-arrow" aria-hidden="true">→</span>
+                  </a>
+                </div>
+              </section>
+
+              <details class="card detail-card guide-card">
+                <summary class="detail-summary">
+                  <span class="detail-title">PS5 网络设置</span>
+                  <span class="tag">手动配置</span>
+                </summary>
+                <div class="guide-body">
+                  <p class="muted">在 PS5 的高级网络设置中，将 DNS 和默认网关均指向此主机。</p>
+                  <dl class="setup-values">
+                    <div><dt>主 DNS</dt><dd class="mono" data-host-ip>—</dd></div>
+                    <div><dt>默认网关</dt><dd class="mono" data-host-ip>—</dd></div>
+                    <div><dt>子网掩码</dt><dd class="mono">255.255.255.0</dd></div>
+                    <div><dt>PS5 IP 地址</dt><dd class="mono">自动获取</dd></div>
+                  </dl>
+                  <p class="secondary-note">PS5 保持自动获取 IP，只需把默认网关与主 DNS 指向本机（见上方地址）；次 DNS 留空，请勿配置其他 DNS。</p>
+                  <div class="policy-note"><strong>默认拒绝互联网访问</strong><p>仅放行白名单目标；局域网保持可达。网关策略仅约束经本机路由的 IPv4 流量。</p></div>
+                  <p id="ipv6-note" class="secondary-note">家庭网络已关闭 IPv6 互联网；本页网关策略不提供 IPv6 访问控制。</p>
+                </div>
+              </details>
+
+              <details class="card detail-card">
+                <summary class="detail-summary">
+                  <span class="detail-title">网关计数器</span>
+                  <span class="tag">防火墙实时数据</span>
+                </summary>
+                <div id="firewall-counters" class="firewall-counters"><p class="muted">暂无计数数据。</p></div>
+              </details>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-policy" class="view" data-section="policy" hidden>
+          <form id="config-form" class="stack" novalidate>
+            <section class="card" aria-labelledby="whitelist-title">
+              <header class="card-head">
+                <div><h2 id="whitelist-title">访问白名单</h2><p class="card-sub">每行一项，留空表示不额外放行。</p></div>
+                <span id="edit-state" class="state-chip" aria-live="polite">已同步</span>
+              </header>
+              <fieldset id="config-fields" disabled>
+                <div class="field-head"><label for="domains">允许的域名</label><span id="domain-count" class="count-label">0 项</span></div>
+                <textarea id="domains" name="domains" class="mono" rows="6" spellcheck="false" autocapitalize="none" autocomplete="off" placeholder="example.com&#10;*.example.com" aria-describedby="domains-help domains-error"></textarea>
+                <p id="domains-help" class="field-help"><code>example.com</code> 仅匹配该域名；<code>*.example.com</code> 匹配其子域名，不包含根域名。需要两者时请分两行填写。</p>
+                <p id="domains-error" class="field-error" hidden></p>
+
+                <div class="field-head"><label for="networks">允许的 IPv4 / CIDR</label><span id="network-count" class="count-label">0 项</span></div>
+                <textarea id="networks" name="networks" class="mono" rows="4" spellcheck="false" autocapitalize="none" autocomplete="off" placeholder="203.0.113.10&#10;198.51.100.0/24" aria-describedby="networks-help networks-error"></textarea>
+                <p id="networks-help" class="field-help">直接放行目标 IP 或网段。此规则也适用于不经 DNS 解析的连接。</p>
+                <p id="networks-error" class="field-error" hidden></p>
+
+                <div class="upstream-row">
+                  <div>
+                    <label for="upstream-dns">上游 DNS</label>
+                    <p id="upstream-help" class="field-help">用于解析允许域名的 IPv4 DNS 地址。</p>
+                  </div>
+                  <div class="upstream-input">
+                    <input id="upstream-dns" name="upstream_dns" class="mono" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.1" aria-describedby="upstream-help upstream-error">
+                    <p id="upstream-error" class="field-error" hidden></p>
+                  </div>
+                </div>
+              </fieldset>
+            </section>
+
+            <section class="card" aria-labelledby="apply-title">
+              <header class="card-head">
+                <div><h2 id="apply-title">应用与回退</h2><p class="card-sub">保存后立即应用到网关；回退会恢复服务器保存的上一版。</p></div>
+              </header>
+              <dl class="metric-list">
+                <div><dt>最近应用</dt><dd><time data-field="last-applied">尚无记录</time></dd></div>
+                <div><dt>本地状态</dt><dd>未保存的修改需要点击「保存并应用」才会生效。</dd></div>
+              </dl>
+              <p class="secondary-note">共享 CDN 提示：域名放行会允许其解析出的 IP；共用同一 IP 的其他服务也可能可达。</p>
+              <div class="form-actions">
+                <div class="action-buttons">
+                  <button class="button button-secondary" type="button" data-act="rollback" data-label="回退上一版">
+                    <span class="spinner" aria-hidden="true" hidden></span>
+                    <span class="button-label">回退上一版</span>
+                  </button>
+                  <button class="button button-primary" type="submit" data-act="save" data-label="保存并应用">
+                    <span class="spinner" aria-hidden="true" hidden></span>
+                    <span class="button-label">保存并应用</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+          </form>
+        </section>
+
+        <section id="view-activity" class="view" data-section="activity" hidden>
+          <section class="card" aria-labelledby="activity-title">
+            <header class="card-head">
+              <div><h2 id="activity-title">网络活动</h2><p class="card-sub">经过本机网关的实时连接；勾选目标后可批量放行或自定义命名。</p></div>
+              <span id="activity-updated" class="tag" hidden></span>
+            </header>
+            <p id="activity-summary" class="summary-line" aria-live="polite">正在读取网络活动…</p>
+            <p id="activity-warning" class="banner banner-warning" role="status" hidden></p>
+
+            <div class="filter-row">
+              <div class="segmented" role="group" aria-label="按结果筛选网络活动">
+                <button class="segment" type="button" data-filter="all" aria-pressed="true">全部</button>
+                <button class="segment" type="button" data-filter="blocked" aria-pressed="false">未放行</button>
+                <button class="segment" type="button" data-filter="allowed" aria-pressed="false">允许</button>
+              </div>
+              <label class="filter-select" for="activity-filter">筛选
+                <select id="activity-filter">
+                  <option value="all">全部</option>
+                  <option value="blocked">仅未放行</option>
+                  <option value="allowed">仅允许</option>
+                </select>
+              </label>
+              <button id="activity-select-all-mobile" class="button button-secondary button-small select-all-mobile" type="button">全选</button>
+              <a class="filter-link" href="#/ps5" aria-label="管理 PS5 主机">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.4" y="5.4" width="17.2" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.6"/><path d="M8.4 20.6h7.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.6 9.4h6.2M7.6 12.8h3.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="16.6" cy="12.8" r="1.15" fill="currentColor"/></svg>
+                <span>管理 PS5 主机</span>
+              </a>
+            </div>
+
+            <div id="activity-bulk-bar" class="bulk-bar" data-visible="false">
+              <span id="activity-selection" class="bulk-count" aria-live="polite">未选择</span>
+              <div class="bulk-actions">
+                <button id="activity-label-button" class="button button-secondary button-small" type="button" data-act="label">
+                  <span class="spinner" aria-hidden="true" hidden></span>
+                  <span class="button-label">命名选中</span>
+                </button>
+                <button id="activity-allow-button" class="button button-primary button-small" type="button" data-act="allow">
+                  <span class="spinner" aria-hidden="true" hidden></span>
+                  <span class="button-label">放行选中</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="table-wrap activity-table-wrap" role="region" aria-label="网络活动列表" tabindex="0">
+              <table class="activity-table">
+                <thead>
+                  <tr>
+                    <th scope="col" class="check-cell"><span class="visually-hidden">勾选</span><input id="activity-select-all" type="checkbox" aria-label="全选当前列表中的目标" disabled></th>
+                    <th scope="col">时间</th>
+                    <th scope="col">客户端</th>
+                    <th scope="col">域名</th>
+                    <th scope="col">IP</th>
+                    <th scope="col">端口</th>
+                    <th scope="col">结果</th>
+                    <th scope="col">分类</th>
+                    <th scope="col">名称</th>
+                  </tr>
+                </thead>
+                <tbody id="activity-body"><tr><td colspan="9" class="empty-state">正在读取网络活动…</td></tr></tbody>
+              </table>
+            </div>
+            <p class="footnote">分类由开源规则集 v2fly/domain-list-community 自动推断，自定义命名/分类优先生效；只有经过本机网关的 IPv4 流量才会出现在这里。</p>
+          </section>
+        </section>
+
+        <section id="view-ps5" class="view" data-section="ps5" hidden>
+          <section class="card" aria-labelledby="ps5-tool-title">
+            <header class="card-head">
+              <div>
+                <h2 id="ps5-tool-title">主机发现</h2>
+                <p class="card-sub">扫描本网段内的已越狱 PS5；pldmgr（8084）与 elfldr（9021）均可管理，接入仓库后即可安装载荷。</p>
+              </div>
+              <button id="ps5-scan" class="button button-secondary" type="button" aria-label="重新扫描局域网内的 PS5 主机">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M20 4.4v5.2h-5.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span class="spinner" aria-hidden="true" hidden></span>
+                <span class="button-label">重新扫描</span>
+              </button>
+            </header>
+            <p id="ps5-scan-info" class="summary-line" aria-live="polite">正在发现局域网内的主机…</p>
+            <p id="ps5-disabled-note" class="banner banner-warning" role="status" hidden></p>
+            <p id="ps5-error" class="banner banner-error" role="alert" hidden></p>
+            <form id="ps5-add-form" class="ps5-add" novalidate>
+              <label class="ps5-add-label" for="ps5-add-ip">手动添加主机 IP</label>
+              <div class="ps5-add-row">
+                <input id="ps5-add-ip" class="mono" name="ip" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.142" aria-describedby="ps5-add-help ps5-add-error">
+                <button id="ps5-add-button" class="button button-secondary" type="submit" aria-label="添加主机 IP 并重新扫描">
+                  <span class="spinner" aria-hidden="true" hidden></span>
+                  <span class="button-label">添加</span>
+                </button>
+              </div>
+              <p id="ps5-add-help" class="field-help">添加后会重新扫描并选中该地址；仅当主机已运行 pldmgr 或 elfldr 时可用。</p>
+              <p id="ps5-add-error" class="field-error" role="alert" hidden></p>
+            </form>
+          </section>
+
+          <section class="card" aria-labelledby="ps5-hosts-title">
+            <header class="card-head">
+              <div>
+                <h2 id="ps5-hosts-title">发现的主机</h2>
+                <p class="card-sub">卡片显示 pldmgr 版本、仓库接入状态与载荷计数；选择主机后可安装、运行或停止载荷。</p>
+              </div>
+              <span id="ps5-host-count" class="tag">扫描中…</span>
+            </header>
+            <div id="ps5-hosts" class="ps5-hosts" data-mode="loading"></div>
+          </section>
+
+          <section id="ps5-detail" class="card ps5-detail" aria-labelledby="ps5-detail-title" hidden>
+            <header class="card-head">
+              <div>
+                <h2 id="ps5-detail-title">主机详情 · <span id="ps5-detail-ip" class="mono">—</span></h2>
+                <p id="ps5-detail-sub" class="card-sub">选择主机后显示载荷与进程。</p>
+              </div>
+              <span id="ps5-detail-state" class="state-chip" data-tone="neutral">等待状态</span>
+            </header>
+            <p id="ps5-detail-note" class="banner banner-warning" role="status" hidden></p>
+            <div id="ps5-tabs" class="ps5-tabs" role="tablist" aria-label="主机详情视图">
+              <button id="ps5-tab-catalog" class="ps5-tab" type="button" role="tab" aria-label="插件库" aria-selected="true" aria-controls="ps5-panel-catalog" data-ps5-tab="catalog">插件库</button>
+              <button id="ps5-tab-running" class="ps5-tab" type="button" role="tab" aria-label="运行中" aria-selected="false" aria-controls="ps5-panel-running" tabindex="-1" data-ps5-tab="running">运行中</button>
+              <button id="ps5-tab-autoload" class="ps5-tab" type="button" role="tab" aria-label="自动加载" aria-selected="false" aria-controls="ps5-panel-autoload" tabindex="-1" data-ps5-tab="autoload">自动加载</button>
+            </div>
+
+            <div id="ps5-panel-catalog" class="ps5-panel" role="tabpanel" aria-labelledby="ps5-tab-catalog">
+              <p id="ps5-catalog-note" class="summary-line" aria-live="polite">正在读取插件目录…</p>
+              <div class="table-wrap ps5-table-wrap">
+                <table class="ps5-table ps5-catalog-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">名称</th>
+                      <th scope="col">版本</th>
+                      <th scope="col">分类</th>
+                      <th scope="col">大小</th>
+                      <th scope="col">状态</th>
+                      <th scope="col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ps5-catalog-body"><tr><td colspan="6" class="empty-state">正在读取插件目录…</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div id="ps5-panel-running" class="ps5-panel" role="tabpanel" aria-labelledby="ps5-tab-running" hidden>
+              <p id="ps5-running-note" class="summary-line" aria-live="polite"></p>
+              <div class="table-wrap ps5-table-wrap">
+                <table class="ps5-table ps5-running-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">进程 ID</th>
+                      <th scope="col">名称</th>
+                      <th scope="col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ps5-running-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div id="ps5-panel-autoload" class="ps5-panel" role="tabpanel" aria-labelledby="ps5-tab-autoload" hidden>
+              <div class="ps5-autoload">
+                <label class="ps5-switch" for="ps5-autoload-enabled">
+                  <input id="ps5-autoload-enabled" type="checkbox" role="switch" aria-describedby="ps5-autoload-help">
+                  <span class="ps5-switch-track" aria-hidden="true"></span>
+                  <span class="ps5-switch-text">启用自动加载</span>
+                </label>
+                <p id="ps5-autoload-help" class="field-help">主机启动 pldmgr 时按列表顺序加载这些载荷；列表保存在主机上。</p>
+                <fieldset id="ps5-autoload-list" class="ps5-autoload-list">
+                  <legend>自动加载的插件</legend>
+                  <div id="ps5-autoload-items" class="ps5-autoload-items"></div>
+                </fieldset>
+                <p id="ps5-autoload-empty" class="field-help" hidden>主机上还没有已安装的插件；先在「插件库」安装后再配置自动加载。</p>
+                <p id="ps5-autoload-note" class="field-help" hidden></p>
+                <p id="ps5-autoload-progress" class="ps5-progress" role="status" hidden></p>
+                <p id="ps5-autoload-error" class="field-error" role="alert" hidden></p>
+                <div class="ps5-actions-row">
+                  <span id="ps5-autoload-state" class="state-chip" aria-live="polite">已同步</span>
+                  <button id="ps5-autoload-save" class="button button-primary" type="button" aria-label="保存主机的自动加载设置">
+                    <span class="spinner" aria-hidden="true" hidden></span>
+                    <span class="button-label">保存</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <p class="footnote">仅扫描本机所在局域网（IPv4），不访问互联网，也不会向 PS5 发送账号或密码；pldmgr 请求仅携带本地控制标记。关机、停止进程与覆盖自动加载列表都会先要求确认。</p>
+        </section>
+
+        <section id="view-files" class="view" data-section="files" hidden>
+          <section class="card files-shell" aria-labelledby="files-title">
+            <header class="card-head">
+              <div>
+                <h2 id="files-title">PS5 文件</h2>
+                <p id="files-host-sub" class="card-sub">浏览主机存储、上传与整理文件。</p>
+              </div>
+              <span id="files-host-chip" class="tag">未连接</span>
+            </header>
+            <p id="files-error" class="banner banner-error" role="alert" hidden></p>
+            <p id="files-loading" class="files-loading" role="status" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <span>正在连接文件服务…</span>
+            </p>
+
+            <div id="files-setup" class="files-setup" hidden>
+              <p class="files-setup-text">选择要浏览的 PS5 主机。文件服务由后台代理访问，浏览器不会直连主机。</p>
+              <div class="files-setup-row">
+                <label class="visually-hidden" for="files-setup-host">主机地址</label>
+                <select id="files-setup-host"></select>
+                <button id="files-setup-connect" class="button button-primary" type="button" aria-label="连接所选主机的文件服务">
+                  <span class="spinner" aria-hidden="true" hidden></span>
+                  <span class="button-label">连接</span>
+                </button>
+              </div>
+              <p id="files-setup-error" class="field-error" role="alert" hidden></p>
+            </div>
+
+            <div id="files-unreachable" class="files-unreachable" hidden>
+              <span class="files-empty-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><use href="#i-off"></use></svg></span>
+              <p><strong>未连接文件服务</strong></p>
+              <p id="files-unreachable-text" class="muted">请在主机上运行 pldmgr，或确认后台文件服务已启用。</p>
+              <div class="files-empty-actions">
+                <button id="files-retry" class="button button-secondary" type="button" aria-label="重试连接文件服务">重试</button>
+                <button id="files-switch-host" class="button button-secondary" type="button" aria-label="切换文件服务主机">切换主机</button>
+              </div>
+            </div>
+
+            <div id="files-main" class="files-layout" hidden>
+              <aside class="files-rail" aria-label="存储位置">
+                <h3 class="files-rail-title">存储位置</h3>
+                <div id="files-volumes" class="files-volumes"></div>
+              </aside>
+              <div class="files-workspace">
+                <div class="files-toolbar">
+                  <button id="files-upload" class="button button-primary" type="button" aria-label="上传文件到当前文件夹">
+                    <svg class="icon" aria-hidden="true"><use href="#i-upload"></use></svg>
+                    <span class="button-label">上传</span>
+                  </button>
+                  <button id="files-mkdir" class="button button-secondary" type="button" aria-label="新建文件夹">
+                    <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
+                    <span class="button-label">新建文件夹</span>
+                  </button>
+                  <button id="files-refresh" class="button button-secondary button-icon" type="button" aria-label="刷新文件列表" title="刷新">
+                    <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
+                  </button>
+                  <button id="files-transfers-toggle" class="button button-secondary button-small" type="button" aria-expanded="false" aria-controls="files-transfers" aria-label="查看传输任务">
+                    <svg class="icon" aria-hidden="true"><use href="#i-upload"></use></svg>
+                    <span class="button-label">传输任务</span>
+                    <span id="files-transfers-count" class="files-count-badge" hidden></span>
+                  </button>
+                  <label class="files-search" for="files-filter">
+                    <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+                    <input id="files-filter" type="search" placeholder="筛选当前文件夹" autocomplete="off" spellcheck="false" aria-label="筛选当前文件夹">
+                  </label>
+                </div>
+                <nav id="files-crumbs" class="files-crumbs" aria-label="文件夹路径"></nav>
+                <div class="table-wrap files-table-wrap" role="region" aria-label="文件列表" tabindex="0">
+                  <table class="files-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">名称</th>
+                        <th scope="col" class="files-size-col">大小</th>
+                        <th scope="col" class="files-time-col">修改时间</th>
+                        <th scope="col" class="files-actions-col"><span class="visually-hidden">操作</span></th>
+                      </tr>
+                    </thead>
+                    <tbody id="files-body"><tr><td colspan="4" class="empty-state">正在读取文件列表…</td></tr></tbody>
+                  </table>
+                </div>
+                <p id="files-status" class="files-status" aria-live="polite">正在读取文件列表…</p>
+              </div>
+            </div>
+          </section>
+
+          <section id="files-transfers" class="card files-transfers" aria-labelledby="files-transfers-title" hidden>
+            <header class="card-head">
+              <div>
+                <h2 id="files-transfers-title">传输任务</h2>
+                <p class="card-sub">上传进度来自当前页面；复制与移动任务由主机执行，可随时取消。</p>
+              </div>
+              <button id="files-transfers-close" class="button button-secondary button-small" type="button" aria-label="收起传输任务">收起</button>
+            </header>
+            <div id="files-job" class="files-job" hidden>
+              <div class="files-job-head">
+                <span id="files-job-label">复制任务</span>
+                <button id="files-job-cancel" class="button button-secondary button-small" type="button" aria-label="取消当前复制或移动任务">取消</button>
+              </div>
+              <div class="files-meter" aria-hidden="true"><i id="files-job-fill"></i></div>
+              <p id="files-job-text" class="field-help"></p>
+            </div>
+            <div class="table-wrap files-transfers-wrap" role="region" aria-label="传输任务列表" tabindex="0">
+              <table class="files-transfers-table">
+                <thead>
+                  <tr>
+                    <th scope="col">类型</th>
+                    <th scope="col">名称</th>
+                    <th scope="col">大小</th>
+                    <th scope="col">进度</th>
+                    <th scope="col">状态</th>
+                    <th scope="col">速度</th>
+                  </tr>
+                </thead>
+                <tbody id="files-transfers-body"><tr><td colspan="6" class="empty-state">暂无传输任务。</td></tr></tbody>
+              </table>
+            </div>
+            <p id="files-transfers-error" class="field-error" role="alert" hidden></p>
+          </section>
+
+          <p class="footnote">文件浏览通过后台代理访问主机，不经过互联网；上传会写入当前文件夹。删除、覆盖、复制和移动都需要确认，目标硬盘空间不足时主机可能拒绝操作。</p>
+          <input id="files-upload-input" type="file" multiple hidden>
+          <div id="files-drop" class="files-drop" hidden aria-hidden="true">
+            <div class="files-drop-card">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-upload"></use></svg>
+              <strong>松手上传到</strong>
+              <span id="files-drop-path" class="mono">—</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-repository" class="view" data-section="repository" hidden>
+          <section class="card" aria-labelledby="repo-title">
+            <header class="card-head">
+              <div><h2 id="repo-title">插件载荷</h2><p class="card-sub">维护 PS5 插件载荷（.elf / .bin）。上传后立即写入仓库，PS5 可直接下载。</p></div>
+            </header>
+            <p id="repo-summary" class="summary-line" aria-live="polite">正在读取插件仓库…</p>
+            <p id="repo-endpoint" class="endpoint-line" hidden></p>
+            <p id="repo-error" class="banner banner-error" role="alert" hidden></p>
+            <div class="table-wrap repo-table-wrap" role="region" aria-label="插件仓库文件列表" tabindex="0">
+              <table class="repo-table">
+                <thead>
+                  <tr>
+                    <th scope="col">名称</th>
+                    <th scope="col">文件名</th>
+                    <th scope="col">版本</th>
+                    <th scope="col">分类</th>
+                    <th scope="col">大小</th>
+                    <th scope="col">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="repo-body"><tr><td colspan="6" class="empty-state">正在读取插件仓库…</td></tr></tbody>
+              </table>
+            </div>
+            <p class="footnote">单个文件不超过 64 MB；文件名只能包含字母、数字、点、下划线和连字符，并以 .elf 或 .bin 结尾。</p>
+          </section>
+        </section>
+
+        <section id="view-settings" class="view" data-section="settings" hidden>
+          <form id="password-form" class="card" novalidate aria-labelledby="password-title">
+            <header class="card-head">
+              <div><h2 id="password-title">修改管理密码</h2><p class="card-sub">修改后，其它设备上的登录会立即失效，需要用新密码重新登录。</p></div>
+              <span class="tag">至少 10 个字符</span>
+            </header>
+            <fieldset id="password-fields" disabled>
+              <div class="field-grid three">
+                <div class="field-group">
+                  <label for="current-password">当前密码</label>
+                  <input id="current-password" name="current_password" type="password" autocomplete="current-password" maxlength="1024" placeholder="请输入当前管理密码" aria-describedby="current-password-error">
+                  <p id="current-password-error" class="field-error" hidden></p>
+                </div>
+                <div class="field-group">
+                  <label for="new-password">新密码</label>
+                  <input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="10" maxlength="1024" placeholder="至少 10 个字符" aria-describedby="new-password-help new-password-error">
+                  <p id="new-password-help" class="field-help">建议使用较长的口令，不限制字符种类。</p>
+                  <p id="new-password-error" class="field-error" hidden></p>
+                </div>
+                <div class="field-group">
+                  <label for="confirm-password">确认新密码</label>
+                  <input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" maxlength="1024" placeholder="再次输入新密码" aria-describedby="confirm-password-error">
+                  <p id="confirm-password-error" class="field-error" hidden></p>
+                </div>
+              </div>
+            </fieldset>
+            <p id="password-form-error" class="field-error" role="alert" hidden></p>
+            <p id="password-success" class="banner banner-success" role="status" hidden></p>
+            <div class="form-actions end">
+              <button id="password-submit" class="button button-primary" type="submit" data-act="password" data-label="更新密码">
+                <span class="spinner" aria-hidden="true" hidden></span>
+                <span class="button-label">更新密码</span>
+              </button>
+            </div>
+          </form>
+
+          <section class="card" aria-labelledby="service-title">
+            <header class="card-head"><h2 id="service-title">服务信息</h2></header>
+            <dl class="info-list">
+              <div><dt>管理入口</dt><dd class="mono">https://<span data-host-ip>—</span>:8443/</dd></div>
+              <div><dt>端口</dt><dd class="mono">UDP/TCP 53 · TCP 443 · 80 · 8080 · 8443</dd></div>
+              <div><dt>插件仓库</dt><dd class="mono">/srv/ps5-repo/（repo.json + payloads/）</dd></div>
+              <div><dt>配置与状态</dt><dd class="mono">/var/lib/ps5-manager/</dd></div>
+            </dl>
+            <p class="secondary-note">插件仓库地址 <span class="mono">http://<span data-host-ip>—</span>:8080/repo.json</span>；载荷下载地址 <span class="mono">http://<span data-host-ip>—</span>:8080/payloads/</span>。</p>
+          </section>
+
+          <section class="card" aria-labelledby="disable-title">
+            <header class="card-head"><h2 id="disable-title">停用与回滚</h2></header>
+            <ol class="steps">
+              <li><span>先把 PS5 的默认网关改回家庭路由器，DNS 改为常用解析器。</span></li>
+              <li><span>再在主机上停止并禁用服务：</span><pre class="code-block"><code>systemctl disable --now ps5-host ps5-manager ps5-repo</code></pre></li>
+            </ol>
+            <p class="secondary-note">停止服务会关闭此容器的 IPv4 转发；原规则保留默认拒绝，避免意外漏放。若需要不可绕过的设备隔离，应由家庭路由器 / VLAN 实施。</p>
+          </section>
+
+          <section class="card" aria-labelledby="about-title">
+            <header class="card-head"><h2 id="about-title">关于</h2></header>
+            <dl class="info-list">
+              <div><dt>分类规则集</dt><dd>v2fly/domain-list-community（MIT）编译的后缀规则</dd></div>
+              <div><dt>活动数据</dt><dd>conntrack -L 轮询；仅覆盖经过本机网关的 IPv4 流量</dd></div>
+              <div><dt>限制</dt><dd>共享 CDN 的同一 IP 可能承载多个域名；PS5 改换网关或直连同网段设备时不经过本机策略</dd></div>
+            </dl>
+            <p class="secondary-note">PS5 的漏洞链执行与 Payload Manager 启动仍需在真机上确认；网络测试中的互联网或 PSN 检查可能失败，因为初始白名单为空。</p>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <nav class="tabbar" aria-label="底部导航">
+      <a class="tab-item" href="#/overview" data-section="overview" aria-label="概览">
+        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.6" y="3.6" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="13.4" y="3.6" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="3.6" y="13.4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="13.4" y="13.4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/></svg></span>
+        <span class="tab-label">概览</span>
+      </a>
+      <a class="tab-item" href="#/policy" data-section="policy" aria-label="访问策略">
+        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 3.2 5 6.1v5.3c0 4 3.4 7.1 7 8.4 3.6-1.3 7-4.4 7-8.4V6.1L12 3.2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m9.1 11.8 2.1 2.1 3.8-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="tab-label">策略</span>
+      </a>
+      <a class="tab-item" href="#/activity" data-section="activity" aria-label="网络活动">
+        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M3.5 12h3.1l2.2-5.2 3.5 10.4 2.2-5.2h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="tab-label">活动</span>
+        <span class="tab-badge" data-badge="activity" hidden></span>
+      </a>
+      <a class="tab-item" href="#/repository" data-section="repository" aria-label="插件仓库">
+        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="m12 3.4 7.6 3.9v9.4L12 20.6l-7.6-3.9V7.3L12 3.4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4.7 7.5 7.3 3.8 7.3-3.8M12 11.3v9" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
+        <span class="tab-label">仓库</span>
+        <span class="tab-badge" data-badge="repository" hidden></span>
+      </a>
+      <a class="tab-item" href="#/settings" data-section="settings" aria-label="设置">
+        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M4 7.6h8.4M17.2 7.6H20M4 16.4h2.6M11.4 16.4H20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="14.8" cy="7.6" r="2.2" stroke="currentColor" stroke-width="1.6"/><circle cx="9.2" cy="16.4" r="2.2" stroke="currentColor" stroke-width="1.6"/></svg></span>
+        <span class="tab-label">设置</span>
+      </a>
+    </nav>
+  </div>
+
+  <div id="toast-region" class="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
+
+  <dialog id="rollback-dialog" class="dialog" aria-labelledby="rollback-title" aria-describedby="rollback-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="rollback-title">回滚到上一版配置？</h2>
+      <p id="rollback-description">将恢复服务器保存的上一版白名单与上游 DNS，并立即应用。当前未保存的编辑也将被替换。</p>
+    </div>
+    <div class="dialog-actions">
+      <button id="rollback-cancel" class="button button-secondary" type="button">取消</button>
+      <button id="rollback-confirm" class="button button-primary" type="button">确认回滚</button>
+    </div>
+  </dialog>
+
+  <dialog id="activity-allow-dialog" class="dialog" aria-labelledby="activity-allow-title" aria-describedby="activity-allow-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="activity-allow-title">放行选中的目标？</h2>
+      <p id="activity-allow-description">将把选中的 <span id="activity-allow-count" class="mono">0</span> 个目标加入访问白名单并立即应用到网关，PS5 随后即可访问这些目标。</p>
+      <p id="activity-allow-error" class="field-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="activity-allow-cancel" class="button button-secondary" type="button">取消</button>
+      <button id="activity-allow-confirm" class="button button-primary" type="button">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">确认放行</span>
+      </button>
+    </div>
+  </dialog>
+
+  <dialog id="activity-label-dialog" class="dialog dialog-wide" aria-labelledby="activity-label-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <form id="activity-label-form" class="dialog-form" novalidate>
+      <div class="dialog-content">
+        <h2 id="activity-label-title">为选中目标命名</h2>
+        <p class="dialog-subtitle">名称与分类会应用到选中的 <span id="activity-label-count" class="mono">0</span> 个目标；自定义标记优先于自动推断的分类。</p>
+        <fieldset id="activity-label-fields">
+          <div class="field-grid two">
+            <div class="field-group">
+              <label for="activity-label-name">名称</label>
+              <input id="activity-label-name" name="name" type="text" maxlength="64" autocomplete="off" placeholder="例如 家庭服务器">
+              <p class="field-help">留空则不显示自定义名称。</p>
+            </div>
+            <div class="field-group">
+              <label for="activity-label-category">分类</label>
+              <input id="activity-label-category" name="category" type="text" maxlength="48" autocomplete="off" placeholder="例如 自建服务" list="activity-category-options" aria-describedby="activity-label-category-help">
+              <p id="activity-label-category-help" class="field-help">留空则沿用自动推断的分类；两项都留空并保存可清除该目标的自定义标记。</p>
+              <datalist id="activity-category-options"></datalist>
+            </div>
+          </div>
+        </fieldset>
+        <p id="activity-label-error" class="field-error" role="alert" hidden></p>
+        <p id="activity-label-status" class="upload-status" role="status"></p>
+      </div>
+      <div class="dialog-actions">
+        <button id="activity-label-cancel" class="button button-secondary" type="button">取消</button>
+        <button id="activity-label-save" class="button button-primary" type="submit">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">应用命名</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="repo-upload-dialog" class="dialog dialog-wide" aria-labelledby="repo-upload-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <form id="repo-upload-form" class="dialog-form" novalidate>
+      <div class="dialog-content">
+        <h2 id="repo-upload-title">上传新插件</h2>
+        <p class="dialog-subtitle">单个文件不超过 64 MB。文件名取自所选文件，也是下载地址中的文件名。</p>
+        <fieldset id="repo-upload-fields">
+          <div class="field-grid">
+            <div class="field-group field-full">
+              <label for="repo-upload-file">插件文件</label>
+              <input id="repo-upload-file" name="file" type="file" accept=".elf,.bin" aria-describedby="repo-upload-file-help repo-upload-file-error">
+              <p id="repo-upload-file-help" class="field-help">支持 .elf 与 .bin 文件。</p>
+              <p id="repo-upload-file-error" class="field-error" hidden></p>
+            </div>
+            <div class="field-group">
+              <label for="repo-upload-name">名称</label>
+              <input id="repo-upload-name" name="name" type="text" maxlength="120" autocomplete="off" placeholder="例如 etaHEN" aria-describedby="repo-upload-name-error">
+              <p id="repo-upload-name-error" class="field-error" hidden></p>
+            </div>
+            <div class="field-group">
+              <label for="repo-upload-version">版本</label>
+              <input id="repo-upload-version" name="version" type="text" maxlength="40" autocomplete="off" placeholder="例如 v1.8" aria-describedby="repo-upload-version-error">
+              <p id="repo-upload-version-error" class="field-error" hidden></p>
+            </div>
+            <div class="field-group">
+              <label for="repo-upload-category">分类</label>
+              <input id="repo-upload-category" name="category" type="text" maxlength="40" autocomplete="off" placeholder="例如 载荷" aria-describedby="repo-upload-category-error">
+              <p id="repo-upload-category-error" class="field-error" hidden></p>
+            </div>
+            <div class="field-group">
+              <label for="repo-upload-author">作者</label>
+              <input id="repo-upload-author" name="author" type="text" maxlength="80" autocomplete="off" placeholder="可选" aria-describedby="repo-upload-author-error">
+              <p id="repo-upload-author-error" class="field-error" hidden></p>
+            </div>
+            <div class="field-group field-full">
+              <label for="repo-upload-description">描述</label>
+              <textarea id="repo-upload-description" name="description" rows="2" maxlength="300" placeholder="可选，简要说明用途" aria-describedby="repo-upload-description-error"></textarea>
+              <p id="repo-upload-description-error" class="field-error" hidden></p>
+            </div>
+          </div>
+        </fieldset>
+        <p id="repo-upload-error" class="field-error" role="alert" hidden></p>
+        <p id="repo-upload-status" class="upload-status" role="status"></p>
+      </div>
+      <div class="dialog-actions">
+        <button id="repo-upload-cancel" class="button button-secondary" type="button">取消</button>
+        <button id="repo-upload-submit" class="button button-primary" type="submit">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">开始上传</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="repo-edit-dialog" class="dialog dialog-wide" aria-labelledby="repo-edit-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <form id="repo-edit-form" class="dialog-form" novalidate>
+      <div class="dialog-content">
+        <h2 id="repo-edit-title">编辑插件信息</h2>
+        <p class="dialog-subtitle">文件名 <span id="repo-edit-filename" class="mono"></span> 保持不变，只修改展示信息。</p>
+        <fieldset id="repo-edit-fields">
+          <div class="field-grid">
+            <div class="field-group">
+              <label for="repo-edit-name">名称</label>
+              <input id="repo-edit-name" name="name" type="text" maxlength="120" autocomplete="off" aria-describedby="repo-edit-name-error">
+              <p id="repo-edit-name-error" class="field-error" hidden></p>
+            </div>
+            <div class="field-group">
+              <label for="repo-edit-version">版本</label>
+              <input id="repo-edit-version" name="version" type="text" maxlength="40" autocomplete="off" aria-describedby="repo-edit-version-error">
+              <p id="repo-edit-version-error" class="field-error" hidden></p>
+            </div>
+            <div class="field-group">
+              <label for="repo-edit-category">分类</label>
+              <input id="repo-edit-category" name="category" type="text" maxlength="40" autocomplete="off" aria-describedby="repo-edit-category-error">
+              <p id="repo-edit-category-error" class="field-error" hidden></p>
+            </div>
+            <div class="field-group">
+              <label for="repo-edit-author">作者</label>
+              <input id="repo-edit-author" name="author" type="text" maxlength="80" autocomplete="off" aria-describedby="repo-edit-author-error">
+              <p id="repo-edit-author-error" class="field-error" hidden></p>
+            </div>
+            <div class="field-group field-full">
+              <label for="repo-edit-description">描述</label>
+              <textarea id="repo-edit-description" name="description" rows="3" maxlength="300" aria-describedby="repo-edit-description-error"></textarea>
+              <p id="repo-edit-description-error" class="field-error" hidden></p>
+            </div>
+          </div>
+        </fieldset>
+        <p id="repo-edit-error" class="field-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions">
+        <button id="repo-edit-cancel" class="button button-secondary" type="button">取消</button>
+        <button id="repo-edit-save" class="button button-primary" type="submit">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">保存修改</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="repo-delete-dialog" class="dialog" aria-labelledby="repo-delete-title" aria-describedby="repo-delete-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="repo-delete-title">删除插件文件？</h2>
+      <p id="repo-delete-description">将从仓库中永久删除 <span id="repo-delete-filename" class="mono"></span>，PS5 端将无法再下载。此操作不可撤销。</p>
+      <p id="repo-delete-error" class="field-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="repo-delete-cancel" class="button button-secondary" type="button">取消</button>
+      <button id="repo-delete-confirm" class="button button-primary" type="button">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">确认删除</span>
+      </button>
+    </div>
+  </dialog>
+
+  <dialog id="ps5-shutdown-dialog" class="dialog" aria-labelledby="ps5-shutdown-title" aria-describedby="ps5-shutdown-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="ps5-shutdown-title">关闭 PS5 主机？</h2>
+      <p id="ps5-shutdown-description">将请求 <span id="ps5-shutdown-ip" class="mono">—</span> 关机。关机后 pldmgr 会停止，此页面将无法再控制该主机，除非重新运行载荷。</p>
+      <p id="ps5-shutdown-error" class="field-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="ps5-shutdown-cancel" class="button button-secondary" type="button" aria-label="取消关机">取消</button>
+      <button id="ps5-shutdown-confirm" class="button button-danger" type="button" aria-label="确认关闭 PS5 主机">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">确认关机</span>
+      </button>
+    </div>
+  </dialog>
+
+  <dialog id="ps5-kill-dialog" class="dialog" aria-labelledby="ps5-kill-title" aria-describedby="ps5-kill-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="ps5-kill-title">停止运行中的进程？</h2>
+      <p id="ps5-kill-description">将向 <span id="ps5-kill-host" class="mono">—</span> 发送停止请求，终止进程 <span id="ps5-kill-target" class="mono">—</span>。该载荷的未保存状态会丢失。</p>
+      <p id="ps5-kill-error" class="field-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="ps5-kill-cancel" class="button button-secondary" type="button" aria-label="取消停止进程">取消</button>
+      <button id="ps5-kill-confirm" class="button button-danger" type="button" aria-label="确认停止该进程">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">确认停止</span>
+      </button>
+    </div>
+  </dialog>
+
+  <dialog id="ps5-autoload-dialog" class="dialog" aria-labelledby="ps5-autoload-dialog-title" aria-describedby="ps5-autoload-dialog-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="ps5-autoload-dialog-title">覆盖自动加载列表？</h2>
+      <p id="ps5-autoload-dialog-description">主机 <span id="ps5-autoload-dialog-host" class="mono">—</span> 当前有 <span id="ps5-autoload-dialog-current" class="mono">0</span> 项自动加载；保存会用 <span id="ps5-autoload-dialog-next" class="mono">0</span> 项替换。</p>
+      <p id="ps5-autoload-dialog-note" class="dialog-subtitle"></p>
+      <p id="ps5-autoload-dialog-error" class="field-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="ps5-autoload-dialog-cancel" class="button button-secondary" type="button" aria-label="取消覆盖自动加载列表">取消</button>
+      <button id="ps5-autoload-dialog-confirm" class="button button-primary" type="button" aria-label="确认覆盖主机的自动加载列表">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">覆盖并保存</span>
+      </button>
+    </div>
+  </dialog>
+
+  <dialog id="files-name-dialog" class="dialog" aria-labelledby="files-name-title" aria-describedby="files-name-desc">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <form id="files-name-form" class="dialog-form" novalidate>
+      <div class="dialog-content">
+        <h2 id="files-name-title">新建文件夹</h2>
+        <p id="files-name-desc" class="dialog-subtitle"></p>
+        <div class="field-group">
+          <label for="files-name-input">名称</label>
+          <input id="files-name-input" name="name" type="text" maxlength="120" autocomplete="off" spellcheck="false">
+          <p id="files-name-hint" class="field-help"></p>
+          <p id="files-name-error" class="field-error" role="alert" hidden></p>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button id="files-name-cancel" class="button button-secondary" type="button" aria-label="取消名称修改">取消</button>
+        <button id="files-name-submit" class="button button-primary" type="submit" aria-label="保存名称">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">创建</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="files-delete-dialog" class="dialog" aria-labelledby="files-delete-title" aria-describedby="files-delete-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="files-delete-title">删除这个项目？</h2>
+      <p id="files-delete-description">将从主机删除 <span id="files-delete-name" class="mono">—</span>。<span id="files-delete-extra"></span>此操作不可撤销。</p>
+      <p id="files-delete-error" class="field-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="files-delete-cancel" class="button button-secondary" type="button" aria-label="取消删除">取消</button>
+      <button id="files-delete-confirm" class="button button-danger" type="button" aria-label="确认删除所选项目">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">确认删除</span>
+      </button>
+    </div>
+  </dialog>
+
+  <dialog id="files-overwrite-dialog" class="dialog" aria-labelledby="files-overwrite-title" aria-describedby="files-overwrite-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="files-overwrite-title">覆盖同名文件？</h2>
+      <p id="files-overwrite-description">当前文件夹中已有 <span id="files-overwrite-count" class="mono">0</span> 个同名文件。覆盖会替换原文件，上传完成前原文件不受影响。</p>
+      <div id="files-overwrite-names" class="files-names" aria-label="同名文件列表"></div>
+      <p id="files-overwrite-error" class="field-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="files-overwrite-cancel" class="button button-secondary" type="button" aria-label="取消上传">取消</button>
+      <button id="files-overwrite-skip" class="button button-secondary" type="button" aria-label="跳过同名文件">跳过这些</button>
+      <button id="files-overwrite-confirm" class="button button-primary" type="button" aria-label="确认覆盖同名文件">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">全部覆盖</span>
+      </button>
+    </div>
+  </dialog>
+
+  <dialog id="files-dest-dialog" class="dialog dialog-wide" aria-labelledby="files-dest-title" aria-describedby="files-dest-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="files-dest-title">复制到…</h2>
+      <p id="files-dest-description" class="dialog-subtitle">选择目标文件夹。目标不能是当前文件夹；跨硬盘复制或移动可能较慢。</p>
+      <div class="files-dest-head">
+        <span id="files-dest-path" class="mono">—</span>
+        <span class="files-dest-nav">
+          <button id="files-dest-root" class="button button-secondary button-small" type="button" aria-label="查看所有存储位置">存储位置</button>
+          <button id="files-dest-up" class="button button-secondary button-small" type="button" aria-label="返回上一级文件夹">上一级</button>
+        </span>
+      </div>
+      <div id="files-dest-list" class="files-dest-list" role="group" aria-label="目标文件夹"></div>
+      <p id="files-dest-error" class="field-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="files-dest-cancel" class="button button-secondary" type="button" aria-label="取消复制或移动">取消</button>
+      <button id="files-dest-confirm" class="button button-primary" type="button" aria-label="确认复制或移动到所选文件夹">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">复制到这里</span>
+      </button>
+    </div>
+  </dialog>
+
+  <dialog id="files-host-dialog" class="dialog" aria-labelledby="files-host-title" aria-describedby="files-host-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="files-host-title">切换文件服务主机</h2>
+      <p id="files-host-description" class="dialog-subtitle">文件服务由后台代理所选主机的存储；切换后需要重新读取存储位置。</p>
+      <div class="field-group">
+        <label for="files-host-select">主机地址</label>
+        <select id="files-host-select"></select>
+        <p id="files-host-error" class="field-error" role="alert" hidden></p>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button id="files-host-cancel" class="button button-secondary" type="button" aria-label="取消切换主机">取消</button>
+      <button id="files-host-confirm" class="button button-primary" type="button" aria-label="连接所选主机的文件服务">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">连接</span>
+      </button>
+    </div>
+  </dialog>
+
+  <div id="files-menu" class="files-menu" role="menu" aria-label="文件操作" hidden>
+    <button id="files-menu-download" class="files-menu-item" type="button" role="menuitem" data-files-menu="download" aria-label="下载所选项目">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-download"></use></svg>
+      <span>下载</span>
+    </button>
+    <button id="files-menu-rename" class="files-menu-item" type="button" role="menuitem" data-files-menu="rename" aria-label="重命名所选项目">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-edit"></use></svg>
+      <span>重命名</span>
+    </button>
+    <button id="files-menu-copy" class="files-menu-item" type="button" role="menuitem" data-files-menu="copy" aria-label="复制所选项目到…">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-copy"></use></svg>
+      <span>复制到…</span>
+    </button>
+    <button id="files-menu-move" class="files-menu-item" type="button" role="menuitem" data-files-menu="move" aria-label="移动所选项目到…">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-move"></use></svg>
+      <span>移动到…</span>
+    </button>
+    <hr aria-hidden="true">
+    <button id="files-menu-delete" class="files-menu-item" type="button" role="menuitem" data-files-menu="delete" data-tone="danger" aria-label="删除所选项目">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-trash"></use></svg>
+      <span>删除</span>
+    </button>
+  </div>
+
+  <noscript><p class="noscript">请启用 JavaScript 以使用管理控制台。</p></noscript>
+</body>
+</html>

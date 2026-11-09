@@ -1,0 +1,35 @@
+# ps5-jb-server configuration. Install to /etc/ps5-jb-server/config.toml.
+# Every value can also be overridden with PS5JB_* environment variables.
+
+[network]
+# Address of this host on the home LAN. Leave empty to detect from the default route.
+host_ip = ""
+# LAN that may use this service. Leave empty to derive <host_ip>/24.
+subnet = ""
+# Upstream resolver for allowed names. Leave empty to read /etc/resolv.conf.
+upstream_dns = ""
+
+[ports]
+dns = 53
+http = 80
+https = 443
+admin = 8443
+repo = 8080
+
+[ps5]
+pldmgr_port = 8084     # Payload Manager web UI on the console
+elf_port = 9021        # elfldr on the console
+file_port = 80         # file service (tom-ps5-usbnet payload)
+control = true         # enable the PS5 host page
+file_manager = true    # enable the PS5 file page
+
+[limits]
+max_upload = 67108864  # 64 MiB, applied to repo and console uploads
+
+[paths]
+data = "/var/lib/ps5-jb-server"
+repo = "/srv/ps5-jb-server"
+static = "/opt/ps5-jb-server/web"
+certs = "/etc/ps5-jb-server/tls"
+credentials = "/var/lib/ps5-jb-server/credentials.json"
+rulesets = "/opt/ps5-jb-server/rulesets/compiled.json"

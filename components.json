@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "note": "Third-party components fetched at install time; nothing here is redistributed by this repository.",
+  "components": [
+    {
+      "id": "manuals-host",
+      "name": "用户手册宿主（上游 ps5-webkit-autoloader v0.7.1，GPL-3.0）",
+      "filename": "host.py",
+      "url": "https://github.com/itsPLK/ps5-webkit-autoloader/releases/download/v0.7.1/webkit-autoloader-host_v0.7.1.py",
+      "sha256": "960969a6fb839e4dbda17fbb62a52606e101fd408b6566b6cc053e80d7e152e1",
+      "license": "GPL-3.0"
+    }
+  ]
+}

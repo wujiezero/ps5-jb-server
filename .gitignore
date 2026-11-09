@@ -1,0 +1,25 @@
+# secrets and local state
+.local/
+*.key
+*.crt
+credentials.json
+labels.json
+config.json
+console.json
+*.log
+
+# payload binaries are downloaded, not committed
+payloads/
+srv/
+var/
+etc/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# os / editor
+.DS_Store
+*.swp

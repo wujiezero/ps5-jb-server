@@ -1,0 +1,25 @@
+[Unit]
+Description=ps5-jb-server policy, DNS and admin console
+Documentation=https://github.com/wujiezero/ps5-jb-server
+After=network-online.target nftables.service
+Wants=network-online.target
+Requires=nftables.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 @OPT@/server.py --config @CONFIG@
+# Fail closed before nftables can stop or flush its rules.
+ExecStopPost=/usr/sbin/sysctl -w net.ipv4.ip_forward=0
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+User=root
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=@DATA@ @REPO@
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

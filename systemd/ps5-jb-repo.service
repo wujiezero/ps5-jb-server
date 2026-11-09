@@ -1,0 +1,20 @@
+[Unit]
+Description=ps5-jb-server payload repository (read-only HTTP)
+Documentation=https://github.com/wujiezero/ps5-jb-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 @OPT@/payload_repo.py --ip @HOST_IP@ --port @REPO_PORT@ --root @REPO@
+Restart=on-failure
+RestartSec=3
+User=root
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=@REPO@
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
