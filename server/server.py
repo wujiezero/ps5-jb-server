@@ -29,11 +29,60 @@ from policy import ConfigStore, Firewall
 
 
 class AuthManager:
-    def __init__(self, credentials):
+    """Cookie sessions with sliding expiry, persisted so a restart keeps users signed in."""
+
+    IDLE_SECONDS = 30 * 24 * 3600      # renew on use, 30 days idle
+    MAX_SECONDS = 90 * 24 * 3600       # hard cap per session
+
+    def __init__(self, credentials, session_path=None):
         self.credentials = credentials
         self.sessions = OrderedDict()
         self.attempts = OrderedDict()
         self.lock = threading.RLock()
+        self.session_path = Path(session_path) if session_path else None
+        self._load()
+
+    # -- persistence (tokens are stored hashed) --
+    @staticmethod
+    def _token_key(token):
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    def _load(self):
+        if not self.session_path:
+            return
+        try:
+            saved = json.loads(self.session_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return
+        now = time.time()
+        for item in saved.get('sessions', []):
+            if not isinstance(item, dict):
+                continue
+            key, csrf = item.get('key'), item.get('csrf')
+            expires, created = item.get('expires'), item.get('created') or now
+            if not (isinstance(key, str) and isinstance(csrf, str)):
+                continue
+            if not isinstance(expires, (int, float)) or expires <= now:
+                continue
+            self.sessions[key] = {'csrf': csrf, 'expires': expires,
+                                  'created': float(created), 'hashed': True}
+
+    def _save(self):
+        if not self.session_path:
+            return
+        payload = {'sessions': [
+            {'key': key, 'csrf': value['csrf'], 'expires': value['expires'],
+             'created': value.get('created', time.time())}
+            for key, value in self.sessions.items()]}
+        try:
+            self.session_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.session_path.with_suffix('.tmp')
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, self.session_path)
+        except OSError:
+            pass
 
     @staticmethod
     def make_credentials(password):
@@ -64,24 +113,46 @@ class AuthManager:
                     self.attempts.popitem(last=False)
                 raise PermissionError('密码不正确')
             self.attempts.pop(client, None)
-            self.sessions = OrderedDict((k, v) for k, v in self.sessions.items() if v['expires'] > now)
+            wall = time.time()
+            monotonic = time.monotonic()
+            self.sessions = OrderedDict(
+                (k, v) for k, v in self.sessions.items()
+                if v['expires'] > (wall if v.get('hashed') else monotonic))
             if len(self.sessions) >= 64:
                 self.sessions.popitem(last=False)
             token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-            self.sessions[token] = {'csrf': csrf, 'expires': now + 8 * 3600}
+            self.sessions[self._token_key(token)] = {
+                'csrf': csrf, 'expires': wall + self.IDLE_SECONDS,
+                'created': wall, 'hashed': True}
+            self._save()
             return token, csrf
 
     def session(self, token):
-        with self.lock:
-            found = self.sessions.get(token)
-            if found and found['expires'] > time.monotonic():
-                return dict(found)
-            self.sessions.pop(token, None)
+        if not isinstance(token, str) or not token:
             return None
+        key = self._token_key(token)
+        with self.lock:
+            found = self.sessions.get(key)
+            wall = time.time()
+            if not found:
+                return None
+            created = float(found.get('created') or wall)
+            if found['expires'] <= wall or wall - created > self.MAX_SECONDS:
+                self.sessions.pop(key, None)
+                self._save()
+                return None
+            # Sliding expiry: keep active users signed in.
+            found['expires'] = min(wall + self.IDLE_SECONDS, created + self.MAX_SECONDS)
+            self.sessions.move_to_end(key)
+            self._save()
+            return {'csrf': found['csrf'], 'expires': found['expires']}
 
     def logout(self, token):
+        if not isinstance(token, str) or not token:
+            return
         with self.lock:
-            self.sessions.pop(token, None)
+            if self.sessions.pop(self._token_key(token), None) is not None:
+                self._save()
 
 
 def _read_conntrack():
@@ -519,7 +590,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         if self.path == '/api/login':
             try:
                 token, csrf = self.server.auth.login(self.client_address[0], body.get('password'))
-                self.send_body(200, {'csrf': csrf}, cookie=f'ps5_session={token}; Path=/; Max-Age=28800; HttpOnly; Secure; SameSite=Strict')
+                self.send_body(200, {'csrf': csrf}, cookie=f'ps5_session={token}; Path=/; Max-Age={AuthManager.IDLE_SECONDS}; HttpOnly; Secure; SameSite=Lax')
             except PermissionError as exc:
                 self.send_body(401, {'error': str(exc)})
             return
@@ -533,12 +604,12 @@ class AdminHandler(BaseHTTPRequestHandler):
         try:
             if route == '/api/logout':
                 self.server.auth.logout(self.token())
-                self.send_body(200, {'ok': True}, cookie='ps5_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict')
+                self.send_body(200, {'ok': True}, cookie='ps5_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax')
             elif route == '/api/password':
                 change_password(self.server.auth, self.server.credentials_path,
                                 body.get('current_password'), body.get('new_password'))
                 self.send_body(200, {'ok': True},
-                               cookie='ps5_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict')
+                               cookie='ps5_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax')
             elif route == '/api/labels':
                 self.server.app.activity.labels.set(body.get('target'),
                                                     body.get('name', ''), body.get('category', ''))
@@ -637,7 +708,8 @@ def main():
     engine = DNSPolicy(store, firewall, host_ip=host_ip)
     initialize_engine(engine)
     engine.on_apply = set_forwarding
-    auth = AuthManager(json.loads((data / 'credentials.json').read_text()))
+    auth = AuthManager(json.loads((data / 'credentials.json').read_text()),
+                       data / 'sessions.json')
     admin = AdminServer((host_ip, admin_port), AdminHandler)
     labels = LabelsStore(data / 'labels.json')
     observer = FlowObserver(
@@ -646,7 +718,8 @@ def main():
         labels=labels,
         dns_lookup=engine.lookup_ip,
         is_allowed=_allowed_destination(engine),
-        lan=lan, host_ip=host_ip)
+        lan=lan, host_ip=host_ip,
+        dns_events=lambda: list(engine.logs))
     stop_event = threading.Event()
     threading.Thread(target=make_poller(observer), args=(stop_event,), daemon=True).start()
     admin.app, admin.auth = Application(engine, observer), auth

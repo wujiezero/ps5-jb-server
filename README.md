@@ -135,6 +135,8 @@ sudo ./install.sh uninstall [--purge] # 停服务并卸载；--purge 一并删�
 ## 安全与边界（务必读）
 
 - 管理页只允许本机与配置网段的请求，登录后写操作需要 CSRF token；密码用 PBKDF2 存储，无默认密码。
+- 登录会话 30 天滑动续期：Cookie 为 `HttpOnly; Secure; SameSite=Lax`，服务端只存令牌哈希
+  （`/var/lib/ps5-jb-server/sessions.json`，0600），重启服务不会掉登录；登出立即失效。
 - 策略只管**经过本机的 IPv4**：
   - 同网段直连、不经本机网关的流量不受控；
   - PS5 若改回原网关或使用 IPv6，策略失效（本服务默认关闭 IPv6 转发）；

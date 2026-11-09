@@ -109,9 +109,35 @@ class ObserverTests(unittest.TestCase):
     def tearDown(self):
         self.labels.cleanup()
 
-    def test_ignores_lan_and_self_traffic(self):
+    def test_records_gateway_and_local_service_traffic(self):
         events = self.observer.poll_once()
-        self.assertEqual([e['dst'] for e in events], ['93.184.215.14', '203.0.113.9'])
+        # Two routed flows plus the client's connection to this host's admin port
+        # (LAN -> LAN is ignored, but traffic into our own service is evidence).
+        self.assertEqual([e['kind'] for e in events], ['flow', 'flow', 'service'])
+        self.assertEqual([e['dst'] for e in events],
+                         ['93.184.215.14', '203.0.113.9', HOST_IP])
+        service = events[2]
+        self.assertEqual(service['category'], '本机服务')
+        self.assertEqual(service['port'], 8443)
+        self.assertEqual(service['verdict'], 'allowed')
+
+    def test_dns_events_are_included(self):
+        rows = [{'time': '2026-01-01T00:00:00+08:00', 'client': CLIENT,
+                 'name': 'ps5.playstation.net', 'qtype': 'A', 'action': 'allowed',
+                 'detail': ''},
+                {'time': '2026-01-01T00:00:01+08:00', 'client': CLIENT,
+                 'name': 'ads.example', 'qtype': 'A', 'action': 'blocked', 'detail': 'nxdomain'}]
+        observer = FlowObserver(
+            conntrack=lambda: '', classifier=self.classifier, labels=self.store,
+            dns_lookup=lambda ip: (None, None), is_allowed=lambda ip: False,
+            lan=LAN, host_ip=HOST_IP, clock=lambda: self.now, dns_events=lambda: rows)
+        observer.poll_once()
+        snapshot = observer.snapshot()
+        dns = [e for e in snapshot['events'] if e['kind'] == 'dns']
+        self.assertEqual(len(dns), 2)
+        self.assertEqual(dns[0]['domain'], 'ads.example')
+        self.assertEqual(dns[0]['verdict'], 'blocked')
+        self.assertEqual(snapshot['hints']['dns_events'], 2)
 
     def test_event_fields_and_verdict(self):
         events = self.observer.poll_once()
@@ -148,8 +174,11 @@ class ObserverTests(unittest.TestCase):
     def test_snapshot_counts_and_allow_targets(self):
         self.observer.poll_once()
         snapshot = self.observer.snapshot()
-        self.assertEqual(snapshot['counts']['allowed'], 1)
+        # allowed = the whitelisted flow + the local service connection
+        self.assertEqual(snapshot['counts']['allowed'], 2)
         self.assertEqual(snapshot['counts']['blocked'], 1)
+        self.assertEqual(snapshot['hints']['gateway_flows'], 2)
+        self.assertEqual(snapshot['hints']['service_flows'], 1)
         targets = self.observer.allow_targets(['ip:93.184.215.14', 'domain:ps5.playstation.net'])
         self.assertEqual(targets, {'networks': ['93.184.215.14/32'], 'domains': ['ps5.playstation.net']})
 

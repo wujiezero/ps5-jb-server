@@ -1,7 +1,10 @@
 import http.client
 import json
+import pathlib
 import sys
+import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
@@ -81,7 +84,7 @@ class HTTPTests(unittest.TestCase):
         status, headers, result = self.request('POST', '/api/login', {'password': 'a-long-test-password'})
         self.assertEqual(status, 200)
         self.assertIn('HttpOnly', headers['Set-Cookie'])
-        self.assertIn('SameSite=Strict', headers['Set-Cookie'])
+        self.assertIn('SameSite=Lax', headers['Set-Cookie'])
         return headers['Set-Cookie'].split(';')[0], result['csrf']
     def test_state_requires_authentication(self):
         self.assertEqual(self.request('GET', '/api/state')[0], 401)
@@ -128,3 +131,50 @@ class StartupTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class SessionPersistenceTests(unittest.TestCase):
+    """Sessions survive a service restart and renew while in use."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = pathlib.Path(self.tmp.name) / 'sessions.json'
+        self.credentials = AuthManager.make_credentials('correct-horse-battery')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_restart_keeps_session(self):
+        first = AuthManager(self.credentials, self.path)
+        token, csrf = first.login('127.0.0.1', 'correct-horse-battery')
+        self.assertTrue(self.path.exists())
+        # Stored token is hashed, never plaintext.
+        self.assertNotIn(token, self.path.read_text())
+
+        second = AuthManager(self.credentials, self.path)
+        session = second.session(token)
+        self.assertIsNotNone(session, 'session must survive a restart')
+        self.assertEqual(session['csrf'], csrf)
+
+    def test_logout_removes_persisted_session(self):
+        auth = AuthManager(self.credentials, self.path)
+        token, _ = auth.login('127.0.0.1', 'correct-horse-battery')
+        auth.logout(token)
+        self.assertIsNone(AuthManager(self.credentials, self.path).session(token))
+
+    def test_expired_session_is_dropped(self):
+        auth = AuthManager(self.credentials, self.path)
+        token, _ = auth.login('127.0.0.1', 'correct-horse-battery')
+        key = AuthManager._token_key(token)
+        auth.sessions[key]['expires'] = time.time() - 1
+        auth._save()
+        self.assertIsNone(AuthManager(self.credentials, self.path).session(token))
+
+    def test_sliding_expiry_renews(self):
+        auth = AuthManager(self.credentials, self.path)
+        token, _ = auth.login('127.0.0.1', 'correct-horse-battery')
+        key = AuthManager._token_key(token)
+        auth.sessions[key]['expires'] = time.time() + 10
+        before = auth.sessions[key]['expires']
+        auth.session(token)
+        self.assertGreater(auth.sessions[key]['expires'], before + 3600)

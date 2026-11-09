@@ -1429,8 +1429,12 @@
       const dst = str(entry.dst);
       const target = str(entry.target) || (domain ? `domain:${domain}` : dst ? `ip:${dst}` : '');
       const port = Number(entry.port);
+      const kind = ['flow', 'service', 'dns'].includes(str(entry.kind)) ? str(entry.kind) : 'flow';
       events.push({
         target,
+        kind,
+        // Service rows are terminal observations, not whitelist targets.
+        selectable: kind !== 'service' && Boolean(target),
         time: str(entry.time),
         client: str(entry.client),
         dst,
@@ -1454,8 +1458,17 @@
       for (const event of events) counts[event.verdict] += 1;
     }
     const tracked = Number(data && data.tracked);
+    const rawHints = data && typeof data.hints === 'object' && data.hints ? data.hints : {};
+    const byKind = rawHints.by_kind && typeof rawHints.by_kind === 'object' ? rawHints.by_kind : {};
+    const hints = {
+      message: str(rawHints.message),
+      gateway: Number(byKind.flow) || 0,
+      service: Number(byKind.service) || 0,
+      dns: Number(byKind.dns) || 0
+    };
     return {
       loaded: true,
+      hints,
       events,
       counts,
       tracked: Number.isFinite(tracked) && tracked >= 0 ? Math.floor(tracked) : 0,
@@ -1516,7 +1529,7 @@
 
     const checkCell = document.createElement('td');
     checkCell.className = 'check-cell';
-    if (event.target) {
+    if (event.selectable) {
       const label = document.createElement('label');
       label.className = 'activity-check-target';
       const box = document.createElement('input');
@@ -1569,8 +1582,15 @@
     categoryCell.textContent = asText(event.category);
 
     const nameCell = document.createElement('td');
-    nameCell.textContent = asText(event.name, '');
-    if (!event.name) nameCell.dataset.empty = 'true';
+    if (event.kind === 'dns') {
+      const tag = document.createElement('span');
+      tag.className = 'activity-kind';
+      tag.textContent = '域名解析';
+      nameCell.append(tag);
+    } else {
+      nameCell.textContent = asText(event.name, '');
+    }
+    if (!nameCell.textContent) nameCell.dataset.empty = 'true';
 
     row.append(checkCell, timeCell, clientCell, domainCell, ipCell, portCell, verdictCell, categoryCell, nameCell);
     return row;
@@ -1582,7 +1602,7 @@
     if (!activity.loaded) {
       fragment.append(skeletonRows(5, 9));
     } else if (!activity.events.length) {
-      fragment.append(activityEmptyRow('还没有经过本机的连接记录。', true));
+      fragment.append(activityEmptyRow(activity.hints.message || '还没有经过本机的连接记录。', true));
     } else if (!visible.length) {
       fragment.append(activityEmptyRow('当前筛选条件下没有记录。'));
     } else {
@@ -1607,9 +1627,15 @@
 
   function renderActivity() {
     const { allowed, blocked } = activity.counts;
-    $('activity-summary').textContent = activity.loaded
-      ? `共 ${allowed + blocked} 条 · 允许 ${allowed} · 未放行 ${blocked} · 本机跟踪 ${activity.tracked} 个连接`
-      : '正在读取网络活动…';
+    if (!activity.loaded) {
+      $('activity-summary').textContent = '正在读取网络活动…';
+    } else {
+      const parts = [`共 ${allowed + blocked} 条`, `允许 ${allowed}`, `未放行 ${blocked}`];
+      const { gateway, service, dns } = activity.hints;
+      if (gateway || service || dns) parts.push(`来源：网关 ${gateway} · 本机服务 ${service} · DNS ${dns}`);
+      parts.push(`本机跟踪 ${activity.tracked} 个连接`);
+      $('activity-summary').textContent = parts.join(' · ');
+    }
     setBadge('activity', activity.loaded ? blocked : 0);
     const updated = $('activity-updated');
     if (activity.updated) {

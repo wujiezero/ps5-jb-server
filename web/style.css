@@ -988,8 +988,9 @@ main {
 /* ── 表格（桌面） ─────────────────────────────────────────────────────── */
 
 .table-wrap {
-  overflow: auto;
-  max-height: 480px;
+  overflow-x: auto;
+  overflow-y: visible;
+  max-height: none;
   margin-top: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1690,7 +1691,7 @@ tbody tr { transition: background var(--dur) var(--ease); }
 .ps5-tab:disabled { opacity: 0.45; cursor: not-allowed; }
 .ps5-panel { min-width: 0; }
 .ps5-panel:focus, .ps5-panel:focus-visible { outline: none; }
-.ps5-table-wrap { margin-top: 12px; max-height: 420px; }
+.ps5-table-wrap { margin-top: 12px; max-height: none; }
 .ps5-table { min-width: 620px; }
 .ps5-table td { vertical-align: top; }
 .ps5-catalog-table td { white-space: nowrap; }
@@ -1856,7 +1857,7 @@ tbody tr { transition: background var(--dur) var(--ease); }
 .files-crumb[aria-current="page"] { color: var(--fg); font-weight: 600; }
 .files-crumb:hover { background: var(--raised); color: var(--fg); }
 .files-crumb-sep { padding: 0 1px; color: var(--faint); }
-.files-table-wrap { margin-top: 0; max-height: 430px; }
+.files-table-wrap { margin-top: 0; max-height: none; }
 .files-table { min-width: 560px; table-layout: fixed; }
 .files-size-col { width: 96px; text-align: right; }
 .files-time-col { width: 150px; text-align: right; }
@@ -1912,7 +1913,7 @@ tbody tr { transition: background var(--dur) var(--ease); }
 .files-meter i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width 240ms var(--ease); }
 .files-progress { height: 4px; min-width: 70px; border-radius: 2px; background: var(--bar); overflow: hidden; }
 .files-progress i { display: block; height: 100%; background: var(--accent); transition: width 160ms linear; }
-.files-transfers-wrap { margin-top: 0; max-height: 260px; }
+.files-transfers-wrap { margin-top: 0; max-height: 320px; }
 .files-transfers-table { min-width: 520px; }
 .files-transfers-table td { font-size: 0.75rem; }
 .files-transfer-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2163,4 +2164,16 @@ tbody tr { transition: background var(--dur) var(--ease); }
     --chrome: #0f1726;
     --chrome-strong: #172030;
   }
+}
+
+/* 网络活动：事件来源标记（DNS / 本机服务） */
+.activity-kind {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
 }

@@ -61,6 +61,19 @@
 - 只代理配置网段内地址；写操作要会话 + `X-CSRF-Token`；
 - 选择的文件主机持久化到 `console.json`（0600，原子写）。
 
+## 会话与登录
+
+- 登录后写入 `ps5_session` Cookie：`HttpOnly; Secure; SameSite=Lax; Max-Age=30 天`。
+  用 Lax 是为了让「从书签/其它站点进入或刷新」也能保持登录（写操作仍需 `X-CSRF-Token`，不依赖 Cookie 的 SameSite 防护）。
+- 会话在服务端**滑动续期**：每次带 Cookie 的请求把有效期推到「现在 + 30 天」，单会话上限 90 天。
+- 会话令牌以 **SHA-256 哈希**形式保存在 `sessions.json`（0600，原子写），
+  因此 `systemctl restart` 后仍然保持登录；登出或过期会即时清除。
+
+## 滚动与长列表
+
+表格不再用固定高度的内部滚动框（旧版 `max-height: 420–480px`）：滚轮在框内到底后容易误以为页面到底，
+且框下方内容会被裁在视口之外。现在长表格随页面滚动，表头 `position: sticky`，页面底部保留 64px 留白。
+
 ## 前端
 
 - 单页、hash 路由（`#/overview` `#/policy` `#/activity` `#/ps5` `#/files` `#/repository` `#/settings`）。

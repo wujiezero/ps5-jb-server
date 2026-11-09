@@ -149,11 +149,16 @@ class LabelsStore:
             return {key: dict(value) for key, value in self.data.items()}
 
 
+SERVICE_PORTS = {53: '本机 DNS', 853: '本机 DNS', 80: '用户手册', 443: '用户手册',
+                 8080: '插件仓库', 8443: '管理页', 9021: 'elfldr', 8084: 'pldmgr'}
+
+
 class FlowObserver:
     """Poll conntrack, keep a bounded ring of new outbound flows, enrich them."""
 
     def __init__(self, conntrack, classifier, labels, dns_lookup, is_allowed,
-                 lan='127.0.0.0/8', host_ip='127.0.0.1', clock=None, max_events=500):
+                 lan='127.0.0.0/8', host_ip='127.0.0.1', clock=None, max_events=500,
+                 dns_events=None):
         self.conntrack = conntrack
         self.classifier = classifier
         self.labels = labels
@@ -169,6 +174,11 @@ class FlowObserver:
         self.counts = {'allowed': 0, 'blocked': 0}
         self.updated = None
         self.last_error = None
+        # Optional callable returning recent DNS log rows; they are shown next
+        # to connection events because DNS is often the only traffic we see.
+        self.dns_events = dns_events
+        self._dns_seen = set()
+        self.counts_by_kind = {'flow': 0, 'service': 0, 'dns': 0}
 
     @property
     def max_events(self):
@@ -184,6 +194,24 @@ class FlowObserver:
             self.events = deque(list(self.events)[:value], maxlen=value)
 
     def _target_of(self, flow):
+        if str(flow['dst']) == self.host_ip:
+            return {
+                'time': datetime.datetime.fromtimestamp(self.clock()).astimezone().isoformat(timespec='seconds'),
+                'epoch': round(self.clock(), 3),
+                'client': flow['src'],
+                'dst': flow['dst'],
+                'port': flow['dport'],
+                'proto': flow['proto'],
+                'domain': '',
+                'domain_age': None,
+                'name': SERVICE_PORTS.get(int(flow['dport']), '本机服务'),
+                'category': '本机服务',
+                'verdict': 'allowed',
+                'replied': flow['replied'],
+                'target': 'service:' + str(flow['dport']),
+                'kind': 'service',
+                'allowed_now': True,
+            }
         domain, age = self.dns_lookup(flow['dst'])
         label = self.labels.get('ip:' + flow['dst'])
         if not label and domain:
@@ -206,6 +234,7 @@ class FlowObserver:
             'verdict': verdict,
             'replied': flow['replied'],
             'target': 'ip:' + flow['dst'],
+            'kind': 'flow',
             # Accurate for the poll result; snapshot() recomputes it on every read.
             'allowed_now': bool(self.is_allowed(flow['dst'])),
         }
@@ -232,9 +261,55 @@ class FlowObserver:
                 event = self._target_of(flow)
                 self.events.appendleft(event)
                 self.counts[event['verdict']] = self.counts.get(event['verdict'], 0) + 1
+                kind = event.get('kind', 'flow')
+                self.counts_by_kind[kind] = self.counts_by_kind.get(kind, 0) + 1
                 fresh.append(event)
+            self._collect_dns(now)
             self.updated = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
         return fresh
+
+    def _collect_dns(self, now):
+        if not self.dns_events:
+            return
+        try:
+            rows = self.dns_events() or []
+        except Exception as exc:  # never let DNS logging break flow capture
+            logging.debug('dns event collection failed: %s', exc)
+            return
+        for row in list(rows)[:200]:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get('name') or '')
+            client = str(row.get('client') or '')
+            action = str(row.get('action') or '')
+            key = (client, name, str(row.get('qtype') or ''), action)
+            if not name or key in self._dns_seen:
+                continue
+            self._dns_seen.add(key)
+            verdict = 'allowed' if action in ('allowed', 'answered', 'local', 'forwarded') else 'blocked'
+            category = self.classifier.category(name)
+            event = {
+                'time': str(row.get('time') or datetime.datetime.now().astimezone().isoformat(timespec='seconds')),
+                'epoch': round(now, 3),
+                'client': client,
+                'dst': '',
+                'port': 53,
+                'proto': 'dns',
+                'domain': name,
+                'domain_age': 0,
+                'name': '',
+                'category': category or '未识别',
+                'verdict': verdict,
+                'replied': True,
+                'target': 'domain:' + name,
+                'kind': 'dns',
+                'allowed_now': verdict == 'allowed',
+            }
+            self.events.appendleft(event)
+            self.counts[verdict] = self.counts.get(verdict, 0) + 1
+            self.counts_by_kind['dns'] = self.counts_by_kind.get('dns', 0) + 1
+        if len(self._dns_seen) > 4000:
+            self._dns_seen.clear()
 
     def _interesting(self, flow):
         try:
@@ -244,6 +319,10 @@ class FlowObserver:
             return False
         if src not in self.lan or flow['src'] == self.host_ip:
             return False
+        if str(dst) == self.host_ip:
+            # Traffic into our own services: not routed, but it shows the
+            # console is actually talking to us.
+            return int(flow['dport']) in SERVICE_PORTS
         if dst in self.lan or dst.is_loopback or dst.is_multicast or dst.is_unspecified:
             return False
         if str(dst) == '255.255.255.255':
@@ -255,7 +334,9 @@ class FlowObserver:
         merged = dict(event)
         # verdict is historical; allowed_now tells whether the target is allowed
         # by the whitelist right now, so a row can say 已放行 / 已移出白名单.
-        merged['allowed_now'] = bool(self.is_allowed(merged['dst']))
+        merged['allowed_now'] = (True if merged.get('kind') == 'service'
+                                 else bool(self.is_allowed(merged['dst']))) if merged.get('dst') else \
+            bool(merged.get('allowed_now'))
         label = self.labels.get(event['target'])
         if not label and event.get('domain'):
             label = self.labels.get('domain:' + event['domain'])
@@ -270,6 +351,19 @@ class FlowObserver:
     def snapshot(self, limit=200):
         with self.lock:
             events = [self._with_labels(item) for item in list(self.events)[:limit]]
+            by_kind = dict(self.counts_by_kind)
+            hints = {
+                'by_kind': by_kind,
+                'gateway_flows': by_kind.get('flow', 0),
+                'service_flows': by_kind.get('service', 0),
+                'dns_events': by_kind.get('dns', 0),
+            }
+            if not hints['gateway_flows'] and hints['service_flows']:
+                hints['message'] = ('只看到访问本机的流量：PS5 的默认网关可能没有指向本机，'
+                                    '把默认网关也改成本机地址后才会记录它的互联网访问。')
+            elif not hints['gateway_flows'] and not hints['service_flows'] and not hints['dns_events']:
+                hints['message'] = ('还没有看到任何流量：请确认 PS5 的主 DNS 指向本机，'
+                                    '并把默认网关也设为本机地址。')
             return {
                 'events': events,
                 'counts': dict(self.counts),
@@ -277,6 +371,7 @@ class FlowObserver:
                 'updated': self.updated,
                 'last_error': self.last_error,
                 'categories': self.classifier.categories(),
+                'hints': hints,
             }
 
     def allow_targets(self, targets):
