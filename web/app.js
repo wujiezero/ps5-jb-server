@@ -74,6 +74,8 @@
   let ps5Pending = null;
   let ps5Action = null;
   let ps5Draft = null;
+  let ps5StandbyIp = '';
+  let ps5PairIp = '';
   let ps5SelectedIp = '';
   let ps5Tab = 'catalog';
   let ps5InlineError = null;
@@ -402,7 +404,9 @@
   function showSection(section, options = {}) {
     if (!authenticated) return;
     closeMobileMore('navigation');
+    const changed = currentSection !== section;
     currentSection = section;
+    if (changed) playEnter(views[section]);
     for (const key of SECTIONS) {
       const view = views[key];
       if (view) view.hidden = key !== section;
@@ -428,7 +432,6 @@
       const title = $('app-title');
       if (title) title.focus({ preventScroll: true });
     }
-    if (section !== 'files') stopFilesPolling();
     if (section === 'activity' && !activity.loaded) refreshActivity();
     if (section === 'repository' && !repo.loaded) refreshRepo();
     if (section === 'ps5') {
@@ -508,7 +511,10 @@
     $('boot-loading').hidden = true;
     $('login-view').hidden = true;
     $('app-shell').hidden = false;
-    if (entering) ensureRoute();
+    if (entering) {
+      ensureRoute();
+      refreshNasJobs();
+    }
   }
 
   /* ── 全局控件状态 ───────────────────────────────────────────────────── */
@@ -2129,6 +2135,43 @@
 
   /* ── 通用 DOM 小工具（新页面共用） ─────────────────────────────────── */
 
+  const reducedMotion = () => Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  // Mark a container so its CSS enter animation plays once; polling renders
+  // later do not carry the flag and therefore never replay it.
+  const enterTimers = new WeakMap();
+  function playEnter(node, duration = 520) {
+    if (!node) return;
+    clearTimeout(enterTimers.get(node));
+    node.removeAttribute('data-enter');
+    void node.offsetWidth; // restart the animation when navigating quickly
+    node.dataset.enter = 'true';
+    enterTimers.set(node, setTimeout(() => node.removeAttribute('data-enter'), duration));
+  }
+
+  // <dialog>.close() is instant; play a short exit first. Code that checks
+  // dialog.open right after close() still works: open flips once it is done.
+  function animateDialogClose(dialog) {
+    const close = dialog.close.bind(dialog);
+    dialog.close = (value) => {
+      if (!dialog.open || dialog.dataset.closing === 'true') return;
+      if (reducedMotion() && !window.matchMedia('(max-width: 767px)').matches) {
+        close(value);
+        return;
+      }
+      dialog.dataset.closing = 'true';
+      const done = () => {
+        dialog.removeEventListener('animationend', done);
+        clearTimeout(timer);
+        delete dialog.dataset.closing;
+        close(value);
+      };
+      const timer = setTimeout(done, 260);
+      dialog.addEventListener('animationend', done);
+    };
+    dialog.addEventListener('close', () => { delete dialog.dataset.closing; });
+  }
+
   const makeElement = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -2228,8 +2271,21 @@
         items.push({ key, filename: key, installed: false, delayMs: 0, outcome: '' });
       }
     }
+    const powerRaw = entry.power && typeof entry.power === 'object' ? entry.power : {};
+    const power = {
+      state: ['on', 'standby', 'off'].includes(str(powerRaw.state)) ? str(powerRaw.state) : entry.online === true ? 'on' : 'off',
+      name: str(powerRaw.name),
+      firmware: str(powerRaw.firmware),
+      app: str(powerRaw.running_app),
+      paired: powerRaw.paired === true,
+      engine: powerRaw.engine === true,
+      job: powerRaw.job && typeof powerRaw.job === 'object' ? {
+        state: str(powerRaw.job.state), message: str(powerRaw.job.message), error: str(powerRaw.job.error)
+      } : null
+    };
     return {
       ip,
+      power,
       online: entry.online === true,
       elfldr: entry.elfldr === true,
       pldmgr: entry.pldmgr === true,
@@ -2295,6 +2351,9 @@
   }
 
   function assignPs5(next) {
+    for (const host of next.hosts) {
+      if (host.power.job && ['waking', 'signing_in'].includes(host.power.job.state)) watchPs5Power(host.ip);
+    }
     ps5.loaded = true;
     ps5.discovery = next.discovery;
     ps5.hosts = next.hosts;
@@ -2500,7 +2559,9 @@
       ['files', '文件', '打开主机文件', false],
       ['autoload', '自动加载', '配置自动加载', false],
       ['running', '停止进程', '打开运行中的进程', false],
-      ['shutdown', '关机', '关闭主机', true]
+      ['power', '唤醒', '唤醒或让主机待机', false],
+      ['pair', '配对唤醒', '配对遥控游玩以便唤醒', false],
+      ['shutdown', '退出 pldmgr', '退出主机上的 Payload Manager', true]
     ];
     for (const [action, label, ariaSuffix, danger] of specs) {
       const button = makeElement('button', 'button button-secondary button-small');
@@ -2535,8 +2596,24 @@
     const action = button.dataset.ps5Action;
     const busyThis = Boolean(ps5Action && ps5Action.ip === host.ip && ps5Action.kind === action);
     let disabled = !authenticated || ps5Busy || !host.online;
-    let reason = !host.online ? '主机当前离线' : '';
-    if (action === 'select') {
+    let reason = !host.online ? (host.power.state === 'standby' ? '主机待机中，唤醒后可用' : host.power.state === 'on' ? '主机未运行 pldmgr / elfldr' : '主机当前离线') : '';
+    if (action === 'power' || action === 'pair') {
+      const label = button.querySelector('.button-label');
+      const asleep = host.power.state === 'standby';
+      const waking = Boolean(host.power.job && ['waking', 'signing_in'].includes(host.power.job.state));
+      if (action === 'power') {
+        if (label) label.textContent = waking ? '唤醒中…' : asleep ? '唤醒' : '进入待机';
+        button.hidden = !(asleep || host.power.state === 'on');
+        disabled = !authenticated || ps5Busy || waking || !host.power.engine || (asleep && !host.power.paired);
+        reason = !host.power.engine ? '未部署电源控制引擎（ps5upload-engine）'
+          : asleep && !host.power.paired ? '需要先配对遥控游玩才能唤醒' : waking ? '正在唤醒' : '';
+      } else {
+        button.hidden = host.power.paired || !host.power.engine;
+        if (label) label.textContent = '配对唤醒';
+        disabled = !authenticated || ps5Busy || host.power.state !== 'on';
+        reason = host.power.state !== 'on' ? '配对需要主机处于开机状态' : '';
+      }
+    } else if (action === 'select') {
       disabled = false;
     } else if (action === 'attach') {
       const label = button.querySelector('.button-label');
@@ -2576,11 +2653,19 @@
     const ipNode = card.querySelector('[data-field="ip"]');
     if (ipNode) ipNode.textContent = host.ip;
     const meta = card.querySelector('[data-field="meta"]');
-    if (meta) meta.textContent = host.sourceUrl ? `仓库源 ${host.sourceUrl}` : '仓库源地址未知';
+    if (meta) {
+      const parts = [];
+      if (host.power.name) parts.push(host.power.name);
+      if (host.power.firmware) parts.push(`固件 ${host.power.firmware}`);
+      parts.push(host.sourceUrl ? `仓库源 ${host.sourceUrl}` : '仓库源地址未知');
+      meta.textContent = parts.join(' · ');
+    }
 
     const online = card.querySelector('[data-field="online"]');
-    online.textContent = host.online ? '在线' : '离线';
-    online.dataset.tone = host.online ? 'good' : 'neutral';
+    const powerLabel = { on: host.online ? '在线' : '已开机 · 未运行载荷', standby: '待机中', off: '离线' }[host.power.state] || '离线';
+    online.textContent = powerLabel;
+    online.dataset.tone = host.power.state === 'standby' ? 'warning' : host.online ? 'good' : host.power.state === 'on' ? 'info' : 'neutral';
+    online.title = host.power.state === 'standby' ? '主机处于待机（休息模式）：载荷通常仍在内存中，唤醒后即可继续使用。' : '';
     const elfldr = card.querySelector('[data-field="elfldr"]');
     elfldr.textContent = host.elfldr ? 'elfldr 可用' : 'elfldr 不可用';
     elfldr.dataset.tone = host.elfldr ? 'good' : 'neutral';
@@ -2617,10 +2702,11 @@
     error.hidden = !errorText;
 
     const busyNode = card.querySelector('[data-field="busy"]');
-    const cardBusy = Boolean(ps5Action && ps5Action.ip === host.ip);
+    const waking = Boolean(host.power.job && ['waking', 'signing_in'].includes(host.power.job.state));
+    const cardBusy = Boolean(ps5Action && ps5Action.ip === host.ip) || waking;
     busyNode.hidden = !cardBusy;
     const busyLabel = busyNode.querySelector('[data-field="busy-label"]');
-    if (busyLabel) busyLabel.textContent = (ps5Action && ps5Action.label) || '处理中…';
+    if (busyLabel) busyLabel.textContent = waking ? host.power.job.message || '正在唤醒…' : (ps5Action && ps5Action.label) || '处理中…';
     for (const button of $$('[data-ps5-action]', card)) syncPs5HostButton(button, host);
   }
 
@@ -3496,21 +3582,21 @@
     const ip = ps5ShutdownIp;
     const dialog = $('ps5-shutdown-dialog');
     if (!ip || ps5Busy || !authenticated) return;
-    ps5Begin('shutdown', ip, { label: '正在发送关机请求…' });
+    ps5Begin('shutdown', ip, { label: '正在让 pldmgr 退出…' });
     $('ps5-shutdown-error').textContent = '';
     $('ps5-shutdown-error').hidden = true;
     $('ps5-shutdown-cancel').disabled = true;
     $('ps5-shutdown-confirm').disabled = true;
-    buttonBusy('ps5-shutdown-confirm', true, '关机中…');
+    buttonBusy('ps5-shutdown-confirm', true, '退出中…');
     const requestEpoch = epoch;
     let requested = false;
     try {
       const result = await api('/api/ps5/shutdown', { ip });
       if (requestEpoch !== epoch) return;
-      if (result.ok !== true) throw new ApiError('服务未确认关机请求，请刷新后检查。');
+      if (result.ok !== true) throw new ApiError('服务未确认 pldmgr 已退出，请刷新后检查。');
       requested = true;
       dialog.close();
-      toast(`已请求 ${ip} 关机。`, 'success');
+      toast(`已让 ${ip} 上的 pldmgr 退出。`, 'success');
     } catch (error) {
       if (requestEpoch !== epoch) return;
       if (error.status === 401) {
@@ -3521,7 +3607,7 @@
       $('ps5-shutdown-error').textContent = error.message;
       $('ps5-shutdown-error').hidden = false;
     } finally {
-      buttonBusy('ps5-shutdown-confirm', false, '确认关机');
+      buttonBusy('ps5-shutdown-confirm', false, '退出 pldmgr');
       $('ps5-shutdown-cancel').disabled = false;
       ps5End();
     }
@@ -3555,6 +3641,15 @@
         break;
       case 'shutdown':
         openPs5Shutdown(ip);
+        break;
+      case 'power': {
+        const host = ps5HostByIp(ip);
+        if (host && host.power.state === 'standby') wakePs5(ip);
+        else openPs5Standby(ip);
+        break;
+      }
+      case 'pair':
+        openPs5Pair(ip);
         break;
       case 'install':
         installPs5Payload(ip, element.dataset.filename, false);
@@ -3940,6 +4035,7 @@
       if (requestEpoch !== epoch) return;
       files.filter = '';
       $('files-filter').value = '';
+      playEnter($('files-body'));
     } catch (error) {
       if (requestEpoch !== epoch) return;
       if (error.status === 401) {
@@ -4649,14 +4745,13 @@
     files.jobActive = true;
     files.refreshOnJobEnd = true;
     files.drawer = true;
-    $('files-transfers').hidden = false;
     renderFilesTransfers();
     ensureFilesPolling();
     filesTransfersTick();
   }
 
   async function filesTransfersTick() {
-    if (!authenticated || currentSection !== 'files' || filesPollBusy) return;
+    if (!authenticated || filesPollBusy) return;
     if (!files.drawer && !files.jobActive && !files.uploading && !nasJobsActive()) return;
     filesPollBusy = true;
     const requestEpoch = epoch;
@@ -4705,7 +4800,7 @@
   }
 
   function ensureFilesPolling() {
-    const should = authenticated && currentSection === 'files' && (files.drawer || files.jobActive || files.uploading || nasJobsActive());
+    const should = authenticated && (files.drawer || files.jobActive || files.uploading || nasJobsActive());
     if (should && !filesPollTimer) filesPollTimer = setInterval(filesTransfersTick, 1000);
     else if (!should && filesPollTimer) {
       clearInterval(filesPollTimer);
@@ -4862,20 +4957,98 @@
     return item;
   }
 
-  function renderFilesTransfers() {
-    if (!$('files-transfers')) return;
-    const tasks = filesTransferTasks();
-    const count = tasks.filter((task) => XFER_ACTIVE.has(task.state)).length;
-    for (const badge of $$('[data-files-transfers-count]')) {
-      badge.textContent = count ? String(count) : '';
-      badge.hidden = !count;
+  // Finished tasks keep the dock visible only until they have been noticed:
+  // successes fade out after a short while, failures wait for the panel.
+  const xferFinishedAt = new Map();
+  const xferSeen = new Set();
+  const XFER_DONE_LINGER = 12000;
+  let xferLingerTimer = null;
+
+  function xferNeedsAttention(tasks) {
+    const now = Date.now();
+    let pending = false;
+    for (const task of tasks) {
+      if (XFER_ACTIVE.has(task.state)) {
+        xferFinishedAt.delete(task.key);
+        xferSeen.delete(task.key);
+        continue;
+      }
+      if (!xferFinishedAt.has(task.key)) xferFinishedAt.set(task.key, now);
+      if (xferSeen.has(task.key)) continue;
+      const failed = ['fail', 'failed'].includes(task.state);
+      if (failed || now - xferFinishedAt.get(task.key) < XFER_DONE_LINGER) pending = true;
+      else xferSeen.add(task.key);
     }
-    $('files-transfers').hidden = !files.drawer;
+    clearTimeout(xferLingerTimer);
+    if (pending) xferLingerTimer = setTimeout(renderFilesTransfers, 1500);
+    return pending;
+  }
+
+  function renderFilesTransfers() {
+    const dock = $('xfer-dock');
+    if (!dock) return;
+    const tasks = filesTransferTasks();
+    const active = tasks.filter((task) => XFER_ACTIVE.has(task.state));
+    if (files.drawer) for (const task of tasks) if (!XFER_ACTIVE.has(task.state)) xferSeen.add(task.key);
+    const attention = xferNeedsAttention(tasks);
+    for (const badge of $$('[data-files-transfers-count]')) {
+      badge.textContent = active.length ? String(active.length) : '';
+      badge.hidden = !active.length;
+    }
+    // The dock lives outside the pages: visible whenever there is something
+    // to report, or when the user opened it on purpose.
+    dock.hidden = !authenticated || !(files.drawer || active.length || attention);
+    document.body.dataset.dock = dock.hidden ? 'off' : 'on';
+    dock.dataset.open = String(files.drawer);
+    dock.dataset.active = String(active.length > 0);
+    $('xfer-pill').setAttribute('aria-expanded', String(files.drawer));
     for (const button of $$('[data-files-transfers]')) button.setAttribute('aria-expanded', String(files.drawer));
-    if (!files.drawer) return;
+
+    const total = active.reduce((sum, task) => sum + (Number(task.total) || 0), 0);
+    const done = active.reduce((sum, task) => sum + Math.min(Number(task.done) || 0, Number(task.total) || 0), 0);
+    const speed = active.reduce((sum, task) => sum + (Number(task.speed) || 0), 0);
+    const percent = total > 0 ? Math.min(100, (done / total) * 100) : active.length ? 0 : 100;
+    $('xfer-ring-fill').style.strokeDashoffset = String(100 - percent);
+    const failed = tasks.filter((task) => ['fail', 'failed'].includes(task.state)).length;
+    dock.dataset.tone = active.length ? 'active' : failed ? 'error' : 'idle';
+    if (active.length) {
+      $('xfer-pill-title').textContent = `${active.length} 个任务进行中 · ${percent.toFixed(percent < 10 && percent > 0 ? 1 : 0)}%`;
+      const eta = speed > 0 && total > done ? ` · 约 ${formatDuration((total - done) / speed)}` : '';
+      $('xfer-pill-sub').textContent = `${formatRate(speed)}${total ? ` · 剩余 ${formatBytes(total - done)}` : ''}${eta}`;
+    } else {
+      $('xfer-pill-title').textContent = failed ? `${failed} 个任务失败` : '传输已完成';
+      $('xfer-pill-sub').textContent = tasks.length ? `共 ${tasks.length} 项，点开查看` : '暂无任务';
+    }
+    $('xfer-panel-sub').textContent = active.length
+      ? `${active.length} 个进行中 · ${formatRate(speed)}`
+      : tasks.length ? `${tasks.length} 项已结束` : '上传、复制/移动与 NAS 传输';
+
     const list = $('files-transfers-list');
-    if (!tasks.length) list.replaceChildren(makeElement('li', 'xfer-empty', '暂无传输任务。'));
-    else list.replaceChildren(...tasks.map(filesTransferCard));
+    if (!tasks.length) {
+      list.replaceChildren(makeElement('li', 'xfer-empty', '暂无传输任务。开始上传或从 NAS 传到 PS5 后会显示在这里。'));
+    } else {
+      // Reuse cards by task key so the enter animation plays once per task,
+      // not on every one-second refresh.
+      const existing = new Map($$('#files-transfers-list > .xfer').map((node) => [node.dataset.key, node]));
+      const nodes = tasks.map((task) => {
+        const fresh = filesTransferCard(task);
+        fresh.dataset.key = task.key;
+        const old = existing.get(task.key);
+        if (old) {
+          old.replaceChildren(...fresh.childNodes);
+          old.dataset.state = fresh.dataset.state;
+          return old;
+        }
+        fresh.classList.add('xfer-enter');
+        fresh.addEventListener('animationend', () => fresh.classList.remove('xfer-enter'), { once: true });
+        return fresh;
+      });
+      // Move only what changed: re-inserting a node restarts its animation.
+      for (const node of [...list.children]) if (!nodes.includes(node)) node.remove();
+      nodes.forEach((node, index) => {
+        if (list.children[index] !== node) list.insertBefore(node, list.children[index] || null);
+      });
+    }
     $('files-transfers-clear').disabled = !tasks.some((task) => !XFER_ACTIVE.has(task.state));
     const error = $('files-transfers-error');
     error.textContent = files.transfersError || '';
@@ -4915,10 +5088,11 @@
   }
 
   function revealFilesTransfers() {
-    const panel = $('files-transfers');
-    if (!panel || panel.hidden) return;
-    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    panel.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'nearest' });
+    // The floating dock is always in view; opening it is enough.
+    if (!files.drawer) {
+      files.drawer = true;
+      renderFilesTransfers();
+    }
   }
 
   function openFilesOverwrite(names, onChoice) {
@@ -5333,6 +5507,7 @@
       const data = await api(`/api/nas/list?id=${encodeURIComponent(item.id)}&path=${encodeURIComponent(path)}`);
       if (seq !== nas.seq) return;
       nas.path = str(data.path) || path;
+      playEnter($('nas-body'));
       nas.entries = (Array.isArray(data.entries) ? data.entries : []).filter((entry) => entry && entry.name).map((entry) => ({
         name: str(entry.name), path: str(entry.path), dir: entry.dir === true,
         size: Number(entry.size) || 0, mtime: Number(entry.mtime) || null
@@ -5532,7 +5707,6 @@
     try {
       const data = await api('/api/transfers');
       nasJobs = Array.isArray(data.jobs) ? data.jobs.filter((job) => job && typeof job === 'object' && job.id) : [];
-      if (nasJobsActive()) files.drawer = true;
       renderFilesTransfers();
       ensureFilesPolling();
     } catch (error) {
@@ -5716,7 +5890,159 @@
     $('nas-delete').addEventListener('click', deleteNasDialog);
   }
 
+
+  /* ── PS5 电源：唤醒 / 待机 / 配对 ─────────────────────────────────── */
+
+  const ps5PowerPolls = new Map();
+
+  async function wakePs5(ip) {
+    if (!authenticated) return;
+    try {
+      await api('/api/ps5/power/wake', { ip });
+      toast(`正在唤醒 ${ip}，通常需要 20–60 秒。`, 'info');
+      watchPs5Power(ip);
+      refreshPs5();
+    } catch (error) {
+      if (error.status === 401) {
+        showLogin(error.message);
+        return;
+      }
+      toast(error.message, 'error');
+    }
+  }
+
+  function watchPs5Power(ip) {
+    if (ps5PowerPolls.has(ip)) return;
+    const started = Date.now();
+    const tick = async () => {
+      if (!authenticated || Date.now() - started > 180000) {
+        ps5PowerPolls.delete(ip);
+        return;
+      }
+      try {
+        const status = await api(`/api/ps5/power?ip=${encodeURIComponent(ip)}`);
+        const job = status.job || {};
+        const host = ps5HostByIp(ip);
+        if (host) {
+          host.power.state = status.state || host.power.state;
+          host.power.job = status.job ? { state: str(job.state), message: str(job.message), error: str(job.error) } : null;
+          renderPs5Hosts();
+        }
+        if (job.state === 'done' || job.state === 'failed') {
+          ps5PowerPolls.delete(ip);
+          toast(job.state === 'done' ? `${ip}：${job.message || '已唤醒'}` : `${ip} 唤醒失败：${job.error || job.message}`, job.state === 'done' ? 'success' : 'error');
+          setTimeout(() => refreshPs5(), 1500);
+          return;
+        }
+      } catch (error) {
+        if (error.status === 401) {
+          ps5PowerPolls.delete(ip);
+          return;
+        }
+      }
+      ps5PowerPolls.set(ip, setTimeout(tick, 2500));
+    };
+    ps5PowerPolls.set(ip, setTimeout(tick, 1500));
+  }
+
+  function openPs5Standby(ip) {
+    if (!authenticated || ps5Busy) return;
+    ps5StandbyIp = ip;
+    $('ps5-standby-ip').textContent = ip;
+    $('ps5-standby-error').hidden = true;
+    $('ps5-standby-confirm').disabled = false;
+    ps5RememberFocus();
+    $('ps5-standby-dialog').showModal();
+    $('ps5-standby-cancel').focus({ preventScroll: true });
+  }
+
+  async function confirmPs5Standby() {
+    const ip = ps5StandbyIp;
+    if (!ip || !authenticated) return;
+    buttonBusy('ps5-standby-confirm', true, '发送中…');
+    try {
+      await api('/api/ps5/power/standby', { ip });
+      $('ps5-standby-dialog').close();
+      toast(`已让 ${ip} 进入待机。`, 'success');
+      setTimeout(() => refreshPs5(), 6000);
+    } catch (error) {
+      if (error.status === 401) {
+        $('ps5-standby-dialog').close();
+        showLogin(error.message);
+        return;
+      }
+      $('ps5-standby-error').textContent = error.message;
+      $('ps5-standby-error').hidden = false;
+    } finally {
+      buttonBusy('ps5-standby-confirm', false, '进入待机');
+    }
+  }
+
+  function syncPs5PairMode() {
+    const pin = $('ps5-pair-form').querySelector('input[name="ps5-pair-mode"]:checked').value === 'pin';
+    $('ps5-pair-pin-fields').hidden = !pin;
+  }
+
+  function openPs5Pair(ip) {
+    if (!authenticated || ps5Busy) return;
+    ps5PairIp = ip;
+    $('ps5-pair-form').reset();
+    $('ps5-pair-title').textContent = `配对遥控游玩 · ${ip}`;
+    $('ps5-pair-status').textContent = '';
+    $('ps5-pair-error').hidden = true;
+    syncPs5PairMode();
+    ps5RememberFocus();
+    $('ps5-pair-dialog').showModal();
+  }
+
+  async function submitPs5Pair(event) {
+    event.preventDefault();
+    const ip = ps5PairIp;
+    if (!ip || !authenticated) return;
+    const pinMode = $('ps5-pair-form').querySelector('input[name="ps5-pair-mode"]:checked').value === 'pin';
+    const body = { ip };
+    if (pinMode) {
+      body.pin = $('ps5-pair-pin').value.trim();
+      body.account_id = $('ps5-pair-account').value.trim();
+    }
+    $('ps5-pair-error').hidden = true;
+    $('ps5-pair-status').textContent = '正在与主机配对，最多需要一分钟…';
+    buttonBusy('ps5-pair-submit', true, '配对中…');
+    try {
+      const result = await api('/api/ps5/power/pair', body);
+      $('ps5-pair-dialog').close();
+      toast(`已与 ${ip} 完成配对${result.nickname ? `（${result.nickname}）` : ''}，之后可以从待机唤醒。`, 'success');
+      refreshPs5();
+    } catch (error) {
+      if (error.status === 401) {
+        $('ps5-pair-dialog').close();
+        showLogin(error.message);
+        return;
+      }
+      $('ps5-pair-status').textContent = '';
+      $('ps5-pair-error').textContent = error.message;
+      $('ps5-pair-error').hidden = false;
+    } finally {
+      buttonBusy('ps5-pair-submit', false, '开始配对');
+    }
+  }
+
+  function bindPs5PowerEvents() {
+    $('ps5-standby-cancel').addEventListener('click', () => $('ps5-standby-dialog').close());
+    $('ps5-standby-confirm').addEventListener('click', confirmPs5Standby);
+    $('ps5-pair-cancel').addEventListener('click', () => $('ps5-pair-dialog').close());
+    $('ps5-pair-form').addEventListener('submit', submitPs5Pair);
+    for (const radio of $$('input[name="ps5-pair-mode"]')) radio.addEventListener('change', syncPs5PairMode);
+    for (const id of ['ps5-standby-dialog', 'ps5-pair-dialog']) {
+      $(id).addEventListener('close', () => {
+        flushPs5Pending();
+        ps5RestoreFocus();
+      });
+    }
+  }
+
   function bindEvents() {
+    for (const dialog of $$('dialog')) animateDialogClose(dialog);
     $('login-form').addEventListener('submit', submitLogin);
     $('mobile-more-trigger').addEventListener('click', openMobileMore);
     $('mobile-more-close').addEventListener('click', () => closeMobileMore());
@@ -5847,6 +6173,7 @@
       if ($('ps5-add-ip').hasAttribute('aria-invalid')) setPs5AddError('');
     });
     $('view-ps5').addEventListener('click', onPs5ViewClick);
+    bindPs5PowerEvents();
     $('ps5-tabs').addEventListener('keydown', onPs5TabsKeydown);
     $('ps5-autoload-enabled').addEventListener('change', onPs5AutoloadToggle);
     $('ps5-autoload-items').addEventListener('change', onPs5AutoloadFile);
@@ -5886,6 +6213,18 @@
     $('files-mkdir').addEventListener('click', () => openFilesNameDialog('mkdir', null));
     $('files-refresh').addEventListener('click', () => refreshFilesPage({ manual: true }));
     for (const button of $$('[data-files-transfers]')) button.addEventListener('click', () => toggleFilesDrawer());
+    $('xfer-pill').addEventListener('click', () => toggleFilesDrawer());
+    document.addEventListener('pointerdown', (event) => {
+      if (!files.drawer || dialogsOpen()) return;
+      if (event.target.closest('#xfer-dock, [data-files-transfers], #nas-send, #files-upload, dialog')) return;
+      toggleFilesDrawer(false);
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && files.drawer && !dialogsOpen()) {
+        toggleFilesDrawer(false);
+        $('xfer-pill').focus({ preventScroll: true });
+      }
+    });
     $('files-transfers-clear').addEventListener('click', clearFilesTransfers);
     bindNasEvents();
     $('files-transfers-close').addEventListener('click', () => toggleFilesDrawer(false));

@@ -349,14 +349,14 @@
                 <button class="segment" type="button" data-filter="blocked" aria-pressed="false">未放行</button>
                 <button class="segment" type="button" data-filter="allowed" aria-pressed="false">允许</button>
               </div>
-              <label class="filter-select" for="activity-filter">结果
+              <label class="filter-select filter-result" for="activity-filter">结果
                 <select id="activity-filter">
                   <option value="all">全部</option>
                   <option value="blocked">仅未放行</option>
                   <option value="allowed">仅允许</option>
                 </select>
               </label>
-              <label class="filter-select" for="activity-kind">来源
+              <label class="filter-select filter-kind" for="activity-kind">来源
                 <select id="activity-kind">
                   <option value="all">全部来源</option>
                   <option value="flow">网关连接</option>
@@ -675,21 +675,6 @@
             </div>
           </section>
 
-          <section id="files-transfers" class="card files-transfers" aria-labelledby="files-transfers-title" hidden>
-            <header class="card-head">
-              <div>
-                <h2 id="files-transfers-title">传输任务</h2>
-                <p class="card-sub">浏览器上传、PS5 内复制/移动与 NAS 传输都在这里显示实时进度；离开页面不影响服务器上的任务。</p>
-              </div>
-              <div class="files-transfers-actions">
-                <button id="files-transfers-clear" class="button button-secondary button-small" type="button" aria-label="清除已结束的任务">清除已结束</button>
-                <button id="files-transfers-close" class="button button-secondary button-small" type="button" aria-label="收起传输任务">收起</button>
-              </div>
-            </header>
-            <ul id="files-transfers-list" class="xfer-list" aria-live="polite"></ul>
-            <p id="files-transfers-error" class="field-error" role="alert" hidden></p>
-          </section>
-
           <p class="footnote">文件浏览通过后台代理访问主机，不经过互联网；上传会写入当前文件夹。删除、覆盖、复制和移动都需要确认，目标硬盘空间不足时主机可能拒绝操作。</p>
           <input id="files-upload-input" type="file" multiple hidden>
           <div id="files-drop" class="files-drop" hidden aria-hidden="true">
@@ -810,6 +795,33 @@
         </section>
       </main>
     </div>
+
+    <aside id="xfer-dock" class="xfer-dock" data-open="false" hidden aria-label="传输任务">
+      <section id="files-transfers" class="xfer-panel" aria-labelledby="files-transfers-title">
+        <header class="xfer-panel-head">
+          <div>
+            <h2 id="files-transfers-title">传输任务</h2>
+            <p id="xfer-panel-sub" class="xfer-panel-sub">上传、复制/移动与 NAS 传输</p>
+          </div>
+          <div class="xfer-panel-actions">
+            <button id="files-transfers-clear" class="button button-secondary button-small" type="button" aria-label="清除已结束的任务">清除已结束</button>
+            <button id="files-transfers-close" class="button button-secondary button-icon button-small" type="button" aria-label="收起传输任务"><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-x"></use></svg></button>
+          </div>
+        </header>
+        <ul id="files-transfers-list" class="xfer-list" aria-live="polite"></ul>
+        <p id="files-transfers-error" class="field-error" role="alert" hidden></p>
+      </section>
+      <button id="xfer-pill" class="xfer-pill" type="button" aria-expanded="false" aria-controls="files-transfers">
+        <svg class="xfer-ring" viewBox="0 0 36 36" aria-hidden="true">
+          <circle class="xfer-ring-track" cx="18" cy="18" r="15"></circle>
+          <circle id="xfer-ring-fill" class="xfer-ring-fill" cx="18" cy="18" r="15" pathLength="100"></circle>
+        </svg>
+        <span class="xfer-pill-text">
+          <strong id="xfer-pill-title">传输任务</strong>
+          <span id="xfer-pill-sub">暂无任务</span>
+        </span>
+      </button>
+    </aside>
 
     <nav class="tabbar" aria-label="底部导航">
       <a class="tab-item" href="#/overview" data-section="overview" aria-label="概览">
@@ -1035,17 +1047,67 @@
   <dialog id="ps5-shutdown-dialog" class="dialog" aria-labelledby="ps5-shutdown-title" aria-describedby="ps5-shutdown-description">
     <div class="sheet-handle" aria-hidden="true"></div>
     <div class="dialog-content">
-      <h2 id="ps5-shutdown-title">关闭 PS5 主机？</h2>
-      <p id="ps5-shutdown-description">将请求 <span id="ps5-shutdown-ip" class="mono">—</span> 关机。关机后 pldmgr 会停止，此页面将无法再控制该主机，除非重新运行载荷。</p>
+      <h2 id="ps5-shutdown-title">退出 Payload Manager？</h2>
+      <p id="ps5-shutdown-description">将让 <span id="ps5-shutdown-ip" class="mono">—</span> 上的 pldmgr 自行退出（主机本身不会关机）。退出后此页面无法再安装插件或调整自动加载，直到在主机上重新运行 pldmgr.elf。</p>
       <p id="ps5-shutdown-error" class="field-error" role="alert" hidden></p>
     </div>
     <div class="dialog-actions">
-      <button id="ps5-shutdown-cancel" class="button button-secondary" type="button" aria-label="取消关机">取消</button>
-      <button id="ps5-shutdown-confirm" class="button button-danger" type="button" aria-label="确认关闭 PS5 主机">
+      <button id="ps5-shutdown-cancel" class="button button-secondary" type="button" aria-label="取消退出 pldmgr">取消</button>
+      <button id="ps5-shutdown-confirm" class="button button-danger" type="button" aria-label="确认退出主机上的 pldmgr">
         <span class="spinner" aria-hidden="true" hidden></span>
-        <span class="button-label">确认关机</span>
+        <span class="button-label">退出 pldmgr</span>
       </button>
     </div>
+  </dialog>
+
+  <dialog id="ps5-standby-dialog" class="dialog" aria-labelledby="ps5-standby-title" aria-describedby="ps5-standby-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="ps5-standby-title">让 PS5 进入待机？</h2>
+      <p id="ps5-standby-description">主机 <span id="ps5-standby-ip" class="mono">—</span> 将进入待机（休息模式）。已运行的插件通常会留在内存中，唤醒后可继续使用；正在进行的 FTP / NAS 传输会中断。</p>
+      <p id="ps5-standby-error" class="field-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="ps5-standby-cancel" class="button button-secondary" type="button">取消</button>
+      <button id="ps5-standby-confirm" class="button button-primary" type="button">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">进入待机</span>
+      </button>
+    </div>
+  </dialog>
+
+  <dialog id="ps5-pair-dialog" class="dialog dialog-wide" aria-labelledby="ps5-pair-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <form id="ps5-pair-form" class="dialog-form" novalidate>
+      <div class="dialog-content">
+        <h2 id="ps5-pair-title">配对遥控游玩</h2>
+        <p class="dialog-subtitle">配对后才能从待机唤醒并自动登录用户。只需配对一次；主机重置、删除或新建用户、IP 变化后需要重新配对。配对密钥由电源控制引擎加密保存，不会传到页面。</p>
+        <fieldset class="ps5-pair-mode">
+          <legend class="visually-hidden">配对方式</legend>
+          <label class="nas-check"><input type="radio" name="ps5-pair-mode" value="helper" checked> <span>自动（主机已唤醒并运行 ps5upload 插件，无需 PIN）</span></label>
+          <label class="nas-check"><input type="radio" name="ps5-pair-mode" value="pin"> <span>使用 PIN（设置 › 系统 › 遥控游玩 › 链接装置）</span></label>
+        </fieldset>
+        <div id="ps5-pair-pin-fields" class="field-grid" hidden>
+          <div class="field-group">
+            <label for="ps5-pair-pin">8 位 PIN</label>
+            <input id="ps5-pair-pin" class="mono" type="text" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="12345678">
+          </div>
+          <div class="field-group">
+            <label for="ps5-pair-account">PSN 账号 ID（base64）</label>
+            <input id="ps5-pair-account" class="mono" type="text" autocomplete="off" spellcheck="false" placeholder="例如 AbCdEfGhIjk=">
+          </div>
+        </div>
+        <p id="ps5-pair-status" class="upload-status" role="status"></p>
+        <p id="ps5-pair-error" class="field-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions">
+        <button id="ps5-pair-cancel" class="button button-secondary" type="button">取消</button>
+        <button id="ps5-pair-submit" class="button button-primary" type="submit">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">开始配对</span>
+        </button>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="ps5-kill-dialog" class="dialog" aria-labelledby="ps5-kill-title" aria-describedby="ps5-kill-description">

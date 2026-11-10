@@ -50,6 +50,7 @@ class Layout:
     no_services: bool = False
     no_payloads: bool = False
     no_manuals_host: bool = False
+    power_engine: bool = False
 
     # derived
     opt: Path = field(init=False)
@@ -329,6 +330,8 @@ def fetch_components(layout, runner):
         runner.note('跳过用户手册宿主（--no-manuals-host）')
     else:
         for item in manifest['components']:
+            if item.get('optional'):
+                continue          # installed by its own step when asked for
             target = layout.opt / item['filename']
             if target.exists() and sha256(target) == item['sha256'] and not layout.dry_run:
                 runner.note(f'{item["filename"]} 已是最新')
@@ -349,6 +352,37 @@ def fetch_components(layout, runner):
         runner.write(catalog, json.dumps({'name': 'ps5-jb-server', 'payloads': []},
                                          ensure_ascii=False, indent=1) + '\n', 0o644)
         runner.note('插件仓库为空（稍后可运行 scripts/fetch_payloads.py 填充）')
+
+
+def install_power_engine(layout, runner):
+    """Optional: the PS5Upload engine for wake-and-sign-in and standby."""
+    if not layout.power_engine:
+        return
+    print('\n[+] 电源控制引擎（PS5Upload，GPL-3.0）')
+    import platform
+    item = next(item for item in json.loads((REPO / 'components.json').read_text())['components']
+                if item['id'] == 'ps5upload-engine')
+    if platform.machine() not in ('x86_64', 'AMD64') and not layout.dry_run:
+        runner.note(f'当前架构 {platform.machine()} 没有对应的引擎包，已跳过')
+        return
+    engine_dir = layout.opt.parent / 'ps5upload-engine'
+    target = engine_dir / 'ps5upload-engine'
+    if layout.dry_run:
+        print(f'  + download {item["url"]} -> {target}')
+    elif not (target.exists() and sha256(target) == item['sha256']):
+        download(item['url'], target, item['sha256'], runner)
+        os.chmod(target, 0o755)
+    guard = (REPO / 'systemd' / 'ps5upload-engine-guard.nft').read_text()
+    runner.write(layout.etc / 'ps5upload-engine-guard.nft', guard, 0o644)
+    if layout.no_services:
+        return
+    unit = (REPO / 'systemd' / 'ps5upload-engine.service').read_text()
+    unit = unit.replace('/etc/ps5-jb-server/', str(layout.etc) + '/')
+    unit = unit.replace('/opt/ps5upload-engine/', str(engine_dir) + '/')
+    runner.write(layout.systemd_dir / 'ps5upload-engine.service', unit, 0o644)
+    runner.run(['systemctl', 'daemon-reload'], check=False)
+    runner.run(['systemctl', 'enable', '--now', 'ps5upload-engine.service'], check=False)
+    runner.note('引擎只接受本机调用（127.0.0.1:19113），并由 nft 表 inet ps5upload_guard 拦截外部连接')
 
 
 def sha256(path):
@@ -490,7 +524,7 @@ def cmd_install(layout):
     runner = Runner(layout)
     preflight(layout, runner)
     steps = [install_files, write_config, make_certificates, make_credentials, make_nas_key,
-             fetch_components, write_firewall, install_units]
+             fetch_components, write_firewall, install_units, install_power_engine]
     for step in steps:
         step(layout, runner)
     health(layout, runner)
@@ -585,6 +619,7 @@ def build_layout(args):
                'admin': args.admin_port, 'repo': args.repo_port},
         dry_run=args.dry_run, no_firewall=args.no_firewall, no_services=args.no_services,
         no_payloads=args.no_payloads, no_manuals_host=args.no_manuals_host,
+        power_engine=getattr(args, 'with_power_engine', False),
     )
     return layout
 
@@ -607,6 +642,8 @@ def main(argv=None):
     parser.add_argument('--no-services', action='store_true')
     parser.add_argument('--no-payloads', action='store_true')
     parser.add_argument('--no-manuals-host', action='store_true')
+    parser.add_argument('--with-power-engine', action='store_true',
+                        help='同时安装 PS5Upload 引擎，用于从待机唤醒并登录、进入待机（GPL-3.0，约 93MB）')
     parser.add_argument('--purge', action='store_true')
     args = parser.parse_args(argv)
 

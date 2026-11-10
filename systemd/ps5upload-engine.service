@@ -1,0 +1,35 @@
+[Unit]
+Description=PS5Upload engine (Remote Play wake / standby for ps5-jb-server)
+Documentation=https://github.com/phantomptr/ps5upload
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Third-party program (GPL-3.0), run as its own process and called only by
+# ps5-jb-server. It binds 0.0.0.0 and refuses non-loopback callers itself;
+# the nft guard below additionally drops any non-loopback connection.
+ExecStartPre=+/usr/sbin/nft -f /etc/ps5-jb-server/ps5upload-engine-guard.nft
+ExecStart=/opt/ps5upload-engine/ps5upload-engine
+Environment=PS5UPLOAD_ENGINE_PORT=19113
+Environment=PS5UPLOAD_DATA_DIR=/var/lib/ps5upload-engine
+Environment=HOME=/var/lib/ps5upload-engine
+DynamicUser=yes
+StateDirectory=ps5upload-engine
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=600M
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

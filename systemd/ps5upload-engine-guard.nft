@@ -1,0 +1,11 @@
+# Keep the PS5Upload engine reachable from this host only. The engine binds
+# 0.0.0.0 and refuses non-loopback callers itself; this drops them before
+# they reach it. Loaded by ps5upload-engine.service (ExecStartPre).
+table inet ps5upload_guard
+delete table inet ps5upload_guard
+table inet ps5upload_guard {
+  chain input {
+    type filter hook input priority filter; policy accept;
+    tcp dport 19113 iifname != "lo" counter drop
+  }
+}

@@ -218,5 +218,44 @@ class DnsActivityTests(unittest.TestCase):
             self.assertTrue(observer.snapshot()['events'][0]['allowed_now'])
 
 
+
+class DdpTests(unittest.TestCase):
+    def test_parse_status_replies(self):
+        from ps5 import parse_ddp
+        on = parse_ddp('HTTP/1.1 200 Ok\nhost-id:AABBCCDDEEFF\nhost-type:PS5\nhost-name:PS5-001\n'
+                       'device-discovery-protocol-version:00030010\nsystem-version:12200005\n')
+        self.assertEqual((on['state'], on['name'], on['firmware']), ('on', 'PS5-001', '12.20'))
+        rest = parse_ddp('HTTP/1.1 620 Server Standby\r\nhost-type:PS5\r\nsystem-version:09600004\r\n')
+        self.assertEqual((rest['state'], rest['firmware']), ('standby', '9.60'))
+        self.assertIsNone(parse_ddp('garbage'))
+
+
+
+class PowerTests(unittest.TestCase):
+    def test_paired_hosts_and_friendly_errors(self):
+        from power import PowerManager, friendly
+
+        class Engine:
+            def version(self):
+                return {'version': '12.4.2'}
+
+            def request(self, method, path, body=None, timeout=None):
+                return {'consoles': [{'addr': '192.0.2.5:9120', 'has_wake_credential': True},
+                                     {'addr': '192.0.2.6', 'has_wake_credential': False}],
+                        'paired_hosts_not_listed': ['192.0.2.7']}
+        manager = PowerManager(Engine())
+        self.assertEqual(manager.paired_hosts(), {'192.0.2.5', '192.0.2.7'})
+        self.assertIn('遥控游玩', friendly('rp_off: Remote Play is disabled'))
+        self.assertEqual(friendly(''), '操作失败')
+
+    def test_pair_validates_pin(self):
+        from power import PowerManager
+        manager = PowerManager(object())
+        with self.assertRaises(ValueError):
+            manager.pair('192.0.2.5', pin='1234', account_id='x')
+        with self.assertRaises(ValueError):
+            manager.pair('192.0.2.5', pin='12345678')
+
+
 if __name__ == '__main__':
     unittest.main()

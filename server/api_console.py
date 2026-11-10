@@ -12,6 +12,7 @@ import urllib.parse
 from files import FileServiceError, FileProxy
 from nas import NasError, NasStore, SecretBox, TransferManager, check_connection, client_for, \
     clean_path, smb_available
+from power import EngineClient, PowerError, PowerManager
 from ps5 import ConsoleError, HostManager
 
 MAX_JSON = 32 * 1024
@@ -32,6 +33,8 @@ class ConsoleAPI:
         self.nas = NasStore(settings.data_dir / 'nas.json',
                             getattr(settings, 'secret_key_path', None))
         self.transfers = TransferManager(self.nas, self.files)
+        self.power = PowerManager(EngineClient(getattr(settings, 'engine_url', 'http://127.0.0.1:19113')),
+                                  self.ps5.validate_ip)
         if autoscan and self.enabled:
             # The discovery cache is in memory; without this the host list is
             # empty after every restart until someone presses "rescan".
@@ -86,6 +89,8 @@ class ConsoleAPI:
                                        **({'code': 'exists'} if status == 409 else {})})
         elif isinstance(exc, ConsoleError):
             handler.send_body(502, {'error': str(exc)})
+        elif isinstance(exc, PowerError):
+            handler.send_body(502, {'error': str(exc)})
         elif isinstance(exc, NasError):
             # Never 401 here: the page treats 401 as "admin session expired".
             handler.send_body(404 if exc.status == 404 else 502, {'error': str(exc)})
@@ -115,7 +120,10 @@ class ConsoleAPI:
                 if not self.enabled:
                     handler.send_body(200, {'hosts': [], 'discovery': {'enabled': False}})
                     return True
-                handler.send_body(200, self.ps5.overview())
+                handler.send_body(200, self._with_power(self.ps5.overview()))
+                return True
+            if path == '/api/ps5/power':
+                handler.send_body(200, self.power.status(self._arg(handler, 'ip')))
                 return True
             if path == '/api/files/info' and not self.file_manager:
                 handler.send_body(200, {'configured': False, 'enabled': False, 'hosts': [],
@@ -231,6 +239,13 @@ class ConsoleAPI:
                     body.get('ip'), bool(body.get('enabled')),
                     items=body.get('items'), start_delay=body.get('start_delay'),
                     lead_ms=body.get('lead_ms') or 0, files=body.get('files')))
+            elif path == '/api/ps5/power/pair':
+                handler.send_body(200, self.power.pair(body.get('ip'), body.get('pin'),
+                                                       body.get('account_id')))
+            elif path == '/api/ps5/power/wake':
+                handler.send_body(200, {'ok': True, 'job': self.power.wake(body.get('ip'))})
+            elif path == '/api/ps5/power/standby':
+                handler.send_body(200, self.power.standby(body.get('ip')))
             elif path == '/api/ps5/shutdown':
                 handler.send_body(200, self.ps5.shutdown(body.get('ip')))
             elif path == '/api/files/configure':
@@ -276,6 +291,20 @@ class ConsoleAPI:
         except Exception as exc:
             self._fail(handler, exc)
             return True
+
+    def _with_power(self, overview):
+        """Add pairing / wake progress to each host; cheap local calls only."""
+        engine = self.power.engine_info()
+        paired = self.power.paired_hosts() if engine['available'] else set()
+        with self.power.lock:
+            jobs = {ip: dict(job) for ip, job in self.power.jobs.items()}
+        for host in overview.get('hosts', []):
+            power = host.setdefault('power', {})
+            power['paired'] = host['ip'] in paired
+            power['engine'] = engine['available']
+            power['job'] = jobs.get(host['ip'])
+        overview['power_engine'] = engine
+        return overview
 
     def _ok(self, handler, result):
         handler.send_body(200, {'ok': True, 'result': result})

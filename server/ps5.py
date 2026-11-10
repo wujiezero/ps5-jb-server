@@ -21,6 +21,73 @@ PLDMGR_PORT = 8084
 LOADER_PORT = 9020
 
 
+DDP_PORT = 9302
+DDP_VERSION = '00030010'
+
+
+def parse_ddp(text):
+    """Parse a Device Discovery Protocol reply (HTTP-like status + header lines)."""
+    lines = [line.strip() for line in str(text).replace('\r', '').split('\n') if line.strip()]
+    if not lines or not lines[0].startswith('HTTP/'):
+        return None
+    parts = lines[0].split(' ', 2)
+    try:
+        code = int(parts[1])
+    except (IndexError, ValueError):
+        return None
+    headers = {}
+    for line in lines[1:]:
+        key, sep, value = line.partition(':')
+        if sep:
+            headers[key.strip().lower()] = value.strip()
+    version = headers.get('system-version', '')
+    firmware = ''
+    if len(version) >= 4 and version.isdigit():
+        firmware = f'{int(version[:2])}.{version[2:4]}'
+    state = {200: 'on', 620: 'standby'}.get(code, 'unknown')
+    return {'code': code, 'state': state, 'host_type': headers.get('host-type', ''),
+            'name': headers.get('host-name', ''), 'host_id': headers.get('host-id', ''),
+            'firmware': firmware, 'running_app': headers.get('running-app-name', '')}
+
+
+def ddp_search(targets, timeout=1.0):
+    """Ask PlayStations for their power state over DDP (UDP 9302).
+
+    Works without any payload and while the console is in rest mode, which is
+    exactly when every TCP service is gone. Returns {ip: parsed reply}.
+    """
+    message = f'SRCH * HTTP/1.1\ndevice-discovery-protocol-version:{DDP_VERSION}\n'.encode()
+    replies = {}
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return replies
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind(('0.0.0.0', 0))
+        for target in targets:
+            try:
+                sock.sendto(message, (target, DDP_PORT))
+            except OSError:
+                continue
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            sock.settimeout(remaining)
+            try:
+                data, (address, _) = sock.recvfrom(4096)
+            except (socket.timeout, OSError):
+                break
+            parsed = parse_ddp(data.decode('utf-8', 'replace'))
+            if parsed and parsed['host_type'].upper().startswith('PS'):
+                replies[address] = parsed
+    finally:
+        sock.close()
+    return replies
+
+
 def _tcp_open(ip, port, timeout):
     try:
         with socket.create_connection((ip, port), timeout):
@@ -83,6 +150,11 @@ class Discovery:
         def probe(ip):
             return ip, {name for name, port in self.ports if _tcp_open(ip, port, self.timeout)}
 
+        # DDP first: a broadcast finds consoles in rest mode or without payloads.
+        power = ddp_search([str(self.subnet.broadcast_address)] + addresses[:32], timeout=1.2)
+        power = {ip: info for ip, info in power.items()
+                 if ipaddress.IPv4Address(ip) in self.subnet}
+
         hits = {}
         # Each worker probes all ports of one address: far fewer threads than
         # addresses x ports, which matters in small containers.
@@ -97,8 +169,10 @@ class Discovery:
         else:
             hits = {ip: ports for ip, ports in (probe(address) for address in addresses) if ports}
 
+        for ip in power:
+            hits.setdefault(ip, set())
         found = [{'ip': ip, 'elfldr': 'elfldr' in ports, 'pldmgr': 'pldmgr' in ports,
-                  'loader': 'loader' in ports}
+                  'loader': 'loader' in ports, 'power': power.get(ip)}
                  for ip, ports in sorted(hits.items(), key=lambda item: ipaddress.IPv4Address(item[0]))]
         result = {'hosts': found, 'last_scan': _now(), 'scanned': len(addresses),
                   'duration_ms': int((time.monotonic() - started) * 1000)}
@@ -451,6 +525,7 @@ class HostManager:
             entry['pldmgr'] = _tcp_open(host['ip'], self.pldmgr_port, 0.6)
             entry['elfldr'] = _tcp_open(host['ip'], self.elf_port, 0.6)
             entry['online'] = entry['pldmgr'] or entry['elfldr']
+            entry['power'] = self.power(host['ip'], entry['online'])
             if entry['pldmgr']:
                 try:
                     self._populate(entry)
@@ -527,12 +602,22 @@ class HostManager:
                  'autoload': {'enabled': False, 'list': [], 'status': {}},
                  'last_error': None}
         entry['online'] = entry['pldmgr'] or entry['elfldr']
+        entry['power'] = self.power(ip, entry['online'])
         if entry['pldmgr']:
             try:
                 self._populate(entry)
             except ConsoleError as exc:
                 entry['last_error'] = str(exc)[:200]
         return entry
+
+    def power(self, ip, payload_online=False):
+        """on / standby / off, plus name and firmware when the console answers DDP."""
+        reply = ddp_search([ip], timeout=0.8).get(ip)
+        if reply:
+            return {**reply, 'payload': bool(payload_online)}
+        state = 'on' if payload_online else 'off'
+        return {'code': 0, 'state': state, 'name': '', 'host_id': '', 'firmware': '',
+                'host_type': '', 'running_app': '', 'payload': bool(payload_online)}
 
     def install(self, ip, filename, run=False):
         ip = self.validate_ip(ip)

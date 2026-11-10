@@ -39,6 +39,7 @@ class Settings:
     file_port: int = 80
     ftp_port: int = 2120
     space_port: int = 8888
+    engine_url: str = 'http://127.0.0.1:19113'
     ps5_control: bool = True
     file_manager: bool = True
     max_upload: int = 64 << 20          # plugin repository uploads (held in memory)
@@ -98,6 +99,7 @@ class Settings:
             file_port=int(pick('ps5', 'file_port', 'PS5JB_FILE_PORT', 80)),
             ftp_port=int(pick('ps5', 'ftp_port', 'PS5JB_FTP_PORT', 2120)),
             space_port=int(pick('ps5', 'space_port', 'PS5JB_SPACE_PORT', 8888)),
+            engine_url=str(pick('ps5', 'engine_url', 'PS5JB_ENGINE_URL', 'http://127.0.0.1:19113')),
             ps5_control=flag('ps5', 'control', 'PS5JB_PS5_CONTROL', True),
             file_manager=flag('ps5', 'file_manager', 'PS5JB_FILE_MANAGER', True),
             max_upload=int(pick('limits', 'max_upload', 'PS5JB_MAX_UPLOAD', 64 << 20)),

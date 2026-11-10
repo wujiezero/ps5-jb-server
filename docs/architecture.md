@@ -55,6 +55,22 @@
   按插件顺序给出上次运行结果（s/f/k），仅在其 `list` 与当前配置一致时显示。
 - “运行中”只统计与已装插件同名的进程；`/processes_list` 里的其它系统进程单独计数。
 
+## 电源（唤醒 / 待机）
+
+- 状态：DDP（UDP 9302）`SRCH * HTTP/1.1` + `device-discovery-protocol-version:00030010`，回复首行
+  `HTTP/1.1 200 Ok`（开机）或 `620 Server Standby`（待机）；无回复视为关机或未开启遥控游玩。
+  扫描时对子网广播，`host-name` / `system-version` 用于显示主机名与固件。
+- 唤醒必须是 wake-login：DDP WAKEUP 后主机处于“等待遥控游玩客户端”状态，5 分钟没有会话就以
+  `RemotePlayConnectTimeout` 退回待机。会话与登录由 PS5Upload 引擎实现（独立进程，GPL-3.0），
+  本服务 `server/power.py` 只在 127.0.0.1 调用它的 `/api/ps5/power/{pair,wake-login,control}`，
+  唤醒在后台线程执行，期间用 DDP 报告“正在启动 / 正在登录”，页面轮询 `/api/ps5/power`。
+- 进入待机：引擎经 PS5 上 ps5upload 插件（AVA1 9120）调用 `sceSystemStateMgrEnterStandby`。
+- 配对：主机开机且插件在跑时由插件提供 PSN 账号并完成 PIN 握手（免 PIN）；否则用链接装置 PIN + 账号 ID。
+  密钥由引擎封存在 `/var/lib/private/ps5upload-engine`，本服务只读取“哪些主机已配对”。
+- 隔离：引擎绑定 0.0.0.0 并自行拒绝非回环请求；`ps5upload-engine.service` 以 DynamicUser 运行，
+  启动前加载 nft 表 `inet ps5upload_guard` 丢弃非 `lo` 的 19113 连接。
+- pldmgr 的 `/shutdown` 只退出 pldmgr 自身，不是关机。
+
 ## 文件代理
 
 浏览器受 CSP `default-src 'self'` 限制不能直连 PS5，文件接口也不发 CORS 头，因此走 `/api/files/*` 代理：

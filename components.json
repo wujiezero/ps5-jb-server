@@ -9,6 +9,16 @@
       "url": "https://github.com/itsPLK/ps5-webkit-autoloader/releases/download/v0.7.1/webkit-autoloader-host_v0.7.1.py",
       "sha256": "960969a6fb839e4dbda17fbb62a52606e101fd408b6566b6cc053e80d7e152e1",
       "license": "GPL-3.0"
+    },
+    {
+      "id": "ps5upload-engine",
+      "name": "PS5Upload 引擎（Remote Play 唤醒 / 待机，GPL-3.0，可选：--with-power-engine）",
+      "filename": "ps5upload-engine",
+      "url": "https://github.com/phantomptr/ps5upload/releases/download/v12.4.2/ps5upload-engine-12.4.2-linux-x64",
+      "sha256": "e69ddbc735de4128c29984bdab66b29fb0e40b1cb097066ff7ffe38e5b5e19a7",
+      "license": "GPL-3.0",
+      "optional": true,
+      "arch": "x86_64"
     }
   ]
 }

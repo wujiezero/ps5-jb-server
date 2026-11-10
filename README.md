@@ -22,7 +22,7 @@
 | 访问策略 | 域名白名单 + IPv4/CIDR 白名单 + 上游 DNS；默认拒绝，保存即生效，可回退上一版 |
 | 网络活动 | 记录网关连接、DNS 查询与本机服务事件；按结果与来源筛选、命名、分类、多选一键放行 |
 | 插件仓库 | 只读 HTTP 仓库；管理页可上传、替换、编辑、删除，一键复制 Payload Manager 源地址 |
-| PS5 主机 | 发现局域网 PS5（pldmgr 8084 / elfldr 9021），接入仓库、安装并运行、停止进程、关机；自动加载可编辑顺序、每个插件加载后的等待时间与启动倒计时 |
+| PS5 主机 | 发现局域网 PS5（pldmgr 8084 / elfldr 9021，以及 DDP 广播，待机或未运行载荷也能发现），显示开机/待机/离线、主机名与固件；配对后可从待机唤醒并登录、一键进入待机（可选组件）；接入仓库、安装并运行、停止进程、退出 pldmgr；自动加载可编辑顺序、每个插件加载后的等待时间与启动倒计时 |
 | PS5 文件 | 优先使用 tom-ps5-usbnet 的 `/fs/*`，不可用时自动改走 PS5 上的 FTP（如 zftpd）；浏览卷与容量、上传、下载、整目录打包、新建、重命名、复制/移动、删除 |
 | NAS 存储 | 添加 SMB / WebDAV / FTP 的 NAS，浏览后把文件或文件夹直接传到 PS5 指定目录；服务器流式中转，可排队、取消、跳过或覆盖同名文件；账号加密保存 |
 | 传输任务 | 上传、复制/移动、NAS 传输统一显示进度条、百分比、已传/剩余大小、实时速度、已用时间与预计剩余 |
@@ -58,6 +58,7 @@
 - 主机与 PS5 在同一 IPv4 局域网。
 - 软件包：`python3`、`python3-dnspython`、`python3-cryptography`、`nftables`、`conntrack`、`openssl`；
   使用 SMB 类型的 NAS 时另需 `python3-smbc`（可选，WebDAV / FTP 不需要）。
+- 唤醒 / 待机（可选）：x86_64 主机上用 `--with-power-engine` 安装 PS5Upload 引擎，PS5 端运行 ps5upload 插件。
   `install.sh` 会提示缺失项，不会静默安装。
 - PS5 端需要能触发一次内核越狱（WebKit/BD-J 等），本服务负责“用户手册入口 + 策略 + 仓库 + 遥控 + 文件”。
 
@@ -82,6 +83,7 @@ sudo ./install.sh --dry-run           # 只打印将要做的每一步，不改�
 sudo ./install.sh --host-ip 192.168.1.10 --subnet 192.168.1.0/24
 sudo ./install.sh --no-firewall       # 只用 DNS + 管理页，不做网关策略
 sudo ./install.sh upgrade             # 升级程序，保留配置、密码、密钥与数据
+sudo ./install.sh --with-power-engine # 同时安装唤醒/待机所需的 PS5Upload 引擎（可选）
 sudo ./install.sh doctor              # 体检：目录、配置、端口、服务状态
 sudo ./install.sh reset-password      # 重设管理密码（旧会话立即失效）
 sudo ./install.sh uninstall [--purge] # 停服务并卸载；--purge 一并删除数据
@@ -98,6 +100,21 @@ sudo ./install.sh uninstall [--purge] # 停服务并卸载；--purge 一并删�
 4. 想用文件管理：在 PS5 上运行一个 FTP 插件（如 zftpd，端口 2120）即可；同时运行 web-file-mgr（8888）
    时可显示各存储的容量。也支持 `tom-ps5-usbnet.elf` 的 `/fs/*` 接口，但它本质是 USB 网卡驱动，
    只在 USB 网卡接了网线时运行，且文件服务在 USB 网卡自己的地址上。
+
+## 唤醒与待机（可选）
+
+PS5 的待机即休息模式（黄灯）：插件留在内存里，唤醒后不必重新越狱。本服务用 DDP 判断状态
+（不需要任何组件），唤醒与待机则交给 [PS5Upload](https://github.com/phantomptr/ps5upload) 引擎完成：
+
+1. 安装引擎：`sudo ./install.sh --with-power-engine`（从固定版本下载并校验 SHA-256，装为
+   `ps5upload-engine` 服务，只监听本机 19113，外部连接由 nft 表 `inet ps5upload_guard` 拦截）。
+2. PS5 上开启「设置 › 系统 › 遥控游玩 › 启用遥控游玩」，在管理页插件库安装并运行 ps5upload 插件。
+3. 主机卡片点「配对唤醒」：主机开机、插件在跑时无需 PIN；否则用「链接装置」的 8 位 PIN 加 PSN 账号 ID。
+4. 之后主机待机时卡片显示「唤醒」：唤醒后自动建立遥控游玩会话并登录用户（只发 DDP 唤醒的主机
+   5 分钟后会因 `RemotePlayConnectTimeout` 退回待机）；开机时显示「进入待机」。
+
+配对密钥由引擎加密保存在它自己的数据目录（`/var/lib/private/ps5upload-engine`），本服务和页面都不保存、
+不转发。主机恢复/重置、增删用户、IP 变化后需要重新配对。PS5 不响应 WoL 魔术包，请勿尝试。
 
 ## 管理页面
 
@@ -129,6 +146,7 @@ sudo ./install.sh uninstall [--purge] # 停服务并卸载；--purge 一并删�
 | `[limits]` | `max_file_upload` | PS5 文件上传上限（流式转发不落盘），默认 0 = 不限制 |
 | `[paths]` | `data` `repo` `static` `certs` `credentials` `rulesets` | 全部可改 |
 | `[paths]` | `secret_key` | NAS 账号加密密钥，默认与配置文件同目录的 `nas.key` |
+| `[ps5]` | `engine_url` | 唤醒/待机所用 PS5Upload 引擎地址，默认 `http://127.0.0.1:19113` |
 
 修改后 `systemctl restart ps5-jb-server` 生效。
 
@@ -143,6 +161,8 @@ sudo ./install.sh uninstall [--purge] # 停服务并卸载；--purge 一并删�
   也可用 `--no-manuals-host` 跳过。
 - 域名分类规则集：由 [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)（MIT）
   编译而来，构建脚本见 `scripts/build_rulesets.py`。
+- 唤醒 / 待机（可选）：[PS5Upload](https://github.com/phantomptr/ps5upload) 引擎 v12.4.2（**GPL-3.0**），
+  作为独立进程运行、由本服务通过本机 HTTP 调用；安装器按 `components.json` 下载并校验 SHA-256，不随仓库分发。
 - 自动加载格式与 [itsPLK/ps5-payload-manager](https://github.com/itsPLK/ps5-payload-manager) 的
   `AUTOLOAD_LIST`（`local/<槽位>`、`!<毫秒>`）保持一致。
 
@@ -178,7 +198,10 @@ dig @<本机> manuals.playstation.net  # 应返回本机地址
 - **策略不生效／PS5 完全连不上网**：确认 PS5 默认网关是本机地址；`nft list table inet ps5guard` 有规则；
   日志里是否有“网关初始化失败”（失败时服务会关闭转发并保留管理页用于排查）。
 - **网络活动为空**：只改 DNS 不会产生连接记录，必须同时把网关指向本机。
-- **PS5 主机页扫不到**：确认 PS5 已越狱且运行了 `pldmgr.elf` 或 `elfldr`，并在同一网段。
+- **PS5 主机页扫不到**：确认 PS5 已越狱且运行了 `pldmgr.elf` 或 `elfldr`，并在同一网段；
+  开启遥控游玩后，待机中的主机也能被 DDP 发现。
+- **唤醒后几分钟又睡回去**：说明只做了 DDP 唤醒、没有登录；确认已配对且 `ps5upload-engine` 服务在运行。
+- **无法进入待机**：需要 PS5 上运行 ps5upload 插件（端口 9120）。
 - **文件页无法连接**：确认 PS5 上运行着 FTP 插件（默认端口 2120）；使用 tom-ps5-usbnet 时，
   它的日志在 PS5 的 `/data/tom-ps5-usbnet/log.txt`，`no Ethernet link` 表示 USB 网卡没接网线。
 - **容量显示“未知”**：FTP 协议不提供容量，需要 PS5 上同时运行 web-file-mgr（8888）。
@@ -187,7 +210,7 @@ dig @<本机> manuals.playstation.net  # 应返回本机地址
 ## 开发
 
 ```sh
-python3 -m unittest discover -s tests          # 169 项单测（需要 python3-dnspython 与 python3-cryptography）
+python3 -m unittest discover -s tests          # 172 项单测（需要 python3-dnspython 与 python3-cryptography）
 node --check web/app.js
 node --test tests/ui-interactions.js           # 前端交互测试
 ./scripts/check-secrets.sh                     # 提交前隐私扫描
