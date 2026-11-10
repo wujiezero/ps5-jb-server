@@ -28,7 +28,7 @@
   const SECTION_META = {
     overview: { title: '概览', subtitle: '服务状态、运行时间与最近请求' },
     policy: { title: '访问策略', subtitle: '域名、IPv4 / CIDR 白名单与上游 DNS' },
-    activity: { title: '网络活动', subtitle: '经过本机网关的 IPv4 连接' },
+    activity: { title: '网络活动', subtitle: '网关连接、DNS 查询与本机服务事件' },
     ps5: { title: 'PS5 主机', subtitle: '发现局域网主机，安装并运行插件载荷' },
     files: { title: 'PS5 文件', subtitle: '浏览主机存储、上传与整理文件' },
     repository: { title: '插件仓库', subtitle: '维护 PS5 插件载荷（.elf / .bin）' },
@@ -59,6 +59,9 @@
   let activityCategoryKey = null;
   let currentSection = 'overview';
   let activityFilterValue = 'all';
+  let mobileMoreCloseReason = '';
+  let repoReadError = '';
+  let activityReadError = '';
 
   // PS5 主机页的瞬时状态：写入互斥、轮询暂存与待确认操作。
   let ps5Busy = false;
@@ -138,6 +141,9 @@
   const asText = (value, fallback = '—') => value === null || value === undefined || value === '' ? fallback : String(value);
   const str = (value) => typeof value === 'string' ? value.trim() : value === null || value === undefined ? '' : String(value).trim();
   const lines = (value) => value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const searchQuery = (id) => $(id).value.trim().toLowerCase();
+  const matchesSearch = (query, values) => !query || values.some((value) => String(value ?? '').toLowerCase().includes(query));
+  const payloadMatchesSearch = (item, query) => matchesSearch(query, [item.name, item.filename, item.version, item.author, item.category, item.description]);
   const readConfig = () => ({ domains: lines($('domains').value), networks: lines($('networks').value), upstream_dns: $('upstream-dns').value.trim() });
   const signature = (config) => JSON.stringify(config);
   const cleanConfig = (config = {}) => ({
@@ -349,17 +355,54 @@
     return match && SECTIONS.includes(match[1]) ? match[1] : null;
   }
 
+  function openMobileMore() {
+    const dialog = $('mobile-more-dialog');
+    if (!authenticated || dialog.open || !window.matchMedia('(max-width: 767px)').matches) return;
+    mobileMoreCloseReason = '';
+    $('mobile-more-trigger').setAttribute('aria-expanded', 'true');
+    dialog.showModal();
+    const current = dialog.querySelector('[aria-current="page"]') || dialog.querySelector('.more-link');
+    if (current) current.focus({ preventScroll: true });
+  }
+
+  function closeMobileMore(reason = '') {
+    const dialog = $('mobile-more-dialog');
+    if (!dialog.open) return;
+    mobileMoreCloseReason = reason;
+    $('mobile-more-trigger').setAttribute('aria-expanded', 'false');
+    dialog.close();
+  }
+
+  function restoreMobileMoreFocus() {
+    $('mobile-more-trigger').setAttribute('aria-expanded', 'false');
+    if (authenticated) {
+      const trigger = $('mobile-more-trigger');
+      const target = mobileMoreCloseReason === 'navigation' ? $('app-title')
+        : trigger.getClientRects().length ? trigger
+          : document.querySelector('.nav-item[aria-current="page"]') || $('app-title');
+      target.focus({ preventScroll: true });
+    }
+    mobileMoreCloseReason = '';
+    flushRepoPending();
+    flushActivityPending();
+    flushPs5Pending();
+  }
+
   function showSection(section, options = {}) {
     if (!authenticated) return;
+    closeMobileMore('navigation');
     currentSection = section;
     for (const key of SECTIONS) {
       const view = views[key];
       if (view) view.hidden = key !== section;
     }
-    for (const link of $$('.nav-item[data-section], .tab-item[data-section]')) {
+    for (const link of $$('.nav-item[data-section], .tab-item[data-section], .more-link[data-section]')) {
       if (link.dataset.section === section) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     }
+    const moreTrigger = $('mobile-more-trigger');
+    if (['policy', 'repository', 'settings'].includes(section)) moreTrigger.setAttribute('aria-current', 'page');
+    else moreTrigger.removeAttribute('aria-current');
     const meta = SECTION_META[section];
     $('app-title').textContent = meta.title;
     $('app-subtitle').textContent = meta.subtitle;
@@ -1013,6 +1056,8 @@
   }
 
   function resetRepoPanel() {
+    repoReadError = '';
+    $('repo-search').value = '';
     Object.assign(repo, { loaded: false, items: [], totalBytes: 0, host: '', port: REPO_PORT, catalogName: '' });
     repoPending = null;
     repoRendered = '';
@@ -1126,8 +1171,13 @@
   }
 
   function renderRepo() {
-    const current = JSON.stringify([repo.items, repo.totalBytes, repo.host, repo.port, repo.catalogName]);
-    $('repo-summary').textContent = repo.loaded ? `共 ${repo.items.length} 个插件 · 合计 ${formatBytes(repo.totalBytes)}` : '正在读取插件仓库…';
+    const query = searchQuery('repo-search');
+    const visible = repo.items.filter((item) => payloadMatchesSearch(item, query));
+    const current = JSON.stringify([repo.items, repo.totalBytes, repo.host, repo.port, repo.catalogName, query]);
+    $('repo-search-summary').textContent = repo.loaded ? `显示 ${visible.length} / ${repo.items.length} 个插件`
+      : repoReadError ? '插件仓库读取失败，请刷新重试。' : '正在读取插件仓库…';
+    $('repo-summary').textContent = repo.loaded ? `共 ${repo.items.length} 个插件 · 合计 ${formatBytes(repo.totalBytes)}`
+      : repoReadError ? '插件仓库读取失败。' : '正在读取插件仓库…';
     const endpoint = repo.loaded ? `${repo.catalogName ? `${repo.catalogName} · ` : ''}${repoBaseUrl()}/payloads/` : '';
     $('repo-endpoint').textContent = endpoint;
     $('repo-endpoint').hidden = !endpoint;
@@ -1142,11 +1192,13 @@
     repoRendered = repo.loaded ? current : '';
     const fragment = document.createDocumentFragment();
     if (!repo.loaded) {
-      fragment.append(skeletonRows(4, 6));
+      fragment.append(repoReadError ? emptyRow(6, '插件仓库读取失败，请刷新重试。') : skeletonRows(4, 6));
     } else if (!repo.items.length) {
       fragment.append(emptyRow(6, '仓库中暂无插件。', '上传第一个插件', () => openUploadDialog()));
+    } else if (!visible.length) {
+      fragment.append(emptyRow(6, '没有匹配的插件，请调整搜索条件。'));
     } else {
-      for (const item of repo.items) fragment.append(repoRow(item));
+      for (const item of visible) fragment.append(repoRow(item));
     }
     $('repo-body').replaceChildren(fragment);
     updateRepoControls();
@@ -1162,6 +1214,7 @@
     try {
       const data = await api('/api/repo');
       if (requestEpoch !== epoch) return false;
+      repoReadError = '';
       $('repo-error').textContent = '';
       $('repo-error').hidden = true;
       applyRepo(data);
@@ -1173,8 +1226,10 @@
         showLogin(error.message);
         return false;
       }
+      repoReadError = error.message;
       $('repo-error').textContent = `插件仓库读取失败：${error.message}`;
       $('repo-error').hidden = false;
+      renderRepo();
       return false;
     } finally {
       repoLoading = false;
@@ -1479,9 +1534,15 @@
   }
 
   function activityVisibleEvents() {
-    return activityFilterValue === 'all'
-      ? activity.events
-      : activity.events.filter((event) => event.verdict === activityFilterValue);
+    const query = searchQuery('activity-search');
+    const sources = { flow: '网关连接 gateway flow', dns: 'DNS 域名解析', service: '本机服务 local service' };
+    return activity.events.filter((event) => (activityFilterValue === 'all' || event.verdict === activityFilterValue)
+      && matchesSearch(query, [event.domain, event.dst, event.client, event.port, event.name, event.category, event.kind, sources[event.kind]]));
+  }
+
+  function pruneActivitySelection() {
+    const visible = new Set(activityVisibleEvents().filter((event) => event.selectable).map((event) => event.target));
+    for (const target of activitySelected) if (!visible.has(target)) activitySelected.delete(target);
   }
 
   function activityDescribe(event) {
@@ -1598,13 +1659,16 @@
 
   function renderActivityRows() {
     const visible = activityVisibleEvents();
+    pruneActivitySelection();
+    $('activity-search-summary').textContent = activity.loaded ? `显示 ${visible.length} / ${activity.events.length} 条活动`
+      : activityReadError ? '网络活动读取失败，请刷新重试。' : '正在读取网络活动…';
     const fragment = document.createDocumentFragment();
     if (!activity.loaded) {
-      fragment.append(skeletonRows(5, 9));
+      fragment.append(activityReadError ? activityEmptyRow('网络活动读取失败，请刷新重试。') : skeletonRows(5, 9));
     } else if (!activity.events.length) {
-      fragment.append(activityEmptyRow(activity.hints.message || '还没有经过本机的连接记录。', true));
+      fragment.append(activityEmptyRow(activity.hints.message || '暂无网关连接、DNS 查询或本机服务事件。', true));
     } else if (!visible.length) {
-      fragment.append(activityEmptyRow('当前筛选条件下没有记录。'));
+      fragment.append(activityEmptyRow('没有匹配的网络活动，请调整搜索或结果筛选。'));
     } else {
       for (const event of visible) fragment.append(activityRow(event));
     }
@@ -1684,6 +1748,7 @@
     setDisabled('allow', locked || !hasSelection);
     setDisabled('label', locked || !hasSelection);
     $('activity-filter').disabled = !authenticated || activityBusy;
+    $('activity-search').disabled = !authenticated || activityBusy;
     for (const segment of $$('.segment')) segment.disabled = !authenticated || activityBusy;
     $('activity-selection').textContent = hasSelection ? `已选 ${activitySelected.size} 项` : '未选择';
     const bulkBar = $('activity-bulk-bar');
@@ -1726,6 +1791,8 @@
   }
 
   function resetActivityPanel() {
+    activityReadError = '';
+    $('activity-search').value = '';
     Object.assign(activity, { loaded: false, events: [], counts: { allowed: 0, blocked: 0 }, tracked: 0, updated: '', lastError: '', categories: [] });
     activityPending = false;
     activityCategoryKey = null;
@@ -1759,6 +1826,7 @@
     try {
       const data = await api(`/api/activity?limit=${ACTIVITY_LIMIT}`);
       if (requestEpoch !== epoch) return false;
+      activityReadError = '';
       applyActivity(normalizeActivity(data));
       if (manual) toast('网络活动已刷新。', 'success');
       return true;
@@ -1768,8 +1836,11 @@
         showLogin(error.message);
         return false;
       }
+      activityReadError = error.message;
       $('activity-warning').textContent = `网络活动读取失败：${error.message}`;
       $('activity-warning').hidden = false;
+      if (!activity.loaded) $('activity-summary').textContent = '网络活动读取失败。';
+      renderActivityRows();
       return false;
     } finally {
       activityLoading = false;
@@ -1791,6 +1862,7 @@
 
   async function confirmActivityAllow() {
     if (activityBusy || !authenticated) return;
+    pruneActivitySelection();
     const targets = [...activitySelected];
     if (!targets.length) {
       $('activity-allow-dialog').close();
@@ -1852,6 +1924,7 @@
   async function submitActivityLabels(event) {
     event.preventDefault();
     if (activityBusy || !authenticated) return;
+    pruneActivitySelection();
     const targets = [...activitySelected];
     if (!targets.length) {
       $('activity-label-dialog').close();
@@ -2493,16 +2566,20 @@
   function renderPs5Catalog(host, options = {}) {
     const note = $('ps5-catalog-note');
     const body = $('ps5-catalog-body');
+    const query = searchQuery('ps5-catalog-search');
+    const items = repo.items.filter((item) => payloadMatchesSearch(item, query));
+    $('ps5-catalog-search-summary').textContent = repo.loaded ? `显示 ${items.length} / ${repo.items.length} 个插件`
+      : repoReadError ? '插件目录读取失败，请刷新重试。' : '正在读取插件目录…';
     if (!repo.loaded) {
-      note.textContent = '正在读取本服务的插件目录…';
-      if (body.dataset.mode !== 'loading') {
-        body.dataset.mode = 'loading';
-        body.replaceChildren(tableEmptyRow(6, '正在读取插件目录…'));
+      note.textContent = repoReadError ? '本服务的插件目录读取失败。' : '正在读取本服务的插件目录…';
+      const mode = repoReadError ? 'error' : 'loading';
+      if (body.dataset.mode !== mode) {
+        body.dataset.mode = mode;
+        body.replaceChildren(tableEmptyRow(6, repoReadError ? '插件目录读取失败，请刷新重试。' : '正在读取插件目录…'));
       }
       return;
     }
-    const items = repo.items;
-    if (!items.length) {
+    if (!repo.items.length) {
       note.textContent = '本服务的插件仓库为空。';
       if (body.dataset.mode !== 'empty') {
         body.dataset.mode = 'empty';
@@ -2511,8 +2588,15 @@
       return;
     }
     const rowError = ps5InlineError && ps5InlineError.scope === 'install' && ps5InlineError.ip === host.ip ? ps5InlineError : null;
-    note.textContent = `本服务仓库共 ${items.length} 个插件 · 主机已安装 ${host.installed.length} 个${host.sourceAttached ? '' : ' · 仓库未接入，安装将尝试通过 elfldr 执行'}`;
+    note.textContent = `本服务仓库共 ${repo.items.length} 个插件 · 主机已安装 ${host.installed.length} 个${host.sourceAttached ? '' : ' · 仓库未接入，安装将尝试通过 elfldr 执行'}`;
+    if (!items.length) {
+      body.dataset.mode = 'no-match';
+      ps5CatalogKey = '';
+      body.replaceChildren(tableEmptyRow(6, '没有匹配的插件，请调整搜索条件。'));
+      return;
+    }
     const key = JSON.stringify([
+      query,
       host.ip,
       host.installed,
       host.running.map((item) => [item.pid, item.name]),
@@ -3252,6 +3336,7 @@
   }
 
   function resetPs5Panel() {
+    $('ps5-catalog-search').value = '';
     ps5.loaded = false;
     ps5.discovery = { subnet: '', scanned: 0, lastScan: '', scanning: false, durationMs: 0, enabled: true };
     ps5.hosts = [];
@@ -4731,6 +4816,32 @@
 
   function bindEvents() {
     $('login-form').addEventListener('submit', submitLogin);
+    $('mobile-more-trigger').addEventListener('click', openMobileMore);
+    $('mobile-more-close').addEventListener('click', () => closeMobileMore());
+    $('mobile-more-dialog').addEventListener('close', restoreMobileMoreFocus);
+    for (const link of $$('.more-link[data-section]')) {
+      link.addEventListener('click', () => {
+        closeMobileMore('navigation');
+        if (sectionFromHash() === link.dataset.section) showSection(link.dataset.section, { moveFocus: true });
+      });
+    }
+    window.matchMedia('(max-width: 767px)').addEventListener('change', (event) => {
+      if (!event.matches) closeMobileMore('resize');
+    });
+    $('repo-search').addEventListener('input', () => {
+      repoRendered = '';
+      renderRepo();
+    });
+    $('activity-search').addEventListener('input', () => {
+      renderActivityRows();
+      updateActivityControls();
+      flushActivityPending();
+    });
+    $('ps5-catalog-search').addEventListener('input', () => {
+      ps5CatalogKey = '';
+      const host = ps5SelectedHost();
+      if (host) renderPs5Catalog(host);
+    });
 
     for (const field of fields) {
       field.addEventListener('input', () => {

@@ -43,9 +43,9 @@
   <div id="login-view" class="login-view" hidden>
     <main class="login-main">
       <section class="login-intro" aria-labelledby="login-heading">
-        <span class="eyebrow">家庭网络 · 访问策略</span>
-        <h1 id="login-heading">让联网范围<br>清楚可控。</h1>
-        <p class="login-lead">管理 PS5 的 DNS 与网关白名单，<br class="desktop-break">只放行你允许的互联网访问。</p>
+        <span class="eyebrow">设备管理</span>
+        <h1 id="login-heading">PS5 控制台</h1>
+        <p class="login-lead">管理主机、文件、插件与网络访问策略。</p>
         <ul class="login-facts">
           <li><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.2 5 6.1v5.3c0 4 3.4 7.1 7 8.4 3.6-1.3 7-4.4 7-8.4V6.1L12 3.2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="m9.1 11.8 2.1 2.1 3.8-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>默认拒绝互联网访问 · 局域网保持可达</span></li>
           <li><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.4" stroke="currentColor" stroke-width="1.5"/><path d="M3.9 12h16.2M12 3.7c2.1 2.2 3.2 5.1 3.2 8.3s-1.1 6.1-3.2 8.3c-2.1-2.2-3.2-5.1-3.2-8.3S9.9 5.9 12 3.7Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span>仅约束经过本机网关的 IPv4 流量</span></li>
@@ -53,7 +53,7 @@
       </section>
       <section class="card login-card" aria-labelledby="login-title">
         <h2 id="login-title">管理员登录</h2>
-        <p class="muted">输入管理密码以查看和调整访问策略。</p>
+        <p class="muted">输入管理密码以进入控制台。</p>
         <form id="login-form" novalidate>
           <label for="password">管理密码</label>
           <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024" placeholder="请输入管理密码" aria-describedby="login-error">
@@ -81,32 +81,41 @@
           <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.6" y="3.6" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="13.4" y="3.6" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="3.6" y="13.4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="13.4" y="13.4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/></svg></span>
           <span class="nav-label">概览</span>
         </a>
-        <a class="nav-item" href="#/policy" data-section="policy" aria-label="访问策略" title="访问策略">
-          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 3.2 5 6.1v5.3c0 4 3.4 7.1 7 8.4 3.6-1.3 7-4.4 7-8.4V6.1L12 3.2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m9.1 11.8 2.1 2.1 3.8-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-          <span class="nav-label">访问策略</span>
-        </a>
-        <a class="nav-item" href="#/activity" data-section="activity" aria-label="网络活动" title="网络活动">
-          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M3.5 12h3.1l2.2-5.2 3.5 10.4 2.2-5.2h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-          <span class="nav-label">网络活动</span>
-          <span class="nav-badge" data-badge="activity" hidden></span>
-        </a>
-        <a class="nav-item" href="#/ps5" data-section="ps5" aria-label="PS5 主机" title="PS5 主机">
-          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.4" y="5.4" width="17.2" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.6"/><path d="M8.4 20.6h7.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.6 9.4h6.2M7.6 12.8h3.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="16.6" cy="12.8" r="1.15" fill="currentColor"/></svg></span>
-          <span class="nav-label">PS5 主机</span>
-        </a>
-        <a class="nav-item" href="#/files" data-section="files" aria-label="PS5 文件" title="PS5 文件">
-          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><use href="#i-folder"></use></svg></span>
-          <span class="nav-label">PS5 文件</span>
-        </a>
-        <a class="nav-item" href="#/repository" data-section="repository" aria-label="插件仓库" title="插件仓库">
-          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="m12 3.4 7.6 3.9v9.4L12 20.6l-7.6-3.9V7.3L12 3.4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4.7 7.5 7.3 3.8 7.3-3.8M12 11.3v9" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
-          <span class="nav-label">插件仓库</span>
-          <span class="nav-badge" data-badge="repository" hidden></span>
-        </a>
-        <a class="nav-item" href="#/settings" data-section="settings" aria-label="设置" title="设置">
-          <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M4 7.6h8.4M17.2 7.6H20M4 16.4h2.6M11.4 16.4H20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="14.8" cy="7.6" r="2.2" stroke="currentColor" stroke-width="1.6"/><circle cx="9.2" cy="16.4" r="2.2" stroke="currentColor" stroke-width="1.6"/></svg></span>
-          <span class="nav-label">设置</span>
-        </a>
+        <div class="nav-group" role="group" aria-label="主机管理">
+          <p class="nav-group-label">主机管理</p>
+          <a class="nav-item" href="#/ps5" data-section="ps5" aria-label="PS5 主机" title="PS5 主机">
+            <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.4" y="5.4" width="17.2" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.6"/><path d="M8.4 20.6h7.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.6 9.4h6.2M7.6 12.8h3.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="16.6" cy="12.8" r="1.15" fill="currentColor"/></svg></span>
+            <span class="nav-label">PS5 主机</span>
+          </a>
+          <a class="nav-item" href="#/files" data-section="files" aria-label="PS5 文件" title="PS5 文件">
+            <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><use href="#i-folder"></use></svg></span>
+            <span class="nav-label">PS5 文件</span>
+          </a>
+        </div>
+        <div class="nav-group" role="group" aria-label="网络管理">
+          <p class="nav-group-label">网络管理</p>
+          <a class="nav-item" href="#/policy" data-section="policy" aria-label="访问策略" title="访问策略">
+            <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 3.2 5 6.1v5.3c0 4 3.4 7.1 7 8.4 3.6-1.3 7-4.4 7-8.4V6.1L12 3.2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m9.1 11.8 2.1 2.1 3.8-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span class="nav-label">访问策略</span>
+          </a>
+          <a class="nav-item" href="#/activity" data-section="activity" aria-label="网络活动" title="网络活动">
+            <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M3.5 12h3.1l2.2-5.2 3.5 10.4 2.2-5.2h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span class="nav-label">网络活动</span>
+            <span class="nav-badge" data-badge="activity" hidden></span>
+          </a>
+        </div>
+        <div class="nav-group" role="group" aria-label="系统">
+          <p class="nav-group-label">系统</p>
+          <a class="nav-item" href="#/repository" data-section="repository" aria-label="插件仓库" title="插件仓库">
+            <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="m12 3.4 7.6 3.9v9.4L12 20.6l-7.6-3.9V7.3L12 3.4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4.7 7.5 7.3 3.8 7.3-3.8M12 11.3v9" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
+            <span class="nav-label">插件仓库</span>
+            <span class="nav-badge" data-badge="repository" hidden></span>
+          </a>
+          <a class="nav-item" href="#/settings" data-section="settings" aria-label="设置" title="设置">
+            <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M4 7.6h8.4M17.2 7.6H20M4 16.4h2.6M11.4 16.4H20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="14.8" cy="7.6" r="2.2" stroke="currentColor" stroke-width="1.6"/><circle cx="9.2" cy="16.4" r="2.2" stroke="currentColor" stroke-width="1.6"/></svg></span>
+            <span class="nav-label">设置</span>
+          </a>
+        </div>
       </nav>
       <div class="sidebar-footer">
         <p class="host-line"><span class="host-label">管理主机</span><span class="mono" data-host-ip>—</span></p>
@@ -322,13 +331,18 @@
         <section id="view-activity" class="view" data-section="activity" hidden>
           <section class="card" aria-labelledby="activity-title">
             <header class="card-head">
-              <div><h2 id="activity-title">网络活动</h2><p class="card-sub">经过本机网关的实时连接；勾选目标后可批量放行或自定义命名。</p></div>
+              <div><h2 id="activity-title">网络活动</h2><p class="card-sub">网关连接、DNS 查询与本机服务事件；勾选目标后可批量放行或命名。</p></div>
               <span id="activity-updated" class="tag" hidden></span>
             </header>
             <p id="activity-summary" class="summary-line" aria-live="polite">正在读取网络活动…</p>
             <p id="activity-warning" class="banner banner-warning" role="status" hidden></p>
 
-            <div class="filter-row">
+            <div class="filter-row search-toolbar">
+              <label class="search-field" for="activity-search">
+                <span class="visually-hidden">搜索网络活动</span>
+                <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-search"></use></svg>
+                <input id="activity-search" type="search" placeholder="搜索域名、IP、客户端或标签" autocomplete="off" spellcheck="false" aria-describedby="activity-search-summary">
+              </label>
               <div class="segmented" role="group" aria-label="按结果筛选网络活动">
                 <button class="segment" type="button" data-filter="all" aria-pressed="true">全部</button>
                 <button class="segment" type="button" data-filter="blocked" aria-pressed="false">未放行</button>
@@ -347,6 +361,8 @@
                 <span>管理 PS5 主机</span>
               </a>
             </div>
+
+            <p id="activity-search-summary" class="search-summary" role="status" aria-live="polite" aria-atomic="true"></p>
 
             <div id="activity-bulk-bar" class="bulk-bar" data-visible="false">
               <span id="activity-selection" class="bulk-count" aria-live="polite">未选择</span>
@@ -380,7 +396,7 @@
                 <tbody id="activity-body"><tr><td colspan="9" class="empty-state">正在读取网络活动…</td></tr></tbody>
               </table>
             </div>
-            <p class="footnote">分类由开源规则集 v2fly/domain-list-community 自动推断，自定义命名/分类优先生效；只有经过本机网关的 IPv4 流量才会出现在这里。</p>
+            <p class="footnote">包含经过本机网关的 IPv4 连接、DNS 查询与本机服务事件；本机服务事件不可批量放行。分类自动推断，自定义命名与分类优先。</p>
           </section>
         </section>
 
@@ -441,6 +457,14 @@
             </div>
 
             <div id="ps5-panel-catalog" class="ps5-panel" role="tabpanel" aria-labelledby="ps5-tab-catalog">
+              <div class="search-toolbar">
+                <label class="search-field" for="ps5-catalog-search">
+                  <span class="visually-hidden">搜索主机插件库</span>
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-search"></use></svg>
+                  <input id="ps5-catalog-search" type="search" placeholder="搜索插件名称、文件名或描述" autocomplete="off" spellcheck="false" aria-describedby="ps5-catalog-search-summary">
+                </label>
+              </div>
+              <p id="ps5-catalog-search-summary" class="search-summary" role="status" aria-live="polite" aria-atomic="true"></p>
               <p id="ps5-catalog-note" class="summary-line" aria-live="polite">正在读取插件目录…</p>
               <div class="table-wrap ps5-table-wrap">
                 <table class="ps5-table ps5-catalog-table">
@@ -643,6 +667,14 @@
             <p id="repo-summary" class="summary-line" aria-live="polite">正在读取插件仓库…</p>
             <p id="repo-endpoint" class="endpoint-line" hidden></p>
             <p id="repo-error" class="banner banner-error" role="alert" hidden></p>
+            <div class="search-toolbar">
+              <label class="search-field" for="repo-search">
+                <span class="visually-hidden">搜索插件仓库</span>
+                <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-search"></use></svg>
+                <input id="repo-search" type="search" placeholder="搜索名称、文件名、作者或描述" autocomplete="off" spellcheck="false" aria-describedby="repo-search-summary">
+              </label>
+            </div>
+            <p id="repo-search-summary" class="search-summary" role="status" aria-live="polite" aria-atomic="true"></p>
             <div class="table-wrap repo-table-wrap" role="region" aria-label="插件仓库文件列表" tabindex="0">
               <table class="repo-table">
                 <thead>
@@ -722,7 +754,7 @@
             <header class="card-head"><h2 id="about-title">关于</h2></header>
             <dl class="info-list">
               <div><dt>分类规则集</dt><dd>v2fly/domain-list-community（MIT）编译的后缀规则</dd></div>
-              <div><dt>活动数据</dt><dd>conntrack -L 轮询；仅覆盖经过本机网关的 IPv4 流量</dd></div>
+              <div><dt>活动数据</dt><dd>网关 IPv4 连接轮询、DNS 查询与本机服务事件</dd></div>
               <div><dt>限制</dt><dd>共享 CDN 的同一 IP 可能承载多个域名；PS5 改换网关或直连同网段设备时不经过本机策略</dd></div>
             </dl>
             <p class="secondary-note">PS5 的漏洞链执行与 Payload Manager 启动仍需在真机上确认；网络测试中的互联网或 PSN 检查可能失败，因为初始白名单为空。</p>
@@ -736,28 +768,42 @@
         <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.6" y="3.6" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="13.4" y="3.6" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="3.6" y="13.4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="13.4" y="13.4" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/></svg></span>
         <span class="tab-label">概览</span>
       </a>
-      <a class="tab-item" href="#/policy" data-section="policy" aria-label="访问策略">
-        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 3.2 5 6.1v5.3c0 4 3.4 7.1 7 8.4 3.6-1.3 7-4.4 7-8.4V6.1L12 3.2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m9.1 11.8 2.1 2.1 3.8-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-        <span class="tab-label">策略</span>
+      <a class="tab-item" href="#/ps5" data-section="ps5" aria-label="PS5 主机" title="PS5 主机">
+        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.4" y="5.4" width="17.2" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.6"/><path d="M8.4 20.6h7.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.6 9.4h6.2M7.6 12.8h3.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="16.6" cy="12.8" r="1.15" fill="currentColor"/></svg></span>
+        <span class="tab-label">主机</span>
+      </a>
+      <a class="tab-item" href="#/files" data-section="files" aria-label="PS5 文件" title="PS5 文件">
+        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><use href="#i-folder"></use></svg></span>
+        <span class="tab-label">文件</span>
       </a>
       <a class="tab-item" href="#/activity" data-section="activity" aria-label="网络活动">
         <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M3.5 12h3.1l2.2-5.2 3.5 10.4 2.2-5.2h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
         <span class="tab-label">活动</span>
         <span class="tab-badge" data-badge="activity" hidden></span>
       </a>
-      <a class="tab-item" href="#/repository" data-section="repository" aria-label="插件仓库">
-        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="m12 3.4 7.6 3.9v9.4L12 20.6l-7.6-3.9V7.3L12 3.4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m4.7 7.5 7.3 3.8 7.3-3.8M12 11.3v9" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
-        <span class="tab-label">仓库</span>
-        <span class="tab-badge" data-badge="repository" hidden></span>
-      </a>
-      <a class="tab-item" href="#/settings" data-section="settings" aria-label="设置">
-        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M4 7.6h8.4M17.2 7.6H20M4 16.4h2.6M11.4 16.4H20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="14.8" cy="7.6" r="2.2" stroke="currentColor" stroke-width="1.6"/><circle cx="9.2" cy="16.4" r="2.2" stroke="currentColor" stroke-width="1.6"/></svg></span>
-        <span class="tab-label">设置</span>
-      </a>
+      <button id="mobile-more-trigger" class="tab-item" type="button" aria-label="更多功能" aria-haspopup="dialog" aria-expanded="false" aria-controls="mobile-more-dialog">
+        <span class="tab-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><use href="#i-menu"></use></svg></span>
+        <span class="tab-label">更多</span>
+      </button>
     </nav>
   </div>
 
   <div id="toast-region" class="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
+
+  <dialog id="mobile-more-dialog" class="dialog mobile-more-dialog" aria-labelledby="mobile-more-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <header class="card-head">
+        <h2 id="mobile-more-title">更多功能</h2>
+        <button id="mobile-more-close" class="button button-secondary button-icon" type="button" aria-label="关闭更多功能"><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-x"></use></svg></button>
+      </header>
+      <nav class="mobile-more-nav" aria-label="更多功能导航">
+        <a class="more-link" href="#/policy" data-section="policy">访问策略</a>
+        <a class="more-link" href="#/repository" data-section="repository">插件仓库<span class="tag" data-badge="repository" hidden></span></a>
+        <a class="more-link" href="#/settings" data-section="settings">设置</a>
+      </nav>
+    </div>
+  </dialog>
 
   <dialog id="rollback-dialog" class="dialog" aria-labelledby="rollback-title" aria-describedby="rollback-description">
     <div class="sheet-handle" aria-hidden="true"></div>
