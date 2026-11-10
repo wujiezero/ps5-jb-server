@@ -19,6 +19,7 @@
     <symbol id="i-nas" viewBox="0 0 24 24"><rect x="4.2" y="3.4" width="15.6" height="7.2" rx="1.8"/><rect x="4.2" y="13.4" width="15.6" height="7.2" rx="1.8"/><path d="M7.6 7h.01M7.6 17h.01M11 7h5.4M11 17h5.4"/></symbol>
     <symbol id="i-usb" viewBox="0 0 24 24"><path d="M12 3.4v14.4M12 3.4 10 6.4h4ZM12 12.4l-3.8-1.9V8.3M12 15l3.8-1.9v-2.2"/><circle cx="12" cy="19.6" r="1.7"/><rect x="6.9" y="6.8" width="2.2" height="2.2"/><circle cx="16.4" cy="9.8" r="1.1"/></symbol>
     <symbol id="i-chip" viewBox="0 0 24 24"><rect x="3.4" y="7.8" width="17.2" height="8.4" rx="1.8"/><path d="M7.2 16.4v2.2M11.4 16.4v2.2M15.6 16.4v2.2M7.2 12h.01M16.8 11.2h1.8v1.8h-1.8z"/></symbol>
+    <symbol id="i-transfer" viewBox="0 0 24 24"><path d="M7.6 19.4V5M3.8 8.8 7.6 5l3.8 3.8M16.4 4.6V19M20.2 15.2 16.4 19l-3.8-3.8"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16.2V4.6M7.4 9.2 12 4.6l4.6 4.6M4.4 18.8h15.2"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6.4v4.8h-4.8M4 17.6v-4.8h4.8"/><path d="M18.8 11.2A7.2 7.2 0 0 0 5.6 8.4M5.2 12.8a7.2 7.2 0 0 0 13.2 2.8"/></symbol>
@@ -610,8 +611,12 @@
                   <button id="nas-refresh" class="button button-secondary button-icon" type="button" aria-label="刷新 NAS 文件列表" title="刷新">
                     <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
                   </button>
-                  <button id="nas-edit" class="button button-secondary" type="button" aria-label="编辑当前 NAS 连接">编辑连接</button>
+                  <button id="nas-edit" class="button button-secondary" type="button" aria-label="编辑当前 NAS 连接">
+                    <svg class="icon" aria-hidden="true"><use href="#i-edit"></use></svg>
+                    <span class="button-label">编辑连接</span>
+                  </button>
                   <button class="button button-secondary button-small" type="button" data-files-transfers aria-label="查看传输任务">
+                    <svg class="icon" aria-hidden="true"><use href="#i-transfer"></use></svg>
                     <span class="button-label">传输任务</span>
                     <span class="files-count-badge" data-files-transfers-count hidden></span>
                   </button>
@@ -651,7 +656,7 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
                   </button>
                   <button id="files-transfers-toggle" class="button button-secondary button-small" type="button" data-files-transfers aria-expanded="false" aria-controls="files-transfers" aria-label="查看传输任务">
-                    <svg class="icon" aria-hidden="true"><use href="#i-upload"></use></svg>
+                    <svg class="icon" aria-hidden="true"><use href="#i-transfer"></use></svg>
                     <span class="button-label">传输任务</span>
                     <span id="files-transfers-count" class="files-count-badge" data-files-transfers-count hidden></span>
                   </button>
@@ -866,6 +871,19 @@
         <a class="more-link" href="#/repository" data-section="repository">插件仓库<span class="tag" data-badge="repository" hidden></span></a>
         <a class="more-link" href="#/settings" data-section="settings">设置</a>
       </nav>
+    </div>
+  </dialog>
+
+  <!-- Phone action sheet: file "⋯" menu and secondary PS5 host actions. -->
+  <dialog id="action-sheet" class="dialog action-sheet" aria-labelledby="action-sheet-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="action-sheet-head">
+      <h2 id="action-sheet-title">操作</h2>
+      <p id="action-sheet-sub" class="action-sheet-sub" hidden></p>
+    </div>
+    <div id="action-sheet-list" class="action-sheet-list" role="group" aria-labelledby="action-sheet-title"></div>
+    <div class="dialog-actions">
+      <button id="action-sheet-cancel" class="button button-secondary" type="button">取消</button>
     </div>
   </dialog>
 

@@ -1792,6 +1792,14 @@
     if (!nameCell.textContent) nameCell.dataset.empty = 'true';
 
     row.append(checkCell, timeCell, clientCell, domainCell, ipCell, portCell, verdictCell, categoryCell, nameCell);
+    // List layout (phones, tablets in portrait): tapping anywhere on the row toggles it.
+    const box = checkCell.querySelector('input');
+    if (box) {
+      row.addEventListener('click', (clickEvent) => {
+        if (clickEvent.target.closest('label, input, button, a') || !window.matchMedia('(max-width: 1023px)').matches) return;
+        box.click();
+      });
+    }
     return row;
   }
 
@@ -2136,6 +2144,105 @@
   /* ── 通用 DOM 小工具（新页面共用） ─────────────────────────────────── */
 
   const reducedMotion = () => Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  // Phone layout (same breakpoint as the CSS tab bar / bottom sheets).
+  const isPhone = () => Boolean(window.matchMedia && window.matchMedia('(max-width: 767px)').matches);
+
+  /* ── 手机：底部操作面板（action sheet） ─────────────────────────────── */
+  // Popover menus and long button rows become a bottom sheet on phones. The
+  // chosen action runs after the sheet has closed so follow-up dialogs
+  // (delete confirm, rename…) open on a clean stack.
+  let actionSheetState = null;
+
+  function openActionSheet({ title, sub = '', items, returnFocus = null, onDismiss = null }) {
+    const dialog = $('action-sheet');
+    if (!dialog || dialog.open) return;
+    $('action-sheet-title').textContent = title;
+    const subNode = $('action-sheet-sub');
+    subNode.textContent = sub;
+    subNode.hidden = !sub;
+    const list = $('action-sheet-list');
+    const fragment = document.createDocumentFragment();
+    actionSheetState = { chosen: null, returnFocus, onDismiss };
+    for (const item of items) {
+      const button = makeElement('button', 'action-sheet-item');
+      button.type = 'button';
+      if (item.icon) button.append(makeIcon(item.icon));
+      const text = makeElement('span', 'action-sheet-text');
+      text.append(makeElement('span', 'action-sheet-label', item.label));
+      if (item.hint) text.append(makeElement('span', 'action-sheet-hint', item.hint));
+      button.append(text);
+      if (item.danger) button.dataset.tone = 'danger';
+      button.disabled = Boolean(item.disabled);
+      button.addEventListener('click', () => {
+        if (actionSheetState) actionSheetState.chosen = item;
+        dialog.close();
+      });
+      fragment.append(button);
+    }
+    list.replaceChildren(fragment);
+    dialog.showModal();
+    const first = list.querySelector('button:not(:disabled)') || $('action-sheet-cancel');
+    first.focus({ preventScroll: true });
+  }
+
+  function onActionSheetClosed() {
+    const state = actionSheetState;
+    actionSheetState = null;
+    $('action-sheet-list').replaceChildren();
+    if (!state) return;
+    if (state.chosen) {
+      state.chosen.onSelect();
+      return;
+    }
+    if (state.onDismiss) state.onDismiss();
+    if (state.returnFocus && state.returnFocus.isConnected) state.returnFocus.focus({ preventScroll: true });
+  }
+
+  /* ── 手机：下拉关闭底部面板 ─────────────────────────────────────────── */
+  // Drag the sheet's top strip (handle / title) downwards to dismiss it, like
+  // native sheets. The cancel event is honoured, so busy dialogs stay put.
+  function bindSheetSwipe(dialog) {
+    if (!dialog.querySelector('.sheet-handle')) return;
+    let drag = null;
+    const reset = () => {
+      dialog.style.transform = '';
+      dialog.style.transition = '';
+    };
+    dialog.addEventListener('pointerdown', (event) => {
+      if (!isPhone() || event.button !== 0 || dialog.dataset.closing === 'true') return;
+      if (event.target.closest('button, a, input, select, textarea, label')) return;
+      const top = dialog.getBoundingClientRect().top;
+      if (event.clientY - top > 64 || dialog.scrollTop > 0) return;
+      drag = { id: event.pointerId, y: event.clientY, t: event.timeStamp, dy: 0 };
+    });
+    dialog.addEventListener('pointermove', (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      drag.dy = Math.max(0, event.clientY - drag.y);
+      if (drag.dy > 4 && !dialog.hasPointerCapture(event.pointerId)) dialog.setPointerCapture(event.pointerId);
+      dialog.style.transition = 'none';
+      dialog.style.transform = `translateY(${drag.dy}px)`;
+    });
+    const end = (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const { dy, t } = drag;
+      drag = null;
+      const fast = dy > 40 && dy / Math.max(1, event.timeStamp - t) > 0.6;
+      if (dy > 110 || fast) {
+        const cancel = new Event('cancel', { cancelable: true });
+        if (dialog.dispatchEvent(cancel)) {
+          dialog.style.transition = '';
+          dialog.close();
+          return;
+        }
+      }
+      dialog.style.transition = 'transform 220ms var(--ease-drawer)';
+      dialog.style.transform = '';
+      setTimeout(reset, 240);
+    };
+    dialog.addEventListener('pointerup', end);
+    dialog.addEventListener('pointercancel', end);
+    dialog.addEventListener('close', reset);
+  }
 
   // Mark a container so its CSS enter animation plays once; polling renders
   // later do not carry the flag and therefore never replay it.
@@ -2575,8 +2682,17 @@
       spinner.setAttribute('aria-hidden', 'true');
       spinner.hidden = true;
       button.append(spinner, makeElement('span', 'button-label', label));
+      // Phones show the everyday actions inline; the rest go to an action sheet.
+      if (!['select', 'files', 'power'].includes(action)) button.dataset.tier = 'secondary';
       actions.append(button);
     }
+    const more = makeElement('button', 'button button-secondary button-small ps5-host-more');
+    more.type = 'button';
+    more.dataset.ps5More = host.ip;
+    more.setAttribute('aria-label', `更多操作（${host.ip}）`);
+    more.setAttribute('aria-haspopup', 'dialog');
+    more.append(makeIcon('i-menu'), makeElement('span', 'button-label', '更多'));
+    actions.append(more);
 
     const busy = makeElement('span', 'ps5-host-busy');
     busy.dataset.field = 'busy';
@@ -3665,7 +3781,28 @@
     }
   }
 
+  function openPs5HostSheet(trigger) {
+    const card = trigger.closest('.ps5-host');
+    if (!card) return;
+    const items = $$('[data-ps5-action][data-tier="secondary"]', card).filter((button) => !button.hidden).map((button) => ({
+      label: (button.querySelector('.button-label') || button).textContent.trim(),
+      hint: button.disabled ? button.title : '',
+      disabled: button.disabled,
+      danger: button.dataset.tone === 'danger',
+      onSelect: () => handlePs5Action(button)
+    }));
+    const ip = trigger.dataset.ps5More;
+    const meta = card.querySelector('[data-field="meta"]');
+    openActionSheet({ title: `主机 ${ip}`, sub: meta ? meta.textContent : '', items, returnFocus: trigger });
+  }
+
   function onPs5ViewClick(event) {
+    const more = event.target.closest ? event.target.closest('[data-ps5-more]') : null;
+    if (more) {
+      event.preventDefault();
+      openPs5HostSheet(more);
+      return;
+    }
     const action = event.target.closest ? event.target.closest('[data-ps5-action]') : null;
     if (action) {
       event.preventDefault();
@@ -4185,8 +4322,18 @@
       });
       return button;
     };
-    fragment.append(addCrumb('概览', volume.path, files.path === volume.path));
     const relative = files.path.slice(volume.path.length).split('/').filter(Boolean);
+    // Phone-only "back" chevron (CSS hides it on wider screens).
+    if (relative.length) {
+      const parent = relative.length > 1 ? `${volume.path}/${relative.slice(0, -1).join('/')}` : volume.path;
+      const back = makeElement('button', 'files-crumb-back');
+      back.type = 'button';
+      back.setAttribute('aria-label', '返回上一级文件夹');
+      back.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.6 5.4 8 12l6.6 6.6"/></svg>';
+      back.addEventListener('click', () => navigateFiles(parent));
+      fragment.append(back);
+    }
+    fragment.append(addCrumb('概览', volume.path, files.path === volume.path));
     let at = volume.path;
     for (const part of relative) {
       at += `/${part}`;
@@ -4194,6 +4341,8 @@
       fragment.append(addCrumb(part, at, at === files.path));
     }
     box.replaceChildren(fragment);
+    // On phones the trail is a single scrolling line; keep the current folder in view.
+    box.scrollLeft = box.scrollWidth;
   }
 
   /* ── 游戏名称：CUSA12345 / PPSA01234 这类编号 → 游戏名 ─────────────── */
@@ -4339,6 +4488,12 @@
       if (event.target.closest('button')) return;
       if (entry.dir) navigateFiles(entry.path);
     });
+    // Phones: a tap anywhere on a file row opens its action sheet (folders
+    // open via the full-row name button instead).
+    row.addEventListener('click', (event) => {
+      if (entry.dir || !isPhone() || menuButton.disabled || event.target.closest('button')) return;
+      openFilesMenu(menuButton);
+    });
     return row;
   }
 
@@ -4429,6 +4584,40 @@
       const action = item.dataset.filesMenu;
       item.disabled = false;
       item.setAttribute('aria-label', labels[action] || action);
+    }
+    if (isPhone()) {
+      // Same actions as the popover, presented as a bottom sheet.
+      const items = $$('#files-menu [data-files-menu]').map((item) => {
+        const use = item.querySelector('use');
+        return {
+          label: item.textContent.trim(),
+          icon: use ? str(use.getAttribute('href')).replace('#', '') : '',
+          danger: item.dataset.tone === 'danger',
+          onSelect: () => {
+            trigger.setAttribute('aria-expanded', 'false');
+            onFilesMenuAction({ target: item });
+            files.menuTarget = null;
+            files.menuTrigger = null;
+          }
+        };
+      });
+      const titleId = titleIdOf(entry.name);
+      const titleEntry = titleId ? titleNames.cache.get(titleId) : null;
+      const gameName = titleEntry && titleEntry.name ? titleEntry.name : '';
+      const sub = [gameName, entry.dir ? '文件夹' : formatBytes(entry.size), formatFileTime(entry.mtime)].filter(Boolean).join(' · ');
+      trigger.setAttribute('aria-expanded', 'true');
+      openActionSheet({
+        title: entry.name,
+        sub,
+        items,
+        returnFocus: trigger,
+        onDismiss: () => {
+          trigger.setAttribute('aria-expanded', 'false');
+          files.menuTarget = null;
+          files.menuTrigger = null;
+        }
+      });
+      return;
     }
     menu.hidden = false;
     const rect = trigger.getBoundingClientRect();
@@ -5697,6 +5886,12 @@
 
   function nasRow(entry) {
     const row = document.createElement('tr');
+    row.dataset.dir = String(entry.dir);
+    // Phones: tapping a file row toggles its checkbox (folders open instead).
+    row.addEventListener('click', (event) => {
+      if (entry.dir || !isPhone() || event.target.closest('button, input, label')) return;
+      box.click();
+    });
     const check = makeElement('td', 'check-cell');
     const box = document.createElement('input');
     box.type = 'checkbox';
@@ -6290,7 +6485,16 @@
   }
 
   function bindEvents() {
-    for (const dialog of $$('dialog')) animateDialogClose(dialog);
+    for (const dialog of $$('dialog')) {
+      animateDialogClose(dialog);
+      bindSheetSwipe(dialog);
+    }
+    $('action-sheet-cancel').addEventListener('click', () => $('action-sheet').close());
+    $('action-sheet').addEventListener('close', onActionSheetClosed);
+    // Tap on the dimmed area above a phone sheet closes it, as native sheets do.
+    $('action-sheet').addEventListener('click', (event) => {
+      if (event.target === $('action-sheet')) $('action-sheet').close();
+    });
     $('login-form').addEventListener('submit', submitLogin);
     $('mobile-more-trigger').addEventListener('click', openMobileMore);
     $('mobile-more-close').addEventListener('click', () => closeMobileMore());
@@ -6302,7 +6506,10 @@
       });
     }
     window.matchMedia('(max-width: 767px)').addEventListener('change', (event) => {
-      if (!event.matches) closeMobileMore('resize');
+      if (event.matches) return;
+      closeMobileMore('resize');
+      // The action sheet is phone-only; wider layouts show the inline controls.
+      if ($('action-sheet').open) $('action-sheet').close();
     });
     $('repo-search').addEventListener('input', () => {
       repoRendered = '';
