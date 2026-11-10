@@ -22,7 +22,7 @@ _LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z", re.ASCII)
 
 def _domain(value: str, *, wildcard: bool = True) -> str:
     if not isinstance(value, str) or not value or not value.isprintable() or any(c.isspace() for c in value):
-        raise ValueError("domain must be a printable DNS name without whitespace")
+        raise ValueError(f"域名不合法：{value!r}（不能包含空格或不可见字符）")
     prefix = ""
     if wildcard and value.startswith("*."):
         prefix, value = "*.", value[2:]
@@ -32,50 +32,50 @@ def _domain(value: str, *, wildcard: bool = True) -> str:
         labels = [part.encode("idna").decode("ascii").lower() for part in value.split(".")]
         for label in labels:
             if not _LABEL.fullmatch(label):
-                raise ValueError("invalid DNS label")
+                raise ValueError(f"域名不合法：{value}")
             if label.startswith("xn--"):
                 if label.encode("ascii").decode("idna").encode("idna").decode("ascii") != label:
-                    raise ValueError("invalid IDNA label")
+                    raise ValueError(f"国际化域名不合法：{value}")
         result = ".".join(labels)
         if len(result) > 253:
-            raise ValueError("domain is too long")
+            raise ValueError(f"域名过长：{value[:40]}…")
         try:
             ipaddress.ip_address(result)
         except ValueError:
             pass
         else:
-            raise ValueError("an IP address is not a domain rule")
+            raise ValueError(f"{result} 是 IP 地址，请填到「允许的 IPv4 / CIDR」")
         return prefix + result
     except (UnicodeError, AttributeError) as exc:
-        raise ValueError("invalid IDNA domain") from exc
+        raise ValueError(f"国际化域名不合法：{value}") from exc
 
 
 def validate_config(raw) -> dict:
     """Return an independent canonical configuration, rejecting unknown fields."""
     if not isinstance(raw, dict) or set(raw) - set(_DEFAULT):
-        raise ValueError("configuration must contain only domains, networks, upstream_dns")
+        raise ValueError("配置只能包含 domains、networks、upstream_dns 三项")
     result = {}
     for key in ("domains", "networks"):
         values = raw.get(key, [])
         if not isinstance(values, list) or len(values) > 200:
-            raise ValueError(f"{key} must be a list with at most 200 entries")
+            raise ValueError(("域名" if key == "domains" else "IPv4 / CIDR") + " 白名单最多 200 项")
         canonical = []
         for value in values:
             if not isinstance(value, str):
-                raise ValueError(f"{key} entries must be strings")
+                raise ValueError("白名单条目必须是文本")
             if key == "domains":
                 item = _domain(value)
             else:
                 try:
                     item = str(ipaddress.IPv4Network(value, strict=False))
                 except (ValueError, TypeError) as exc:
-                    raise ValueError("networks must be IPv4 addresses or CIDRs") from exc
+                    raise ValueError(f"不是合法的 IPv4 地址或 CIDR：{value}") from exc
             if item not in canonical:
                 canonical.append(item)
         result[key] = canonical
     upstream = raw.get("upstream_dns", _DEFAULT["upstream_dns"])
     if not isinstance(upstream, str):
-        raise ValueError("upstream_dns must be an IPv4 address")
+        raise ValueError("上游 DNS 必须是 IPv4 地址")
     try:
         address = ipaddress.IPv4Address(upstream)
     except ValueError as exc:
@@ -288,5 +288,5 @@ class ConfigStore:
         """Restore previous via the same transaction, preserving reverse rollback."""
         with self.lock:
             if self._previous is None:
-                raise ValueError("no previous configuration is available")
+                raise ValueError("没有可回退的上一版配置")
             return self.update(copy.deepcopy(self._previous), apply_callback)

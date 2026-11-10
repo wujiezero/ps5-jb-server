@@ -10,6 +10,7 @@ Everything is parameterised: --prefix moves all paths under one directory, which
 is how the installer is tested without touching a real deployment.
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -204,6 +205,16 @@ def check_dnspython():
     result = subprocess.run([sys.executable, '-c', 'import dns.message'], capture_output=True)
     if result.returncode != 0:
         raise StepError('缺少 python3-dnspython：apt-get install -y python3-dnspython')
+    crypto = subprocess.run([sys.executable, '-c',
+                             'from cryptography.hazmat.primitives.ciphers.aead import AESGCM'],
+                            capture_output=True)
+    if crypto.returncode != 0:
+        raise StepError('缺少 python3-cryptography（用于加密保存 NAS 账号）：'
+                        'apt-get install -y python3-cryptography')
+    smb = subprocess.run([sys.executable, '-c', 'import smbc'], capture_output=True)
+    if smb.returncode != 0:
+        print('  提示：未安装 python3-smbc，NAS 存储将无法使用 SMB（WebDAV / FTP 不受影响）；'
+              '需要时执行 apt-get install -y python3-smbc')
 
 
 # ---------------------------------------------------------------- steps
@@ -245,6 +256,7 @@ repo = {layout.ports['repo']}
 pldmgr_port = 8084
 elf_port = 9021
 file_port = 80
+ftp_port = 2120
 control = true
 file_manager = true
 
@@ -298,6 +310,16 @@ def make_credentials(layout, runner):
                  f'仅需密码登录，没有用户名。\n初始管理密码：{password}\n'
                  f'（忘记后可用 ./install.sh --reset-password 重设）\n', 0o600)
     runner.note(f'初始密码已写入 {layout.access_file}（0600）')
+
+
+def make_nas_key(layout, runner):
+    """AES-256 key for NAS credentials, kept beside config.toml (not in the data dir)."""
+    path = layout.etc / 'nas.key'
+    if path.exists() and not layout.dry_run:
+        runner.note(f'{path} 已存在，保留（更换会导致已保存的 NAS 账号无法解密）')
+        return
+    runner.write(path, base64.b64encode(secrets.token_bytes(32)).decode() + '\n', 0o600)
+    runner.note(f'已生成 NAS 凭据加密密钥 {path}（0600）')
 
 
 def fetch_components(layout, runner):
@@ -467,7 +489,7 @@ def summary(layout):
 def cmd_install(layout):
     runner = Runner(layout)
     preflight(layout, runner)
-    steps = [install_files, write_config, make_certificates, make_credentials,
+    steps = [install_files, write_config, make_certificates, make_credentials, make_nas_key,
              fetch_components, write_firewall, install_units]
     for step in steps:
         step(layout, runner)

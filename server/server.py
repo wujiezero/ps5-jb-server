@@ -33,6 +33,7 @@ class AuthManager:
 
     IDLE_SECONDS = 30 * 24 * 3600      # renew on use, 30 days idle
     MAX_SECONDS = 90 * 24 * 3600       # hard cap per session
+    SAVE_SLACK = 3600                  # persist a renewal at most once an hour per session
 
     def __init__(self, credentials, session_path=None):
         self.credentials = credentials
@@ -64,12 +65,14 @@ class AuthManager:
                 continue
             if not isinstance(expires, (int, float)) or expires <= now:
                 continue
-            self.sessions[key] = {'csrf': csrf, 'expires': expires,
+            self.sessions[key] = {'csrf': csrf, 'expires': expires, 'saved': expires,
                                   'created': float(created), 'hashed': True}
 
     def _save(self):
         if not self.session_path:
             return
+        for value in self.sessions.values():
+            value['saved'] = value['expires']
         payload = {'sessions': [
             {'key': key, 'csrf': value['csrf'], 'expires': value['expires'],
              'created': value.get('created', time.time())}
@@ -141,10 +144,13 @@ class AuthManager:
                 self.sessions.pop(key, None)
                 self._save()
                 return None
-            # Sliding expiry: keep active users signed in.
+            # Sliding expiry: keep active users signed in. The page polls every
+            # few seconds, so only write the file when the renewal moved far
+            # enough to matter (a restart loses at most SAVE_SLACK of idle time).
             found['expires'] = min(wall + self.IDLE_SECONDS, created + self.MAX_SECONDS)
             self.sessions.move_to_end(key)
-            self._save()
+            if found['expires'] - found.get('saved', 0) >= self.SAVE_SLACK:
+                self._save()
             return {'csrf': found['csrf'], 'expires': found['expires']}
 
     def logout(self, token):
@@ -179,6 +185,12 @@ def _allowed_destination(engine):
     return check
 
 
+def create_engine(store, host_ip, lan, firewall=None):
+    """DNS policy and firewall must agree on the LAN, or DNS refuses every client."""
+    firewall = firewall or Firewall(host_ip=host_ip, lan=lan)
+    return DNSPolicy(store, firewall, host_ip=host_ip, lan=lan)
+
+
 def set_forwarding(enabled):
     subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=' + ('1' if enabled else '0')],
                    capture_output=True, text=True, timeout=5, check=True)
@@ -211,7 +223,9 @@ class RepoManager:
     _SEED_FILE = 'ps5-payload-repository'
     _FIELDS = ('name', 'version', 'category', 'author', 'description', 'source')
 
-    def __init__(self, root, base_url='http://127.0.0.1:8080/payloads/'):
+    def __init__(self, root, base_url='http://127.0.0.1:8080/payloads/', max_upload=None):
+        if max_upload:
+            self.MAX_UPLOAD = int(max_upload)
         self.root = Path(root)
         self.base_url = base_url if base_url.endswith('/') else base_url + '/'
         self.payloads = self.root / 'payloads'
@@ -247,10 +261,15 @@ class RepoManager:
             document = self.catalog()
             items, total = [], 0
             for item in document['payloads']:
-                path = self.payloads / item['filename']
-                size = path.stat().st_size if path.is_file() else 0
+                filename = item.get('filename')
+                if (not isinstance(filename, str) or not filename or '/' in filename
+                        or filename.startswith('.')):
+                    continue
+                path = self.payloads / filename
+                present = path.is_file()
+                size = path.stat().st_size if present else 0
                 total += size
-                items.append({**item, 'size': size})
+                items.append({**item, 'size': size, 'missing': not present})
             return {'catalog': {'name': document.get('name', self.NAME), 'items': items},
                     'total_bytes': total}
 
@@ -259,19 +278,26 @@ class RepoManager:
         temporary.write_bytes(data)
         os.replace(temporary, self.payloads / filename)
 
-    def add(self, filename, data, name, version='', category='', author='', description=''):
+    def limit_label(self):
+        return f'{self.MAX_UPLOAD // (1024 * 1024)}MB'
+
+    def add(self, filename, data, name, version='', category='', author='', description='',
+            replace=False):
         self._check_name(filename)
         if not isinstance(data, (bytes, bytearray)) or not data:
             raise ValueError('文件内容为空')
         if len(data) > self.MAX_UPLOAD:
-            raise ValueError('文件超过 64MB 上限')
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError('插件名称不能为空')
+            raise ValueError(f'文件超过 {self.limit_label()} 上限')
         with self.lock:
             target = self.payloads / filename
-            if target.exists():
-                raise FileExistsError('同名文件已存在，请先删除或改名')
             digest = hashlib.sha256(bytes(data)).hexdigest()
+            if replace:
+                return self._replace(filename, data, digest, name=name, version=version,
+                                     category=category, author=author, description=description)
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError('插件名称不能为空')
+            if target.exists():
+                raise FileExistsError('同名文件已存在，可勾选「替换同名文件」或先删除原文件')
             entry = {
                 'id': re.sub(r'[^a-z0-9._-]+', '-', filename.rsplit('.', 1)[0].lower()).strip('-') or 'payload',
                 'name': name.strip()[:120], 'filename': filename,
@@ -289,6 +315,25 @@ class RepoManager:
             document['payloads'].append(entry)
             self._write_catalog(document)
             return entry
+
+    def _replace(self, filename, data, digest, **fields):
+        """Swap the bytes of an existing entry; blank metadata keeps the old value."""
+        document = self.catalog()
+        for item in document['payloads']:
+            if item.get('filename') == filename:
+                break
+        else:
+            raise FileNotFoundError('仓库中没有这个文件，无法替换')
+        self._save_payload(filename, bytes(data))
+        for key in ('name', 'version', 'category', 'author', 'description'):
+            value = fields.get(key)
+            if isinstance(value, str) and value.strip():
+                item[key] = value.strip()[:400]
+        item['checksum'] = digest
+        item['last_update'] = datetime.date.today().isoformat()
+        item['url'] = self.base_url + filename
+        self._write_catalog(document)
+        return item
 
     def update(self, filename, **fields):
         self._check_name(filename)
@@ -339,6 +384,9 @@ def change_password(auth, credentials_path, current, new):
     with auth.lock:
         auth.credentials = credentials
         auth.sessions.clear()
+        # Persist the empty table too, otherwise a restart would revive the
+        # sessions that the password change was meant to revoke.
+        auth._save()
     return credentials
 
 
@@ -381,27 +429,88 @@ class Application(_ConsoleMixin):
     def change(self, body=None, rollback=False):
         self.engine.change_config(body, rollback)
 
-    def state(self):
-        with self.engine.store.lock:
+    # Fresh installs use ps5-jb-*, the original deployment ps5-*.
+    UNIT_CANDIDATES = {
+        'server': ('ps5-jb-server.service', 'ps5-manager.service'),
+        'host': ('ps5-jb-host.service', 'ps5-host.service'),
+        'repo': ('ps5-jb-repo.service', 'ps5-repo.service'),
+    }
+    UNIT_TTL = 30
+
+    def units(self):
+        """Resolve which systemd unit names exist here; cached, systemctl is slow."""
+        cached = getattr(self, '_units', None)
+        if cached and time.monotonic() - cached[0] < self.UNIT_TTL:
+            return cached[1]
+        found = {}
+        for role, names in self.UNIT_CANDIDATES.items():
+            found[role] = {'name': names[0].removesuffix('.service'), 'state': 'unknown'}
             try:
-                counters = self.engine.firewall.counters()
-                gateway = 'error' if self.engine.gateway_error else 'active'
-            except Exception as exc:
-                counters = {'error': str(exc)[:200]}
-                gateway = 'error'
-            check = subprocess.run(['systemctl', 'is-active', 'ps5-host.service'],
-                                   capture_output=True, text=True, timeout=3)
-            ipv6 = Path('/proc/sys/net/ipv6/conf/all/forwarding')
-            return {
-                'config': self.engine.store.snapshot(),
-                'status': {'host_ip': self.engine.host_ip, 'dns': 'running', 'gateway': gateway,
-                           'host': check.stdout.strip(), 'uptime': round(time.monotonic() - self.started),
-                           'ipv6_forwarding': ipv6.exists() and ipv6.read_text().strip() == '1',
-                           'last_applied': self.engine.last_applied,
-                           'last_error': self.engine.last_error,
-                           'gateway_error': self.engine.gateway_error,
-                           'dynamic_addresses': len(self.engine.live_leases())},
-                'logs': list(self.engine.logs), 'firewall': counters}
+                check = subprocess.run(['systemctl', 'is-active', *names],
+                                       capture_output=True, text=True, timeout=3)
+                states = check.stdout.split()
+            except (OSError, subprocess.SubprocessError):
+                states = []
+            # Prefer the unit that is running, then any that is known to systemd.
+            ranked = sorted(zip(names, states),
+                            key=lambda pair: (pair[1] != 'active',
+                                              pair[1] in ('inactive', 'unknown')))
+            if ranked:
+                name, state = ranked[0]
+                found[role] = {'name': name.removesuffix('.service'), 'state': state}
+        self._units = (time.monotonic(), found)
+        return found
+
+    def service_info(self):
+        settings = getattr(self, 'settings', None)
+        units = self.units()
+        if settings is None:
+            return {'units': units}
+        get = lambda name, default=None: getattr(settings, name, default)  # noqa: E731
+        return {
+            'units': units,
+            'ports': {'dns': get('dns_port', 53), 'http': get('http_port', 80),
+                      'https': get('https_port', 443), 'admin': get('admin_port', 8443),
+                      'repo': get('repo_port', 8080)},
+            'paths': {'data': str(get('data_dir', '')), 'repo': str(get('repo_dir', '')),
+                      'config': str(get('config_path', ''))},
+            'limits': {'repo_upload': getattr(getattr(self, 'repo', None), 'MAX_UPLOAD',
+                                              get('max_upload', 64 << 20)),
+                       'file_upload': get('max_file_upload', 0)},
+            'subnet': get('subnet', ''),
+        }
+
+    def state(self):
+        # Never hold the policy lock across subprocess calls: DNS answers wait on it.
+        try:
+            counters = self.engine.firewall.counters()
+            gateway = 'error' if self.engine.gateway_error else 'active'
+        except Exception as exc:
+            counters = {'error': str(exc)[:200]}
+            gateway = 'error'
+        service = self.service_info()
+        ipv6 = Path('/proc/sys/net/ipv6/conf/all/forwarding')
+        try:
+            ipv6_forwarding = ipv6.exists() and ipv6.read_text().strip() == '1'
+        except OSError:
+            ipv6_forwarding = False
+        with self.engine.store.lock:
+            config = self.engine.store.snapshot()
+            has_previous = self.engine.store.previous is not None
+        return {
+            'config': config,
+            'status': {'host_ip': self.engine.host_ip, 'dns': 'running', 'gateway': gateway,
+                       'host': service['units']['host']['state'],
+                       'host_unit': service['units']['host']['name'],
+                       'uptime': round(time.monotonic() - self.started),
+                       'ipv6_forwarding': ipv6_forwarding,
+                       'last_applied': self.engine.last_applied,
+                       'last_error': self.engine.last_error,
+                       'gateway_error': self.engine.gateway_error,
+                       'has_previous': has_previous,
+                       'dynamic_addresses': len(self.engine.live_leases())},
+            'service': service,
+            'logs': list(self.engine.logs), 'firewall': counters}
 
 
 class AdminHandler(BaseHTTPRequestHandler):
@@ -502,12 +611,16 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return
             try:
                 summary = self.server.repo.summary()
-                self.send_body(200, {**summary, 'host': self.server.server_address[0], 'port': 8080})
+                settings = getattr(self.server.app, 'settings', None)
+                host = getattr(settings, 'host_ip', None) or self.server.server_address[0]
+                port = getattr(settings, 'repo_port', None) or 8080
+                self.send_body(200, {**summary, 'host': host, 'port': port,
+                                     'max_upload': self.server.repo.MAX_UPLOAD})
             except Exception:
                 logging.exception('Read repository failed')
                 self.send_body(500, {'error': '读取插件仓库失败，请检查服务日志'})
             return
-        if self.path.startswith('/api/ps5') or self.path.startswith('/api/files'):
+        if self.path.startswith(('/api/ps5', '/api/files', '/api/nas', '/api/transfers')):
             if self.server.app.console_get(self):
                 return
         files = {'/': ('index.html', 'text/html; charset=utf-8'),
@@ -531,6 +644,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         filename = (query.get('filename') or [''])[0]
         meta = {key: (query.get(key) or [''])[0] for key in
                 ('name', 'version', 'category', 'author', 'description')}
+        replace = (query.get('replace') or [''])[0].lower() in ('1', 'true', 'yes')
         if self.headers.get('Transfer-Encoding'):
             self.send_body(400, {'error': '不支持分块上传'})
             return
@@ -541,17 +655,20 @@ class AdminHandler(BaseHTTPRequestHandler):
         if length <= 0:
             self.send_body(400, {'error': '文件为空'})
             return
-        if length > RepoManager.MAX_UPLOAD:
-            self.send_body(413, {'error': '文件超过 64MB 上限'})
+        if length > self.server.repo.MAX_UPLOAD:
+            self.send_body(413, {'error': f'文件超过 {self.server.repo.limit_label()} 上限'})
             return
         data = self.rfile.read(length)
         if len(data) != length:
             self.send_body(400, {'error': '上传中断，请重试'})
             return
         try:
-            entry = self.server.repo.add(filename, data, **meta)
+            entry = self.server.repo.add(filename, data, replace=replace, **meta)
         except FileExistsError as exc:
             self.send_body(409, {'error': str(exc)})
+            return
+        except FileNotFoundError as exc:
+            self.send_body(404, {'error': str(exc)})
             return
         except ValueError as exc:
             self.send_body(400, {'error': str(exc)})
@@ -560,14 +677,15 @@ class AdminHandler(BaseHTTPRequestHandler):
             logging.exception('Repository upload failed')
             self.send_body(500, {'error': '保存失败，请检查服务日志'})
             return
-        logging.info('repository upload: %s (%d bytes)', entry['filename'], length)
-        self.send_body(200, {'ok': True, 'filename': entry['filename']})
+        logging.info('repository %s: %s (%d bytes)', 'replace' if replace else 'upload',
+                     entry['filename'], length)
+        self.send_body(200, {'ok': True, 'filename': entry['filename'], 'replaced': replace})
 
     def do_POST(self):
         if not self.guard():
             return
         route = self.path.split('?', 1)[0]
-        if route.startswith('/api/ps5') or route.startswith('/api/files'):
+        if route.startswith(('/api/ps5', '/api/files', '/api/nas', '/api/transfers')):
             self.server.app.console_post(self, route)
             return
         if route == '/api/repo/upload':
@@ -587,7 +705,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeError, TimeoutError):
             self.send_body(400, {'error': '请求格式或大小不正确'})
             return
-        if self.path == '/api/login':
+        if route == '/api/login':
             try:
                 token, csrf = self.server.auth.login(self.client_address[0], body.get('password'))
                 self.send_body(200, {'csrf': csrf}, cookie=f'ps5_session={token}; Path=/; Max-Age={AuthManager.IDLE_SECONDS}; HttpOnly; Secure; SameSite=Lax')
@@ -704,8 +822,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     data = data_dir
     store = ConfigStore(data / 'config.json')
-    firewall = Firewall(host_ip=host_ip, lan=lan)
-    engine = DNSPolicy(store, firewall, host_ip=host_ip)
+    engine = create_engine(store, host_ip, lan)
     initialize_engine(engine)
     engine.on_apply = set_forwarding
     auth = AuthManager(json.loads((data / 'credentials.json').read_text()),
@@ -719,14 +836,18 @@ def main():
         dns_lookup=engine.lookup_ip,
         is_allowed=_allowed_destination(engine),
         lan=lan, host_ip=host_ip,
-        dns_events=lambda: list(engine.logs))
+        dns_events=lambda: list(engine.logs),
+        domain_allowed=engine.domain_allowed_now)
     stop_event = threading.Event()
     threading.Thread(target=make_poller(observer), args=(stop_event,), daemon=True).start()
     admin.app, admin.auth = Application(engine, observer), auth
     admin.app.settings = settings
-    admin.app.console = ConsoleAPI(settings, _catalog_reader(repo_dir / 'repo.json'))
+    admin.app.console = ConsoleAPI(settings, _catalog_reader(repo_dir / 'repo.json'),
+                                   autoscan=True)
     admin.repo = RepoManager(repo_dir,
-                             base_url=f'http://{host_ip}:{settings.repo_port}/payloads/')
+                             base_url=f'http://{host_ip}:{settings.repo_port}/payloads/',
+                             max_upload=settings.max_upload)
+    admin.app.repo = admin.repo
     admin.credentials_path = data / 'credentials.json'
     admin.static_dir = settings.static_dir
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

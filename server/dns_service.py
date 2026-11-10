@@ -21,7 +21,7 @@ import dns.rcode
 import dns.rdataclass
 import dns.rdatatype
 import dns.rrset
-from policy import LOCAL_DOMAINS, domain_allowed
+from policy import LOCAL_DOMAINS, domain_allowed, validate_config
 
 
 def diagnostic_error(exc):
@@ -90,6 +90,7 @@ class DNSPolicy:
         self.gateway_error = None
         self.on_apply = None
         self.lan = ipaddress.ip_network(lan, strict=False)
+        self.log_seq = 0
 
     def apply_rules(self, config, leases):
         self.firewall.apply(config, leases)
@@ -105,18 +106,49 @@ class DNSPolicy:
         return found[0], max(0, round(self.clock() - found[1], 1))
 
     def log(self, client, name, qtype, action, detail=''):
-        self.logs.appendleft({'time': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
-                               'client': client, 'name': name, 'qtype': qtype,
-                               'action': action, 'detail': str(detail)[:240]})
+        # seq lets readers (the activity page) pick up only rows they have not seen.
+        self.log_seq += 1
+        self.logs.appendleft({'seq': self.log_seq,
+                              'time': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
+                              'client': client, 'name': name, 'qtype': qtype,
+                              'action': action, 'detail': str(detail)[:240]})
 
     def live_leases(self):
+        """Read-only view of unexpired leases.
+
+        Other threads (activity poller, state reads) call this without the store
+        lock, so it must never write self.leases: a stale reassignment could drop
+        a lease the DNS thread has just granted. Pruning happens in answer().
+        """
         now = self.clock()
-        self.leases = {ip: expiry for ip, expiry in self.leases.items() if expiry > now}
-        return {ip: max(1, math.ceil(expiry - now)) for ip, expiry in self.leases.items()}
+        return {ip: max(1, math.ceil(expiry - now))
+                for ip, expiry in list(self.leases.items()) if expiry > now}
+
+    def domain_allowed_now(self, name):
+        """Whether a DNS name would be answered under the current whitelist."""
+        name = str(name or '').rstrip('.').lower()
+        if not name:
+            return False
+        return name in LOCAL_DOMAINS or domain_allowed(name, self.store.snapshot()['domains'])
+
+    def check_upstream(self, config):
+        """The upstream resolver must not be this service or a LAN edge address."""
+        upstream = ipaddress.IPv4Address(config['upstream_dns'])
+        if str(upstream) == str(self.host_ip):
+            raise ValueError('上游 DNS 不能是本服务地址（会形成查询回环），请填家庭路由器或公共 DNS')
+        if self.lan.version == 4 and self.lan.num_addresses > 2 and upstream in (
+                self.lan.network_address, self.lan.broadcast_address):
+            raise ValueError('上游 DNS 不能是网段的网络地址或广播地址')
 
     def change_config(self, raw=None, rollback=False):
         with self.store.lock:
             old = self.store.snapshot()
+            if rollback:
+                previous = self.store.previous
+                if previous is not None:
+                    self.check_upstream(previous)
+            else:
+                self.check_upstream(validate_config(raw))
             try:
                 if rollback:
                     self.store.rollback(lambda cfg: self.apply_rules(cfg, {}))
@@ -138,7 +170,7 @@ class DNSPolicy:
                     logging.exception('Unable to restore previous leases')
                 raise
             self.cache.clear()
-            self.leases.clear()
+            self.leases = {}
             self.ip_domains.clear()
             self.last_applied = datetime.datetime.now(datetime.timezone.utc).isoformat()
             self.last_error = None
@@ -198,8 +230,7 @@ class DNSPolicy:
                 # DNS TTL begins at receipt of the upstream response. Time spent
                 # waiting upstream must not consume a lease before it is returned.
                 now = self.clock()
-                self.live_leases()
-                pending = self.leases.copy()
+                pending = {ip: expiry for ip, expiry in self.leases.items() if expiry > now}
                 if len(pending) + len(ips) > 2048:
                     raise ValueError('动态地址授权数量超过限制')
                 for ip in ips:

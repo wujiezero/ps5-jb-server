@@ -122,11 +122,12 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(service['verdict'], 'allowed')
 
     def test_dns_events_are_included(self):
-        rows = [{'time': '2026-01-01T00:00:00+08:00', 'client': CLIENT,
+        # The engine's log is newest-first (deque.appendleft).
+        rows = [{'seq': 2, 'time': '2026-01-01T00:00:01+08:00', 'client': CLIENT,
+                 'name': 'ads.example', 'qtype': 'A', 'action': 'blocked', 'detail': 'nxdomain'},
+                {'seq': 1, 'time': '2026-01-01T00:00:00+08:00', 'client': CLIENT,
                  'name': 'ps5.playstation.net', 'qtype': 'A', 'action': 'allowed',
-                 'detail': ''},
-                {'time': '2026-01-01T00:00:01+08:00', 'client': CLIENT,
-                 'name': 'ads.example', 'qtype': 'A', 'action': 'blocked', 'detail': 'nxdomain'}]
+                 'detail': ''}]
         observer = FlowObserver(
             conntrack=lambda: '', classifier=self.classifier, labels=self.store,
             dns_lookup=lambda ip: (None, None), is_allowed=lambda ip: False,

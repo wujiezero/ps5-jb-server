@@ -23,3 +23,10 @@ __pycache__/
 # os / editor
 .DS_Store
 *.swp
+
+# Local agent notes (never pushed)
+.claude/
+
+# Secrets that must never be committed
+*.key
+nas.json

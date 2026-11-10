@@ -41,8 +41,8 @@ class Handler(BaseHTTPRequestHandler):
         if not path.startswith('/payloads/'):
             return None, None, False
         name = urllib.parse.unquote(path[len('/payloads/'):])
-        # Only names published in the catalog are reachable.
-        if name not in self.server.allowed:
+        # Only plain names published in the catalog are reachable.
+        if '/' in name or name.startswith('.') or name not in self.server.allowed:
             return None, None, False
         return self.server.root / 'payloads' / name, 'application/octet-stream', False
 
@@ -107,8 +107,15 @@ def main():
     catalog = json.loads((server.root / CATALOG).read_text(encoding='utf-8'))
     for item in catalog['payloads']:
         payload = server.root / 'payloads' / item['filename']
+        if not item.get('checksum'):
+            continue
+        if not payload.is_file():
+            # A missing file is a 404 for that one payload, not a reason to
+            # take the whole repository offline.
+            logging.warning('payload listed but missing: %s', item['filename'])
+            continue
         digest = hashlib.sha256(payload.read_bytes()).hexdigest()
-        if item.get('checksum') and digest != item['checksum']:
+        if digest != item['checksum']:
             raise SystemExit(f'checksum mismatch: {item["filename"]}')
     logging.info('payload catalog ready: %d items at http://%s:%d/%s',
                  len(catalog['payloads']), args.ip, args.port, CATALOG)

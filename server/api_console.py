@@ -10,6 +10,8 @@ import os
 import urllib.parse
 
 from files import FileServiceError, FileProxy
+from nas import NasError, NasStore, SecretBox, TransferManager, check_connection, client_for, \
+    clean_path, smb_available
 from ps5 import ConsoleError, HostManager
 
 MAX_JSON = 32 * 1024
@@ -17,14 +19,24 @@ CHUNK = 64 * 1024
 
 
 class ConsoleAPI:
-    def __init__(self, settings, catalog):
+    def __init__(self, settings, catalog, autoscan=False):
         self.settings = settings
         self.ps5 = HostManager(settings, catalog)
-        self.files = FileProxy(settings.subnet, port=settings.file_port)
+        self.files = FileProxy(settings.subnet, port=settings.file_port,
+                               ftp_port=getattr(settings, 'ftp_port', 2120),
+                               space_port=getattr(settings, 'space_port', 8888))
         self.state_path = settings.data_dir / 'console.json'
         self._restore()
         self.enabled = settings.ps5_control
         self.file_manager = settings.file_manager
+        self.nas = NasStore(settings.data_dir / 'nas.json',
+                            getattr(settings, 'secret_key_path', None))
+        self.transfers = TransferManager(self.nas, self.files)
+        if autoscan and self.enabled:
+            # The discovery cache is in memory; without this the host list is
+            # empty after every restart until someone presses "rescan".
+            extra = [self.files.host] if self.files.host else []
+            self.ps5.discovery.scan_in_background(extra)
 
     def _restore(self):
         try:
@@ -65,13 +77,33 @@ class ConsoleAPI:
         return (self._query(handler).get(key) or [default])[0]
 
     def _fail(self, handler, exc):
-        if isinstance(exc, (ValueError, KeyError)):
-            handler.send_body(400, {'error': str(exc)})
-        elif isinstance(exc, (ConsoleError, FileServiceError)):
+        if isinstance(exc, (ValueError, KeyError, TypeError)):
+            handler.send_body(400, {'error': str(exc) or '请求参数不正确'})
+        elif isinstance(exc, FileServiceError):
+            # Keep "already exists" / "not found" distinguishable for the page.
+            status = exc.status if exc.status in (404, 409) else 502
+            handler.send_body(status, {'error': str(exc),
+                                       **({'code': 'exists'} if status == 409 else {})})
+        elif isinstance(exc, ConsoleError):
             handler.send_body(502, {'error': str(exc)})
+        elif isinstance(exc, NasError):
+            # Never 401 here: the page treats 401 as "admin session expired".
+            handler.send_body(404 if exc.status == 404 else 502, {'error': str(exc)})
         else:
             logging.exception('console api failed')
             handler.send_body(500, {'error': '操作失败，请检查服务日志'})
+
+    def _disabled(self, handler, path):
+        if path.startswith(('/api/nas', '/api/transfers')) and not self.file_manager:
+            handler.send_body(403, {'error': 'PS5 文件管理已在配置中关闭（[ps5] file_manager）'})
+            return True
+        if path.startswith('/api/ps5') and not self.enabled:
+            handler.send_body(403, {'error': 'PS5 主机控制已在配置中关闭（[ps5] control）'})
+            return True
+        if path.startswith('/api/files') and not self.file_manager:
+            handler.send_body(403, {'error': 'PS5 文件管理已在配置中关闭（[ps5] file_manager）'})
+            return True
+        return False
 
     # ---------- GET ----------
     def handle_get(self, handler):
@@ -85,15 +117,24 @@ class ConsoleAPI:
                     return True
                 handler.send_body(200, self.ps5.overview())
                 return True
+            if path == '/api/files/info' and not self.file_manager:
+                handler.send_body(200, {'configured': False, 'enabled': False, 'hosts': [],
+                                        'error': 'PS5 文件管理已在配置中关闭'})
+                return True
+            if self._disabled(handler, path):
+                return True
             if path == '/api/files/info':
-                handler.send_body(200, {**self.files.info(), 'hosts': self._known_hosts()})
+                handler.send_body(200, {**self.files.info(), 'enabled': True,
+                                        'hosts': self._known_hosts()})
                 return True
             if path == '/api/files/download':
-                return self._stream(handler, lambda: self.files.stream(self._arg(handler, 'path')),
-                                    'download.bin', 'application/octet-stream')
+                target = self._arg(handler, 'path')
+                return self._stream(handler, lambda: self.files.stream(target),
+                                    _basename(target, 'download.bin'), 'application/octet-stream')
             if path == '/api/files/tar':
-                return self._stream(handler, lambda: self.files.stream_folder(self._arg(handler, 'path')),
-                                    'folder.tar', 'application/x-tar')
+                target = self._arg(handler, 'path')
+                return self._stream(handler, lambda: self.files.stream_folder(target),
+                                    _basename(target, 'folder') + '.tar', 'application/x-tar')
             if path == '/api/files/volumes':
                 handler.send_body(200, self.files.volumes())
                 return True
@@ -106,11 +147,31 @@ class ConsoleAPI:
             if path == '/api/files/job':
                 handler.send_body(200, self.files.job())
                 return True
+            if path == '/api/nas':
+                handler.send_body(200, {'connections': self.nas.list_public(),
+                                        'protocols': {'webdav': True, 'smb': smb_available(),
+                                                      'ftp': True},
+                                        'encryption': SecretBox.available()})
+                return True
+            if path == '/api/nas/list':
+                config = self.nas.get(self._arg(handler, 'id'))
+                target = clean_path(self._arg(handler, 'path', '/'))
+                client = client_for(config)
+                try:
+                    entries = client.list(target)
+                finally:
+                    client.close()
+                entries.sort(key=lambda item: (not item['dir'], item['name'].lower()))
+                handler.send_body(200, {'path': target, 'entries': entries})
+                return True
+            if path == '/api/transfers':
+                handler.send_body(200, {'jobs': self.transfers.snapshot()})
+                return True
             if path == '/api/files/transfers':
                 handler.send_body(200, self.files.transfers())
                 return True
             return False
-        except (ValueError, ConsoleError, FileServiceError) as exc:
+        except Exception as exc:  # every failure must still answer the browser
             self._fail(handler, exc)
             return True
 
@@ -123,8 +184,7 @@ class ConsoleAPI:
         length = response.headers.get('Content-Length')
         handler.send_response(200)
         handler.send_header('Content-Type', ctype)
-        handler.send_header('Content-Disposition',
-                            f'attachment; filename="{filename}"')
+        handler.send_header('Content-Disposition', _disposition(filename))
         handler.send_header('Cache-Control', 'no-store')
         handler.send_header('X-Content-Type-Options', 'nosniff')
         if length and length.isdigit():
@@ -151,6 +211,8 @@ class ConsoleAPI:
             return self._upload(handler)
         if not handler.require_session(write=True):
             return True
+        if self._disabled(handler, path):
+            return True
         try:
             body = self._json_body(handler)
             if path == '/api/ps5/scan':
@@ -165,8 +227,10 @@ class ConsoleAPI:
             elif path == '/api/ps5/kill':
                 handler.send_body(200, self.ps5.kill(body.get('ip'), body.get('pid')))
             elif path == '/api/ps5/autoload':
-                handler.send_body(200, self.ps5.autoload(body.get('ip'), bool(body.get('enabled')),
-                                                         body.get('files') or []))
+                handler.send_body(200, self.ps5.autoload(
+                    body.get('ip'), bool(body.get('enabled')),
+                    items=body.get('items'), start_delay=body.get('start_delay'),
+                    lead_ms=body.get('lead_ms') or 0, files=body.get('files')))
             elif path == '/api/ps5/shutdown':
                 handler.send_body(200, self.ps5.shutdown(body.get('ip')))
             elif path == '/api/files/configure':
@@ -180,18 +244,36 @@ class ConsoleAPI:
                 self._ok(handler, self.files.rename(body.get('from'), body.get('to')))
             elif path == '/api/files/delete':
                 self._ok(handler, self.files.delete(body.get('path')))
-            elif path == '/api/files/copy':
-                self._ok(handler, self.files.copy(body.get('from'), body.get('to')))
-            elif path == '/api/files/move':
-                self._ok(handler, self.files.copy(body.get('from'), body.get('to'), move=True))
+            elif path in ('/api/files/copy', '/api/files/move'):
+                result = self.files.copy(body.get('from'), body.get('to'),
+                                         move=path.endswith('move'))
+                instant = isinstance(result, dict) and result.get('instant') is True
+                handler.send_body(200, {'ok': True, 'result': result, 'instant': instant})
             elif path == '/api/files/cancel':
                 self._ok(handler, self.files.cancel())
+            elif path == '/api/nas/save':
+                handler.send_body(200, {'ok': True, 'connection': self.nas.save(body)})
+            elif path == '/api/nas/delete':
+                self.nas.delete(body.get('id'))
+                handler.send_body(200, {'ok': True})
+            elif path == '/api/nas/test':
+                existing = self.nas.get(body['id']) if body.get('id') else None
+                config = self.nas.validate(body, existing)
+                handler.send_body(200, check_connection(config))
+            elif path == '/api/nas/transfer':
+                handler.send_body(200, {'ok': True, 'job': self.transfers.start(
+                    body.get('id'), body.get('paths'), body.get('dest'),
+                    body.get('overwrite') or 'skip')})
+            elif path == '/api/transfers/cancel':
+                handler.send_body(200, self.transfers.cancel(body.get('id')))
+            elif path == '/api/transfers/clear':
+                handler.send_body(200, self.transfers.clear())
             elif path == '/api/files/bench':
                 handler.send_body(200, {'ok': True, 'result': self.files.bench(body.get('path'))})
             else:
                 handler.send_body(404, {'error': '未知操作'})
             return True
-        except (ValueError, ConsoleError, FileServiceError) as exc:
+        except Exception as exc:
             self._fail(handler, exc)
             return True
 
@@ -200,6 +282,8 @@ class ConsoleAPI:
 
     def _upload(self, handler):
         if not handler.require_session(write=True):
+            return True
+        if self._disabled(handler, '/api/files'):
             return True
         directory = self._arg(handler, 'path', '/data')
         overwrite = self._arg(handler, 'overwrite', '').lower() in ('1', 'true', 'yes')
@@ -214,8 +298,9 @@ class ConsoleAPI:
         if length <= 0:
             handler.send_body(400, {'error': '文件为空'})
             return True
-        if length > self.settings.max_upload:
-            handler.send_body(413, {'error': '文件超过上限'})
+        limit = getattr(self.settings, 'max_file_upload', 0)
+        if limit and length > limit:
+            handler.send_body(413, {'error': f'文件超过上传上限（{limit // (1024 * 1024)} MB）'})
             return True
 
         def chunks():
@@ -230,8 +315,18 @@ class ConsoleAPI:
         try:
             handler.send_body(200, self.files.upload(directory, name, chunks(), length,
                                                      overwrite=overwrite))
-        except ValueError as exc:
-            self._fail(handler, exc)
-        except FileServiceError as exc:
+        except Exception as exc:
             self._fail(handler, exc)
         return True
+
+
+def _basename(path, fallback):
+    name = str(path or '').rstrip('/').rsplit('/', 1)[-1]
+    return name or fallback
+
+
+def _disposition(filename):
+    """attachment with an ASCII fallback plus the exact UTF-8 name (RFC 6266/5987)."""
+    ascii_name = ''.join(c if 32 <= ord(c) < 127 and c not in '"\\' else '_' for c in filename)
+    quoted = urllib.parse.quote(filename, safe='')
+    return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quoted}'

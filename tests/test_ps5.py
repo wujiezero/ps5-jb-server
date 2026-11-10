@@ -227,7 +227,10 @@ class ManagerTests(ConsoleFixture):
         manager = HostManager(FakeConfig(pldmgr_port=1, elf_port=self.config.elf_port),
                               type(self).catalog,
                               fetch_bytes=lambda name: b'\x7fELF-' + name.encode())
-        result = manager.install('127.0.0.1', 'ftpsrv_v0.21.1.elf', run=False)
+        # Install-only must not silently run the payload through elfldr.
+        with self.assertRaises(ConsoleError):
+            manager.install('127.0.0.1', 'ftpsrv_v0.21.1.elf', run=False)
+        result = manager.install('127.0.0.1', 'ftpsrv_v0.21.1.elf', run=True)
         self.assertEqual(result['mode'], 'elfldr')
         # The availability probe opens a connection first, so look for the GET.
         self.assertTrue(any(r.startswith(b'GET ') for r in FakeElfldr.requests))
@@ -244,6 +247,17 @@ class ManagerTests(ConsoleFixture):
         self.assertEqual(FakePldmgr.config['AUTOLOAD_LIST'], 'etaHEN_2.5B.bin,ftpsrv_v0.21.1.elf')
         host = self.manager.host('127.0.0.1')
         self.assertEqual(host['autoload']['list'], ['etaHEN_2.5B.bin', 'ftpsrv_v0.21.1.elf'])
+        # Ordered items with a wait after each one, plus the start countdown.
+        self.manager.autoload('127.0.0.1', True,
+                              items=[{'key': 'local/kstuff', 'delay_ms': 3000},
+                                     {'key': 'local/ftpsrv', 'delay_ms': 0}],
+                              start_delay=8)
+        self.assertEqual(FakePldmgr.config['AUTOLOAD_LIST'], 'local/kstuff,!3000,local/ftpsrv')
+        self.assertEqual(FakePldmgr.config['AUTOLOAD_DELAY'], 8)
+        host = self.manager.host('127.0.0.1')
+        self.assertEqual([(i['key'], i['delay_ms']) for i in host['autoload']['items']],
+                         [('local/kstuff', 3000), ('local/ftpsrv', 0)])
+        self.assertEqual(host['autoload']['start_delay'], 8)
 
     def test_autoload_rejects_path_injection(self):
         with self.assertRaises(ValueError):

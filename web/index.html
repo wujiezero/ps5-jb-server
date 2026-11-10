@@ -16,6 +16,7 @@
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.2 7.4a2.2 2.2 0 0 1 2.2-2.2h3.9l2 2.4h7.3a2.2 2.2 0 0 1 2.2 2.2v7.8a2.2 2.2 0 0 1-2.2 2.2H5.4a2.2 2.2 0 0 1-2.2-2.2Z"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.2 3.2h7.3l4.3 4.3v12.1a1.4 1.4 0 0 1-1.4 1.4H6.2a1.4 1.4 0 0 1-1.4-1.4V4.6a1.4 1.4 0 0 1 1.4-1.4Z"/><path d="M13.5 3.4v4.4h4.4"/></symbol>
     <symbol id="i-drive" viewBox="0 0 24 24"><rect x="3.2" y="4.6" width="17.6" height="14.8" rx="2.4"/><path d="M3.4 14.2h17.2M7.2 17.2h.01M10.8 17.2h.01"/></symbol>
+    <symbol id="i-nas" viewBox="0 0 24 24"><rect x="4.2" y="3.4" width="15.6" height="7.2" rx="1.8"/><rect x="4.2" y="13.4" width="15.6" height="7.2" rx="1.8"/><path d="M7.6 7h.01M7.6 17h.01M11 7h5.4M11 17h5.4"/></symbol>
     <symbol id="i-usb" viewBox="0 0 24 24"><path d="M12 3.4v14.4M12 3.4 10 6.4h4ZM12 12.4l-3.8-1.9V8.3M12 15l3.8-1.9v-2.2"/><circle cx="12" cy="19.6" r="1.7"/><rect x="6.9" y="6.8" width="2.2" height="2.2"/><circle cx="16.4" cy="9.8" r="1.1"/></symbol>
     <symbol id="i-chip" viewBox="0 0 24 24"><rect x="3.4" y="7.8" width="17.2" height="8.4" rx="1.8"/><path d="M7.2 16.4v2.2M11.4 16.4v2.2M15.6 16.4v2.2M7.2 12h.01M16.8 11.2h1.8v1.8h-1.8z"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16.2V4.6M7.4 9.2 12 4.6l4.6 4.6M4.4 18.8h15.2"/></symbol>
@@ -164,17 +165,17 @@
             <article class="card stat-card">
               <p class="stat-label">DNS 服务</p>
               <p id="dns-status" class="stat-value service-value" data-tone="neutral">等待状态</p>
-              <p class="stat-hint">UDP / TCP 53</p>
+              <p id="dns-status-hint" class="stat-hint">UDP / TCP 53</p>
             </article>
             <article class="card stat-card">
               <p class="stat-label">IPv4 网关</p>
               <p id="gateway-status" class="stat-value service-value" data-tone="neutral">等待状态</p>
-              <p class="stat-hint">nftables 默认拒绝</p>
+              <p id="gateway-status-hint" class="stat-hint">nftables 默认拒绝</p>
             </article>
             <article class="card stat-card">
-              <p class="stat-label">破解托管</p>
+              <p class="stat-label">用户手册入口</p>
               <p id="host-status" class="stat-value service-value" data-tone="neutral">等待状态</p>
-              <p class="stat-hint">ps5-host.service</p>
+              <p id="host-status-hint" class="stat-hint">HTTPS 443 · 越狱页面托管</p>
             </article>
             <article class="card stat-card">
               <p class="stat-label">插件仓库</p>
@@ -221,22 +222,22 @@
                 <div class="quick-links">
                   <a class="quick-link" href="#/activity">
                     <span class="quick-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M3.5 12h3.1l2.2-5.2 3.5 10.4 2.2-5.2h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                    <span class="quick-text"><strong>网络活动</strong><span>查看经本机的连接并批量放行</span></span>
+                    <span class="quick-text"><strong>网络活动</strong><span id="quick-activity">查看经本机的连接并批量放行</span></span>
                     <span class="quick-arrow" aria-hidden="true">→</span>
                   </a>
                   <a class="quick-link" href="#/policy">
                     <span class="quick-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 3.2 5 6.1v5.3c0 4 3.4 7.1 7 8.4 3.6-1.3 7-4.4 7-8.4V6.1L12 3.2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m9.1 11.8 2.1 2.1 3.8-3.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                    <span class="quick-text"><strong>访问策略</strong><span>编辑域名白名单与上游 DNS</span></span>
+                    <span class="quick-text"><strong>访问策略</strong><span id="quick-policy">编辑域名白名单与上游 DNS</span></span>
                     <span class="quick-arrow" aria-hidden="true">→</span>
                   </a>
                   <a class="quick-link" href="#/ps5">
                     <span class="quick-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.4" y="5.4" width="17.2" height="11.6" rx="2.4" stroke="currentColor" stroke-width="1.6"/><path d="M8.4 20.6h7.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M7.6 9.4h6.2M7.6 12.8h3.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="16.6" cy="12.8" r="1.15" fill="currentColor"/></svg></span>
-                    <span class="quick-text"><strong>PS5 主机</strong><span>发现主机、安装载荷与配置自动加载</span></span>
+                    <span class="quick-text"><strong>PS5 主机</strong><span id="quick-ps5">发现主机、安装载荷与配置自动加载</span></span>
                     <span class="quick-arrow" aria-hidden="true">→</span>
                   </a>
                   <a class="quick-link" href="#/files">
                     <span class="quick-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><use href="#i-folder"></use></svg></span>
-                    <span class="quick-text"><strong>PS5 文件</strong><span>浏览主机存储、上传与整理文件</span></span>
+                    <span class="quick-text"><strong>PS5 文件</strong><span id="quick-files">浏览主机存储、上传与整理文件</span></span>
                     <span class="quick-arrow" aria-hidden="true">→</span>
                   </a>
                 </div>
@@ -348,11 +349,20 @@
                 <button class="segment" type="button" data-filter="blocked" aria-pressed="false">未放行</button>
                 <button class="segment" type="button" data-filter="allowed" aria-pressed="false">允许</button>
               </div>
-              <label class="filter-select" for="activity-filter">筛选
+              <label class="filter-select" for="activity-filter">结果
                 <select id="activity-filter">
                   <option value="all">全部</option>
                   <option value="blocked">仅未放行</option>
                   <option value="allowed">仅允许</option>
+                </select>
+              </label>
+              <label class="filter-select" for="activity-kind">来源
+                <select id="activity-kind">
+                  <option value="all">全部来源</option>
+                  <option value="flow">网关连接</option>
+                  <option value="dns">DNS 查询</option>
+                  <option value="service">本机服务</option>
+                  <option value="external">隐藏本机服务</option>
                 </select>
               </label>
               <button id="activity-select-all-mobile" class="button button-secondary button-small select-all-mobile" type="button">全选</button>
@@ -506,12 +516,22 @@
                   <span class="ps5-switch-track" aria-hidden="true"></span>
                   <span class="ps5-switch-text">启用自动加载</span>
                 </label>
-                <p id="ps5-autoload-help" class="field-help">主机启动 pldmgr 时按列表顺序加载这些载荷；列表保存在主机上。</p>
+                <p id="ps5-autoload-help" class="field-help">pldmgr 启动后先倒计时，再按顺序逐个加载；每个插件加载后可以等待一段时间再加载下一个（与 autoloader 的 <code>!毫秒</code> 写法一致）。设置保存在主机上。</p>
+                <div class="ps5-autoload-start">
+                  <label for="ps5-autoload-start-delay">启动倒计时</label>
+                  <span class="ps5-delay-input"><input id="ps5-autoload-start-delay" type="number" min="0" max="3600" step="1" inputmode="numeric"><span>秒</span></span>
+                  <span id="ps5-autoload-lead" class="field-help" hidden></span>
+                </div>
                 <fieldset id="ps5-autoload-list" class="ps5-autoload-list">
-                  <legend>自动加载的插件</legend>
-                  <div id="ps5-autoload-items" class="ps5-autoload-items"></div>
+                  <legend>加载顺序</legend>
+                  <ol id="ps5-autoload-items" class="ps5-autoload-seq"></ol>
+                  <p id="ps5-autoload-empty" class="field-help" hidden>列表为空：启用后不会自动加载任何插件。</p>
+                  <div class="ps5-autoload-add">
+                    <label class="visually-hidden" for="ps5-autoload-add-select">选择要加入的插件</label>
+                    <select id="ps5-autoload-add-select"></select>
+                    <button id="ps5-autoload-add" class="button button-secondary button-small" type="button">加入列表</button>
+                  </div>
                 </fieldset>
-                <p id="ps5-autoload-empty" class="field-help" hidden>主机上还没有已安装的插件；先在「插件库」安装后再配置自动加载。</p>
                 <p id="ps5-autoload-note" class="field-help" hidden></p>
                 <p id="ps5-autoload-progress" class="ps5-progress" role="status" hidden></p>
                 <p id="ps5-autoload-error" class="field-error" role="alert" hidden></p>
@@ -560,7 +580,7 @@
             <div id="files-unreachable" class="files-unreachable" hidden>
               <span class="files-empty-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><use href="#i-off"></use></svg></span>
               <p><strong>未连接文件服务</strong></p>
-              <p id="files-unreachable-text" class="muted">请在主机上运行 pldmgr，或确认后台文件服务已启用。</p>
+              <p id="files-unreachable-text" class="muted">请在 PS5 上运行 zftpd（FTP，端口 2120）或 tom-ps5-usbnet（需要 USB 网卡已接网线）后重试。</p>
               <div class="files-empty-actions">
                 <button id="files-retry" class="button button-secondary" type="button" aria-label="重试连接文件服务">重试</button>
                 <button id="files-switch-host" class="button button-secondary" type="button" aria-label="切换文件服务主机">切换主机</button>
@@ -569,10 +589,51 @@
 
             <div id="files-main" class="files-layout" hidden>
               <aside class="files-rail" aria-label="存储位置">
-                <h3 class="files-rail-title">存储位置</h3>
+                <h3 class="files-rail-title">PS5 存储</h3>
                 <div id="files-volumes" class="files-volumes"></div>
+                <div class="files-rail-head">
+                  <h3 class="files-rail-title">NAS 存储</h3>
+                  <button id="nas-add" class="files-rail-add" type="button" aria-label="添加 NAS 存储">＋ 添加</button>
+                </div>
+                <div id="nas-list" class="files-volumes"></div>
               </aside>
-              <div class="files-workspace">
+              <div id="files-nas-pane" class="files-workspace" hidden>
+                <div class="files-toolbar">
+                  <button id="nas-send" class="button button-primary" type="button" aria-label="把选中的 NAS 文件传到 PS5" disabled>
+                    <svg class="icon" aria-hidden="true"><use href="#i-upload"></use></svg>
+                    <span class="button-label">传到 PS5</span>
+                  </button>
+                  <button id="nas-refresh" class="button button-secondary button-icon" type="button" aria-label="刷新 NAS 文件列表" title="刷新">
+                    <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
+                  </button>
+                  <button id="nas-edit" class="button button-secondary" type="button" aria-label="编辑当前 NAS 连接">编辑连接</button>
+                  <button class="button button-secondary button-small" type="button" data-files-transfers aria-label="查看传输任务">
+                    <span class="button-label">传输任务</span>
+                    <span class="files-count-badge" data-files-transfers-count hidden></span>
+                  </button>
+                  <label class="files-search" for="nas-filter">
+                    <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+                    <input id="nas-filter" type="search" placeholder="筛选当前文件夹" autocomplete="off" spellcheck="false" aria-label="筛选 NAS 当前文件夹">
+                  </label>
+                </div>
+                <nav id="nas-crumbs" class="files-crumbs" aria-label="NAS 文件夹路径"></nav>
+                <p id="nas-error" class="banner banner-error" role="alert" hidden></p>
+                <div class="table-wrap files-table-wrap" role="region" aria-label="NAS 文件列表" tabindex="0">
+                  <table class="files-table nas-table">
+                    <thead>
+                      <tr>
+                        <th scope="col" class="check-cell"><input id="nas-select-all" type="checkbox" aria-label="全选当前文件夹"></th>
+                        <th scope="col">名称</th>
+                        <th scope="col" class="files-size-col">大小</th>
+                        <th scope="col" class="files-time-col">修改时间</th>
+                      </tr>
+                    </thead>
+                    <tbody id="nas-body"></tbody>
+                  </table>
+                </div>
+                <p id="nas-status" class="files-status" aria-live="polite"></p>
+              </div>
+              <div id="files-ps5-pane" class="files-workspace">
                 <div class="files-toolbar">
                   <button id="files-upload" class="button button-primary" type="button" aria-label="上传文件到当前文件夹">
                     <svg class="icon" aria-hidden="true"><use href="#i-upload"></use></svg>
@@ -585,10 +646,10 @@
                   <button id="files-refresh" class="button button-secondary button-icon" type="button" aria-label="刷新文件列表" title="刷新">
                     <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
                   </button>
-                  <button id="files-transfers-toggle" class="button button-secondary button-small" type="button" aria-expanded="false" aria-controls="files-transfers" aria-label="查看传输任务">
+                  <button id="files-transfers-toggle" class="button button-secondary button-small" type="button" data-files-transfers aria-expanded="false" aria-controls="files-transfers" aria-label="查看传输任务">
                     <svg class="icon" aria-hidden="true"><use href="#i-upload"></use></svg>
                     <span class="button-label">传输任务</span>
-                    <span id="files-transfers-count" class="files-count-badge" hidden></span>
+                    <span id="files-transfers-count" class="files-count-badge" data-files-transfers-count hidden></span>
                   </button>
                   <label class="files-search" for="files-filter">
                     <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
@@ -618,33 +679,14 @@
             <header class="card-head">
               <div>
                 <h2 id="files-transfers-title">传输任务</h2>
-                <p class="card-sub">上传进度来自当前页面；复制与移动任务由主机执行，可随时取消。</p>
+                <p class="card-sub">浏览器上传、PS5 内复制/移动与 NAS 传输都在这里显示实时进度；离开页面不影响服务器上的任务。</p>
               </div>
-              <button id="files-transfers-close" class="button button-secondary button-small" type="button" aria-label="收起传输任务">收起</button>
+              <div class="files-transfers-actions">
+                <button id="files-transfers-clear" class="button button-secondary button-small" type="button" aria-label="清除已结束的任务">清除已结束</button>
+                <button id="files-transfers-close" class="button button-secondary button-small" type="button" aria-label="收起传输任务">收起</button>
+              </div>
             </header>
-            <div id="files-job" class="files-job" hidden>
-              <div class="files-job-head">
-                <span id="files-job-label">复制任务</span>
-                <button id="files-job-cancel" class="button button-secondary button-small" type="button" aria-label="取消当前复制或移动任务">取消</button>
-              </div>
-              <div class="files-meter" aria-hidden="true"><i id="files-job-fill"></i></div>
-              <p id="files-job-text" class="field-help"></p>
-            </div>
-            <div class="table-wrap files-transfers-wrap" role="region" aria-label="传输任务列表" tabindex="0">
-              <table class="files-transfers-table">
-                <thead>
-                  <tr>
-                    <th scope="col">类型</th>
-                    <th scope="col">名称</th>
-                    <th scope="col">大小</th>
-                    <th scope="col">进度</th>
-                    <th scope="col">状态</th>
-                    <th scope="col">速度</th>
-                  </tr>
-                </thead>
-                <tbody id="files-transfers-body"><tr><td colspan="6" class="empty-state">暂无传输任务。</td></tr></tbody>
-              </table>
-            </div>
+            <ul id="files-transfers-list" class="xfer-list" aria-live="polite"></ul>
             <p id="files-transfers-error" class="field-error" role="alert" hidden></p>
           </section>
 
@@ -665,7 +707,10 @@
               <div><h2 id="repo-title">插件载荷</h2><p class="card-sub">维护 PS5 插件载荷（.elf / .bin）。上传后立即写入仓库，PS5 可直接下载。</p></div>
             </header>
             <p id="repo-summary" class="summary-line" aria-live="polite">正在读取插件仓库…</p>
-            <p id="repo-endpoint" class="endpoint-line" hidden></p>
+            <div id="repo-endpoint-row" class="endpoint-row" hidden>
+              <p class="endpoint-line"><span class="endpoint-label">Payload Manager 源地址</span> <span id="repo-endpoint" class="mono"></span></p>
+              <button id="repo-copy-url" class="button button-secondary button-small" type="button">复制地址</button>
+            </div>
             <p id="repo-error" class="banner banner-error" role="alert" hidden></p>
             <div class="search-toolbar">
               <label class="search-field" for="repo-search">
@@ -733,19 +778,22 @@
           <section class="card" aria-labelledby="service-title">
             <header class="card-head"><h2 id="service-title">服务信息</h2></header>
             <dl class="info-list">
-              <div><dt>管理入口</dt><dd class="mono">https://<span data-host-ip>—</span>:8443/</dd></div>
-              <div><dt>端口</dt><dd class="mono">UDP/TCP 53 · TCP 443 · 80 · 8080 · 8443</dd></div>
-              <div><dt>插件仓库</dt><dd class="mono">/srv/ps5-repo/（repo.json + payloads/）</dd></div>
-              <div><dt>配置与状态</dt><dd class="mono">/var/lib/ps5-manager/</dd></div>
+              <div><dt>管理入口</dt><dd id="info-admin" class="mono">—</dd></div>
+              <div><dt>端口</dt><dd id="info-ports" class="mono">—</dd></div>
+              <div><dt>服务网段</dt><dd id="info-subnet" class="mono">—</dd></div>
+              <div><dt>插件仓库目录</dt><dd id="info-repo-dir" class="mono">—</dd></div>
+              <div><dt>配置与状态</dt><dd id="info-data-dir" class="mono">—</dd></div>
+              <div><dt>配置文件</dt><dd id="info-config" class="mono">—</dd></div>
+              <div><dt>系统服务</dt><dd id="info-units" class="mono">—</dd></div>
             </dl>
-            <p class="secondary-note">插件仓库地址 <span class="mono">http://<span data-host-ip>—</span>:8080/repo.json</span>；载荷下载地址 <span class="mono">http://<span data-host-ip>—</span>:8080/payloads/</span>。</p>
+            <p class="secondary-note">插件仓库地址 <span id="info-repo-url" class="mono">—</span>；PS5 的 Payload Manager 添加这个地址即可安装插件。</p>
           </section>
 
           <section class="card" aria-labelledby="disable-title">
             <header class="card-head"><h2 id="disable-title">停用与回滚</h2></header>
             <ol class="steps">
               <li><span>先把 PS5 的默认网关改回家庭路由器，DNS 改为常用解析器。</span></li>
-              <li><span>再在主机上停止并禁用服务：</span><pre class="code-block"><code>systemctl disable --now ps5-host ps5-manager ps5-repo</code></pre></li>
+              <li><span>再在主机上停止并禁用服务：</span><pre class="code-block"><code id="info-stop-command">systemctl disable --now ps5-jb-host ps5-jb-server ps5-jb-repo</code></pre></li>
             </ol>
             <p class="secondary-note">停止服务会关闭此容器的 IPv4 转发；原规则保留默认拒绝，避免意外漏放。若需要不可绕过的设备隔离，应由家庭路由器 / VLAN 实施。</p>
           </section>
@@ -872,7 +920,7 @@
     <form id="repo-upload-form" class="dialog-form" novalidate>
       <div class="dialog-content">
         <h2 id="repo-upload-title">上传新插件</h2>
-        <p class="dialog-subtitle">单个文件不超过 64 MB。文件名取自所选文件，也是下载地址中的文件名。</p>
+        <p id="repo-upload-subtitle" class="dialog-subtitle">单个文件不超过 64 MB。文件名取自所选文件，也是下载地址中的文件名。</p>
         <fieldset id="repo-upload-fields">
           <div class="field-grid">
             <div class="field-group field-full">
@@ -1103,6 +1151,13 @@
         </span>
       </div>
       <div id="files-dest-list" class="files-dest-list" role="group" aria-label="目标文件夹"></div>
+      <p id="files-dest-space" class="field-help" hidden></p>
+      <label id="files-dest-overwrite-row" class="files-dest-option" for="files-dest-overwrite" hidden>同名文件
+        <select id="files-dest-overwrite">
+          <option value="skip">跳过（保留 PS5 上的文件）</option>
+          <option value="overwrite">覆盖</option>
+        </select>
+      </label>
       <p id="files-dest-error" class="field-error" role="alert" hidden></p>
     </div>
     <div class="dialog-actions">
@@ -1112,6 +1167,78 @@
         <span class="button-label">复制到这里</span>
       </button>
     </div>
+  </dialog>
+
+  <dialog id="nas-dialog" class="dialog dialog-wide" aria-labelledby="nas-dialog-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <form id="nas-form" class="dialog-form" novalidate>
+      <div class="dialog-content">
+        <h2 id="nas-dialog-title">添加 NAS 存储</h2>
+        <p class="dialog-subtitle">由本服务连接 NAS 并把文件直接写入 PS5，不经过浏览器，也不在服务器上落盘。用户名和密码以 AES-256-GCM 加密后保存在服务器上，密码不会回传到页面。</p>
+        <div class="field-grid">
+          <div class="field-group">
+            <label for="nas-name">名称</label>
+            <input id="nas-name" type="text" maxlength="40" autocomplete="off" placeholder="例如 家里的群晖">
+          </div>
+          <div class="field-group">
+            <label for="nas-protocol">协议</label>
+            <select id="nas-protocol">
+              <option value="smb">SMB（Windows 共享 / 群晖 / 威联通）</option>
+              <option value="webdav">WebDAV</option>
+              <option value="ftp">FTP</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label for="nas-host">地址</label>
+            <input id="nas-host" class="mono" type="text" autocomplete="off" spellcheck="false" placeholder="例如 192.168.1.20 或 nas.local">
+          </div>
+          <div class="field-group">
+            <label for="nas-port">端口</label>
+            <input id="nas-port" class="mono" type="number" min="1" max="65535" inputmode="numeric" placeholder="445">
+          </div>
+          <div id="nas-share-group" class="field-group">
+            <label for="nas-share">共享名</label>
+            <input id="nas-share" type="text" autocomplete="off" spellcheck="false" placeholder="留空则先列出全部共享">
+          </div>
+          <div class="field-group">
+            <label for="nas-path">起始路径</label>
+            <input id="nas-path" class="mono" type="text" autocomplete="off" spellcheck="false" placeholder="/">
+          </div>
+          <div class="field-group">
+            <label for="nas-username">用户名</label>
+            <input id="nas-username" type="text" autocomplete="off" spellcheck="false" placeholder="匿名可留空">
+          </div>
+          <div class="field-group">
+            <label for="nas-password">密码</label>
+            <input id="nas-password" type="password" autocomplete="new-password" placeholder="">
+          </div>
+          <div id="nas-workgroup-group" class="field-group">
+            <label for="nas-workgroup">工作组 / 域</label>
+            <input id="nas-workgroup" type="text" autocomplete="off" spellcheck="false" placeholder="WORKGROUP">
+          </div>
+          <div id="nas-tls-group" class="field-group field-full nas-checks">
+            <label class="nas-check"><input id="nas-tls" type="checkbox"> <span id="nas-tls-label">使用 HTTPS</span></label>
+            <label class="nas-check"><input id="nas-verify" type="checkbox"> <span>校验证书（自签证书请勿勾选）</span></label>
+          </div>
+        </div>
+        <p id="nas-hint" class="field-help"></p>
+        <p id="nas-dialog-status" class="upload-status" role="status"></p>
+        <p id="nas-dialog-error" class="field-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions nas-dialog-actions">
+        <button id="nas-delete" class="button button-secondary" type="button" data-tone="danger" hidden>删除</button>
+        <span class="nas-dialog-spacer"></span>
+        <button id="nas-test" class="button button-secondary" type="button">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">测试连接</span>
+        </button>
+        <button id="nas-cancel" class="button button-secondary" type="button">取消</button>
+        <button id="nas-save" class="button button-primary" type="submit">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">保存</span>
+        </button>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="files-host-dialog" class="dialog" aria-labelledby="files-host-title" aria-describedby="files-host-description">

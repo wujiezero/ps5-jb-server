@@ -42,6 +42,8 @@ class Discovery:
         self.lock = threading.RLock()
         self.cached = {'hosts': [], 'last_scan': None, 'duration_ms': 0, 'scanned': 0}
         self.extra = []
+        self.scanning = False
+        self.scan_lock = threading.Lock()
 
     def remember(self, ip):
         """Prefer addresses we already saw (activity page, manual add)."""
@@ -50,6 +52,23 @@ class Discovery:
                 self.extra.insert(0, ip)
 
     def scan(self, extra_ips=()):
+        # One sweep at a time: a manual scan waits for a background one.
+        with self.scan_lock:
+            self.scanning = True
+            try:
+                return self._scan(extra_ips)
+            finally:
+                self.scanning = False
+
+    def scan_in_background(self, extra_ips=()):
+        if self.scanning:
+            return False
+        self.scanning = True    # visible to the page before the thread starts
+        threading.Thread(target=self.scan, args=(tuple(extra_ips),), daemon=True,
+                         name='ps5-discovery').start()
+        return True
+
+    def _scan(self, extra_ips=()):
         started = time.monotonic()
         addresses = []
         for ip in list(extra_ips) + list(self.extra):
@@ -57,7 +76,7 @@ class Discovery:
                 address = str(ipaddress.IPv4Address(ip))
             except ValueError:
                 continue
-            if address in self.subnet and address not in addresses:
+            if ipaddress.IPv4Address(address) in self.subnet and address not in addresses:
                 addresses.append(address)
         addresses += [str(host) for host in self.subnet.hosts() if str(host) not in addresses]
 
@@ -93,7 +112,9 @@ class Discovery:
 
     def snapshot(self):
         with self.lock:
-            return json.loads(json.dumps(self.cached))
+            result = json.loads(json.dumps(self.cached))
+        result['scanning'] = self.scanning
+        return result
 
 
 def _bounded(network, limit=1024):
@@ -111,6 +132,96 @@ def _now():
 
 class ConsoleError(RuntimeError):
     """The console answered, but not acceptably."""
+
+
+# pldmgr autoload sequence (/data/pldmgr/autoload.txt, AUTOLOAD_LIST over HTTP):
+# comma separated entries, run in order. "local/<slot>" launches a payload,
+# "!<ms>" waits that long before the next entry. AUTOLOAD_DELAY is the
+# countdown in seconds before the sequence starts.
+MAX_ENTRY_DELAY_MS = 3600000
+MAX_ENTRY_TEXT = 511
+MAX_LIST_TEXT = 4000
+MAX_START_DELAY = 3600
+
+
+def parse_autoload(raw, slots=None):
+    """Split AUTOLOAD_LIST into payload items, each with the wait that follows it."""
+    slots = slots or {}
+    items, lead_ms = [], 0
+    for token in [part.strip() for part in str(raw or '').split(',') if part.strip()]:
+        if token.startswith('!') and token[1:].isdigit():
+            delay = min(int(token[1:]), MAX_ENTRY_DELAY_MS)
+            if items:
+                items[-1]['delay_ms'] += delay
+            else:
+                lead_ms += delay
+            continue
+        meta = slots.get(token) or {}
+        items.append({'key': token, 'filename': meta.get('filename') or token.rsplit('/', 1)[-1],
+                      'installed': bool(meta), 'delay_ms': 0})
+    return {'items': items, 'lead_ms': lead_ms}
+
+
+def serialize_autoload(items, lead_ms=0):
+    """Validate an edited sequence and render it in pldmgr's format."""
+    if not isinstance(items, list) or len(items) > 64:
+        raise ValueError('自动加载列表最多 64 个插件')
+
+    def delay_of(value, label):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f'{label}必须是数字')
+        value = int(round(value))
+        if not 0 <= value <= MAX_ENTRY_DELAY_MS:
+            raise ValueError(f'{label}必须在 0–3600 秒之间')
+        return value
+
+    tokens = []
+    lead = delay_of(lead_ms or 0, '开始前等待')
+    if lead:
+        tokens.append(f'!{lead}')
+    for index, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            raise ValueError('自动加载条目格式不正确')
+        key = item.get('key')
+        if (not isinstance(key, str) or not key.strip() or key.startswith('!')
+                or len(key) > MAX_ENTRY_TEXT or any(c in key for c in ',\r\n\0')
+                or key.strip().startswith('/') or '..' in key.split('/')):
+            raise ValueError(f'第 {index} 项插件标识不合法')
+        tokens.append(key.strip())
+        delay = delay_of(item.get('delay_ms', 0), f'第 {index} 项的加载后等待')
+        if delay:
+            tokens.append(f'!{delay}')
+    text = ','.join(tokens)
+    if len(text) > MAX_LIST_TEXT:
+        raise ValueError('自动加载列表过长')
+    return text
+
+
+def autoload_view(config, status, payloads):
+    """What the page needs: ordered items, delays, last run outcome per item."""
+    slots = {item.get('slot'): item for item in payloads
+             if isinstance(item, dict) and item.get('slot')}
+    raw = str(config.get('AUTOLOAD_LIST', '') or '')
+    parsed = parse_autoload(raw, slots)
+    status = status if isinstance(status, dict) else {}
+    outcomes = str(status.get('outcomes') or '')
+    labels = {'s': 'success', 'f': 'failed', 'k': 'skipped'}
+    # Outcomes belong to the run that just happened; only trust them when the
+    # list has not changed since (pldmgr echoes the list it ran).
+    same_run = str(status.get('list') or '') == raw
+    for index, item in enumerate(parsed['items']):
+        code = outcomes[index] if same_run and index < len(outcomes) else ''
+        item['outcome'] = labels.get(code)
+    try:
+        start_delay = int(config.get('AUTOLOAD_DELAY', 5))
+    except (TypeError, ValueError):
+        start_delay = 5
+    return {'enabled': bool(config.get('AUTOLOAD_ENABLED')),
+            'start_delay': start_delay, 'lead_ms': parsed['lead_ms'],
+            'items': parsed['items'], 'raw': raw,
+            # Kept for older pages: the payload keys in order.
+            'list': [item['key'] for item in parsed['items']],
+            'status': status}
 
 
 class PldmgrClient:
@@ -220,9 +331,11 @@ class PldmgrClient:
     def set_config(self, changes):
         return self._request('/set_config', data=changes, mutating=True)
 
-    def set_autoload(self, enabled, files):
-        return self.set_config({'AUTOLOAD_ENABLED': bool(enabled),
-                                'AUTOLOAD_LIST': ','.join(files)})
+    def set_autoload(self, enabled, sequence, start_delay=None):
+        changes = {'AUTOLOAD_ENABLED': bool(enabled), 'AUTOLOAD_LIST': sequence}
+        if start_delay is not None:
+            changes['AUTOLOAD_DELAY'] = int(start_delay)
+        return self.set_config(changes)
 
     def shutdown(self):
         return self._request('/shutdown', data={}, mutating=True)
@@ -291,7 +404,8 @@ class HostManager:
 
     def _load_manifest(self):
         items = self._catalog()['items']
-        self.manifest = {item['filename']: item['url'] for item in items}
+        self.manifest = {item['filename']: item['url'] for item in items
+                         if isinstance(item, dict) and item.get('filename') and item.get('url')}
         return items
 
     def _payload_bytes(self, filename, limit=64 << 20):
@@ -319,21 +433,37 @@ class HostManager:
 
     def overview(self, refresh=True):
         summary = self.discovery.snapshot()
-        hosts = []
-        for host in summary['hosts']:
+
+        def build(host):
             entry = {'ip': host['ip'], 'online': True,
                      'elfldr': host['elfldr'], 'pldmgr': host['pldmgr'],
                      'loader': host.get('loader', False), 'version': None,
+                     'pldmgr_port': self.pldmgr_port, 'elf_port': self.elf_port,
                      'source_attached': False, 'source_url': self._repo_url(),
                      'repo_payloads': None, 'installed': [], 'running': [],
                      'autoload': {'enabled': False, 'list': [], 'status': {}},
                      'last_error': None}
-            if host['pldmgr'] and refresh:
+            if not refresh:
+                return entry
+            # A console that went to rest mode keeps its scan entry; probe the
+            # ports first so a sleeping host costs a fraction of a second
+            # instead of several multi-second HTTP timeouts per page poll.
+            entry['pldmgr'] = _tcp_open(host['ip'], self.pldmgr_port, 0.6)
+            entry['elfldr'] = _tcp_open(host['ip'], self.elf_port, 0.6)
+            entry['online'] = entry['pldmgr'] or entry['elfldr']
+            if entry['pldmgr']:
                 try:
                     self._populate(entry)
                 except ConsoleError as exc:
                     entry['last_error'] = str(exc)[:200]
-            hosts.append(entry)
+            return entry
+
+        found = summary['hosts']
+        if len(found) > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(found))) as pool:
+                hosts = list(pool.map(build, found))
+        else:
+            hosts = [build(host) for host in found]
         return {'discovery': {**summary, 'subnet': str(self.discovery.subnet),
                               'enabled': self.config.ps5_control},
                 'hosts': hosts}
@@ -344,6 +474,10 @@ class HostManager:
         items = client.payloads()
         entry['installed'] = [
             str(item.get('filename') or str(item.get('path', '')).rsplit('/', 1)[-1])
+            for item in items if isinstance(item, dict)]
+        entry['payloads'] = [
+            {'slot': str(item.get('slot') or ''), 'path': str(item.get('path') or ''),
+             'filename': str(item.get('filename') or str(item.get('path', '')).rsplit('/', 1)[-1])}
             for item in items if isinstance(item, dict)]
         processes = client.processes()
         installed_names = set(entry['installed'])
@@ -356,9 +490,7 @@ class HostManager:
         entry['running'] = running
         entry['process_total'] = len(processes)
         config = client.config()
-        entry['autoload'] = {'enabled': bool(config.get('AUTOLOAD_ENABLED')),
-                             'list': [f for f in str(config.get('AUTOLOAD_LIST', '')).split(',') if f],
-                             'status': client.autoload_status()}
+        entry['autoload'] = autoload_view(config, client.autoload_status(), items)
         sources = client.sources()
         url = self._repo_url()
         entry['source_attached'] = any(source.get('url') == url for source in sources)
@@ -387,12 +519,14 @@ class HostManager:
 
     def host(self, ip):
         ip = self.validate_ip(ip)
-        entry = {'ip': ip, 'online': True, 'elfldr': _tcp_open(ip, self.elf_port, 0.5),
+        entry = {'ip': ip, 'elfldr': _tcp_open(ip, self.elf_port, 0.5),
                  'pldmgr': _tcp_open(ip, self.pldmgr_port, 0.5), 'version': None,
+                 'pldmgr_port': self.pldmgr_port, 'elf_port': self.elf_port,
                  'source_attached': False, 'source_url': self._repo_url(),
                  'repo_payloads': None, 'installed': [], 'running': [],
                  'autoload': {'enabled': False, 'list': [], 'status': {}},
                  'last_error': None}
+        entry['online'] = entry['pldmgr'] or entry['elfldr']
         if entry['pldmgr']:
             try:
                 self._populate(entry)
@@ -415,6 +549,10 @@ class HostManager:
             return {'ok': True, 'installed': True, 'ran': bool(run), 'mode': 'pldmgr',
                     'path': path, 'host': self.host(ip)}
         except ConsoleError as exc:
+            # elfldr cannot store a payload, it only runs it. Falling back is
+            # only honest when the user asked to run.
+            if not run:
+                raise ConsoleError(f'pldmgr 安装失败：{exc}') from exc
             if not _tcp_open(ip, self.elf_port, 0.5):
                 raise ConsoleError(f'pldmgr 上传失败且 elfldr 不可用：{exc}') from exc
             ElfldrClient(ip, self.elf_port).run_url(self.manifest[filename])
@@ -428,28 +566,42 @@ class HostManager:
             raise ValueError('插件不在本服务仓库中')
         try:
             client = self._client(ip)
-            client.run(client.payload_path(filename) or filename)
+            path = client.payload_path(filename)
+            if not path:
+                raise ConsoleError('主机上还没有安装这个插件')
+            client.run(path)
             return {'ok': True, 'mode': 'pldmgr'}
-        except ConsoleError:
+        except ConsoleError as exc:
+            if not _tcp_open(ip, self.elf_port, 0.5):
+                raise ConsoleError(f'运行失败：{exc}；elfldr 也不可用') from exc
             ElfldrClient(ip, self.elf_port).run_url(self.manifest[filename])
             return {'ok': True, 'mode': 'elfldr'}
 
     def kill(self, ip, pid):
         ip = self.validate_ip(ip)
-        self._client(ip).kill(pid)
+        if isinstance(pid, bool) or not isinstance(pid, (int, str)) or not str(pid).isdigit():
+            raise ValueError('进程号不合法')
+        self._client(ip).kill(int(pid))
         return {'ok': True, 'host': self.host(ip)}
 
-    def autoload(self, ip, enabled, files):
+    def autoload(self, ip, enabled, items=None, start_delay=None, lead_ms=0, files=None):
+        """Write the ordered sequence; items = [{key, delay_ms}] in load order."""
         ip = self.validate_ip(ip)
-        if not isinstance(files, list) or len(files) > 64:
-            raise ValueError('自动加载列表不合法')
-        cleaned = []
-        for name in files:
-            if not isinstance(name, str) or not name or '/' in name or len(name) > 128:
-                raise ValueError('自动加载文件名不合法')
-            cleaned.append(name)
-        self._client(ip).set_autoload(enabled, cleaned)
-        return {'ok': True, 'host': self.host(ip)}
+        if isinstance(items, list) and all(isinstance(item, str) for item in items):
+            files, items = items, None
+        if items is None:
+            # Older pages sent bare keys with no delays.
+            if not isinstance(files, list):
+                raise ValueError('自动加载列表不合法')
+            items = [{'key': name, 'delay_ms': 0} for name in files]
+        sequence = serialize_autoload(items, lead_ms)
+        if start_delay is not None:
+            if isinstance(start_delay, bool) or not isinstance(start_delay, (int, float)) \
+                    or not 0 <= start_delay <= MAX_START_DELAY:
+                raise ValueError('启动倒计时必须在 0–3600 秒之间')
+            start_delay = int(start_delay)
+        self._client(ip).set_autoload(enabled, sequence, start_delay)
+        return {'ok': True, 'sequence': sequence, 'host': self.host(ip)}
 
     def shutdown(self, ip):
         ip = self.validate_ip(ip)

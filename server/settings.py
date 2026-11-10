@@ -14,7 +14,7 @@ from pathlib import Path
 DEFAULTS = {
     'network': {'host_ip': '', 'subnet': '', 'upstream_dns': ''},
     'ports': {'dns': 53, 'http': 80, 'https': 443, 'admin': 8443, 'repo': 8080},
-    'ps5': {'pldmgr_port': 8084, 'elf_port': 9021, 'file_port': 80,
+    'ps5': {'pldmgr_port': 8084, 'elf_port': 9021, 'file_port': 80, 'ftp_port': 2120,
             'control': True, 'file_manager': True},
     'paths': {'data': '/var/lib/ps5-jb-server', 'repo': '/srv/ps5-jb-server',
               'static': '/opt/ps5-jb-server/web', 'certs': '/etc/ps5-jb-server/tls',
@@ -37,9 +37,12 @@ class Settings:
     pldmgr_port: int = 8084
     elf_port: int = 9021
     file_port: int = 80
+    ftp_port: int = 2120
+    space_port: int = 8888
     ps5_control: bool = True
     file_manager: bool = True
-    max_upload: int = 64 << 20
+    max_upload: int = 64 << 20          # plugin repository uploads (held in memory)
+    max_file_upload: int = 0            # PS5 file manager uploads (streamed); 0 = no limit
     data_dir: Path = Path('/var/lib/ps5-jb-server')
     repo_dir: Path = Path('/srv/ps5-jb-server')
     static_dir: Path = Path('/opt/ps5-jb-server/web')
@@ -47,6 +50,8 @@ class Settings:
     credentials_path: Path = Path('/var/lib/ps5-jb-server/credentials.json')
     config_path: Path = Path('/etc/ps5-jb-server/config.toml')
     rulesets_path: Path = Path('/opt/ps5-jb-server/rulesets/compiled.json')
+    # AES key for NAS credentials; kept beside config.toml, away from the data dir.
+    secret_key_path: Path = Path('/etc/ps5-jb-server/nas.key')
     systemd_prefix: str = 'ps5-jb-server'
     extra: dict = field(default_factory=dict)
 
@@ -70,6 +75,13 @@ class Settings:
                 return value
             return (raw.get(section) or {}).get(key, default)
 
+        def flag(section, key, env, default):
+            # Environment values are strings: "false"/"0"/"no" must disable.
+            value = pick(section, key, env, default)
+            if isinstance(value, str):
+                return value.strip().lower() not in ('0', 'false', 'no', 'off', '')
+            return bool(value)
+
         host_ip = pick('network', 'host_ip', 'PS5JB_HOST_IP', '') or _detect_ip()
         subnet = pick('network', 'subnet', 'PS5JB_SUBNET', '') or _subnet_of(host_ip)
         return cls(
@@ -84,9 +96,13 @@ class Settings:
             pldmgr_port=int(pick('ps5', 'pldmgr_port', 'PS5JB_PLDMGR_PORT', 8084)),
             elf_port=int(pick('ps5', 'elf_port', 'PS5JB_ELF_PORT', 9021)),
             file_port=int(pick('ps5', 'file_port', 'PS5JB_FILE_PORT', 80)),
-            ps5_control=bool(pick('ps5', 'control', 'PS5JB_PS5_CONTROL', True)),
-            file_manager=bool(pick('ps5', 'file_manager', 'PS5JB_FILE_MANAGER', True)),
+            ftp_port=int(pick('ps5', 'ftp_port', 'PS5JB_FTP_PORT', 2120)),
+            space_port=int(pick('ps5', 'space_port', 'PS5JB_SPACE_PORT', 8888)),
+            ps5_control=flag('ps5', 'control', 'PS5JB_PS5_CONTROL', True),
+            file_manager=flag('ps5', 'file_manager', 'PS5JB_FILE_MANAGER', True),
             max_upload=int(pick('limits', 'max_upload', 'PS5JB_MAX_UPLOAD', 64 << 20)),
+            max_file_upload=max(0, int(pick('limits', 'max_file_upload',
+                                            'PS5JB_MAX_FILE_UPLOAD', 0))),
             data_dir=Path(pick('paths', 'data', 'PS5JB_DATA', DEFAULTS['paths']['data'])),
             repo_dir=Path(pick('paths', 'repo', 'PS5JB_REPO', DEFAULTS['paths']['repo'])),
             static_dir=Path(pick('paths', 'static', 'PS5JB_STATIC', DEFAULTS['paths']['static'])),
@@ -97,6 +113,8 @@ class Settings:
             config_path=Path(path or DEFAULTS['paths']['config']),
             rulesets_path=Path(pick('paths', 'rulesets', 'PS5JB_RULESETS',
                                     DEFAULTS['paths']['rulesets'])),
+            secret_key_path=Path(pick('paths', 'secret_key', 'PS5JB_SECRET_KEY',
+                                      str(Path(path or DEFAULTS['paths']['config']).parent / 'nas.key'))),
         )
 
 

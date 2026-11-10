@@ -19,12 +19,15 @@ repo = 8080
 [ps5]
 pldmgr_port = 8084     # Payload Manager web UI on the console
 elf_port = 9021        # elfldr on the console
-file_port = 80         # file service (tom-ps5-usbnet payload)
+file_port = 80         # HTTP file service (tom-ps5-usbnet payload, on its USB adapter address)
+ftp_port = 2120        # FTP fallback (zftpd); 0 disables the fallback
+space_port = 8888      # free/total for the FTP mode, read from web-file-mgr; 0 disables
 control = true         # enable the PS5 host page
 file_manager = true    # enable the PS5 file page
 
 [limits]
-max_upload = 67108864  # 64 MiB, applied to repo and console uploads
+max_upload = 67108864  # 64 MiB, plugin repository uploads (held in memory)
+max_file_upload = 0     # PS5 file manager uploads are streamed; 0 = no limit
 
 [paths]
 data = "/var/lib/ps5-jb-server"

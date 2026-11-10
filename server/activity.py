@@ -158,7 +158,7 @@ class FlowObserver:
 
     def __init__(self, conntrack, classifier, labels, dns_lookup, is_allowed,
                  lan='127.0.0.0/8', host_ip='127.0.0.1', clock=None, max_events=500,
-                 dns_events=None):
+                 dns_events=None, domain_allowed=None):
         self.conntrack = conntrack
         self.classifier = classifier
         self.labels = labels
@@ -177,7 +177,10 @@ class FlowObserver:
         # Optional callable returning recent DNS log rows; they are shown next
         # to connection events because DNS is often the only traffic we see.
         self.dns_events = dns_events
-        self._dns_seen = set()
+        # name -> allowed under the current whitelist (DNS rows have no IP).
+        self.domain_allowed = domain_allowed
+        self._dns_seen = {}
+        self._dns_last_seq = 0
         self.counts_by_kind = {'flow': 0, 'service': 0, 'dns': 0}
 
     @property
@@ -268,6 +271,12 @@ class FlowObserver:
             self.updated = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
         return fresh
 
+    # DNS log actions: allowed/local/upstream/error mean the name passed the
+    # whitelist (upstream = the resolver's own NXDOMAIN etc.); blocked did not.
+    _DNS_ALLOWED = ('allowed', 'answered', 'local', 'forwarded', 'upstream', 'error')
+    # nodata = AAAA answered empty on purpose; it is noise, not a decision.
+    _DNS_SKIP = ('nodata',)
+
     def _collect_dns(self, now):
         if not self.dns_events:
             return
@@ -276,17 +285,29 @@ class FlowObserver:
         except Exception as exc:  # never let DNS logging break flow capture
             logging.debug('dns event collection failed: %s', exc)
             return
-        for row in list(rows)[:200]:
+        self._dns_seen = {key: stamp for key, stamp in self._dns_seen.items()
+                          if now - stamp < _DEDUPE_WINDOW}
+        newest = self._dns_last_seq
+        # The log is newest-first; replay oldest-first so the ring stays ordered.
+        for row in reversed(list(rows)[:200]):
             if not isinstance(row, dict):
                 continue
+            seq = row.get('seq')
+            if isinstance(seq, int):
+                if seq <= self._dns_last_seq:
+                    continue
+                newest = max(newest, seq)
             name = str(row.get('name') or '')
             client = str(row.get('client') or '')
             action = str(row.get('action') or '')
-            key = (client, name, str(row.get('qtype') or ''), action)
-            if not name or key in self._dns_seen:
+            if not name or action in self._DNS_SKIP:
                 continue
-            self._dns_seen.add(key)
-            verdict = 'allowed' if action in ('allowed', 'answered', 'local', 'forwarded') else 'blocked'
+            key = (client, name, str(row.get('qtype') or ''), action)
+            if key in self._dns_seen:
+                self._dns_seen[key] = now
+                continue
+            self._dns_seen[key] = now
+            verdict = 'allowed' if action in self._DNS_ALLOWED else 'blocked'
             category = self.classifier.category(name)
             event = {
                 'time': str(row.get('time') or datetime.datetime.now().astimezone().isoformat(timespec='seconds')),
@@ -308,8 +329,7 @@ class FlowObserver:
             self.events.appendleft(event)
             self.counts[verdict] = self.counts.get(verdict, 0) + 1
             self.counts_by_kind['dns'] = self.counts_by_kind.get('dns', 0) + 1
-        if len(self._dns_seen) > 4000:
-            self._dns_seen.clear()
+        self._dns_last_seq = newest
 
     def _interesting(self, flow):
         try:
@@ -334,9 +354,17 @@ class FlowObserver:
         merged = dict(event)
         # verdict is historical; allowed_now tells whether the target is allowed
         # by the whitelist right now, so a row can say 已放行 / 已移出白名单.
-        merged['allowed_now'] = (True if merged.get('kind') == 'service'
-                                 else bool(self.is_allowed(merged['dst']))) if merged.get('dst') else \
-            bool(merged.get('allowed_now'))
+        if merged.get('kind') == 'service':
+            merged['allowed_now'] = True
+        elif merged.get('dst'):
+            merged['allowed_now'] = bool(self.is_allowed(merged['dst']))
+        elif merged.get('kind') == 'dns' and self.domain_allowed and merged.get('domain'):
+            try:
+                merged['allowed_now'] = bool(self.domain_allowed(merged['domain']))
+            except Exception:
+                merged['allowed_now'] = bool(merged.get('allowed_now'))
+        else:
+            merged['allowed_now'] = bool(merged.get('allowed_now'))
         label = self.labels.get(event['target'])
         if not label and event.get('domain'):
             label = self.labels.get('domain:' + event['domain'])

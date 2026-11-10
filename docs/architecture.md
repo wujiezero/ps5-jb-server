@@ -49,7 +49,10 @@
 - pldmgr 不可用时回退 elfldr 的 `?uri=` 投递。
 - `/list_payloads` 的真实响应是 `{self, items:[{slot,path,filename,kind,origin}]}`；
   同时兼容旧版 `{payloads:[路径]}` 结构。
-- 自动加载：读改写 `AUTOLOAD_ENABLED` / `AUTOLOAD_LIST`（文件名为 pldmgr 内的文件名）。
+- 自动加载：`AUTOLOAD_LIST` 是有序序列，`local/<槽位>`（取自 `/list_payloads` 的 `slot`）表示加载插件，
+  `!<毫秒>`（0–3600000）表示等待后再加载下一项；`AUTOLOAD_DELAY`（0–3600 秒）是开始前的倒计时。
+  管理页把每段等待归到前一个插件上编辑，保存时原样还原为 pldmgr 格式；`/autoload_status` 的 `outcomes`
+  按插件顺序给出上次运行结果（s/f/k），仅在其 `list` 与当前配置一致时显示。
 - “运行中”只统计与已装插件同名的进程；`/processes_list` 里的其它系统进程单独计数。
 
 ## 文件代理

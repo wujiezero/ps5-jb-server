@@ -59,6 +59,11 @@
   let activityCategoryKey = null;
   let currentSection = 'overview';
   let activityFilterValue = 'all';
+  let activityKindValue = 'all';
+  let uploadReplace = null;
+  let serviceInfo = null;
+  let hasPrevious = true;
+  let ps5FetchedAt = 0;
   let mobileMoreCloseReason = '';
   let repoReadError = '';
   let activityReadError = '';
@@ -92,6 +97,8 @@
   let filesNameTarget = null;
   let filesOverwritePending = null;
   let filesPollTimer = null;
+  let nasJobs = [];
+  const nas = { loaded: false, connections: [], protocols: { webdav: true, smb: true, ftp: true }, activeId: '', path: '/', entries: [], selected: new Set(), loading: false, error: '', editing: null, busy: false, seq: 0 };
   let filesPollBusy = false;
   let filesDragDepth = 0;
   const files = {
@@ -123,7 +130,8 @@
     drawer: false,
     renderedKey: '',
     requestedHost: '',
-    configBusy: false
+    configBusy: false,
+    mode: 'ps5'
   };
 
   const activitySelected = new Set();
@@ -180,8 +188,11 @@
     if (!Number.isFinite(bytes) || bytes < 0) return '—';
     if (bytes < 1024) return `${Math.round(bytes)} B`;
     if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / 1048576).toFixed(1)} MB`;
+    if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
+    if (bytes < 1099511627776) return `${(bytes / 1073741824).toFixed(bytes < 10737418240 ? 2 : 1)} GB`;
+    return `${(bytes / 1099511627776).toFixed(2)} TB`;
   };
+  const formatLimit = (bytes) => (Number.isFinite(bytes) && bytes > 0 ? formatBytes(bytes).replace(/\.0 /, ' ') : '不限');
 
   /* ── 网络请求（契约保持不变） ───────────────────────────────────────── */
 
@@ -239,7 +250,7 @@
     let data;
     try { data = await response.json(); } catch { data = null; }
     if (!response.ok) {
-      const fallbacks = { 400: '上传失败，请检查文件名与文件内容。', 401: '登录已失效，请重新输入管理密码。', 409: '仓库中已存在同名文件，请改名或先删除原文件。', 413: '文件超过 64 MB 限制。' };
+      const fallbacks = { 400: '上传失败，请检查文件名与文件内容。', 401: '登录已失效，请重新输入管理密码。', 409: '仓库中已存在同名文件，请改名或先删除原文件。', 413: `文件超过 ${formatLimit(repo.maxUpload || UPLOAD_MAX)} 限制。` };
       throw new ApiError(data && typeof data.error === 'string' ? data.error : fallbacks[response.status] || '上传失败，请稍后重试。', response.status);
     }
     if (!data || typeof data !== 'object') throw new ApiError('服务返回了无效数据，请稍后重试。');
@@ -430,6 +441,8 @@
       ensureFilesRoute();
       renderFiles();
       ensureFilesPolling();
+      if (!nas.loaded) refreshNas();
+      refreshNasJobs();
     }
   }
 
@@ -509,7 +522,11 @@
     chip.dataset.dirty = String(dirty);
 
     setDisabled('save', busy || !authenticated || !dirty);
-    setDisabled('rollback', busy || !authenticated);
+    setDisabled('rollback', busy || !authenticated || !hasPrevious);
+    for (const button of acts('rollback')) {
+      if (!hasPrevious) button.title = '还没有可回退的上一版配置';
+      else button.removeAttribute('title');
+    }
     setDisabled('logout', busy || uploading);
     setDisabled('refresh', busy || refreshing);
     $('config-fields').disabled = busy || !authenticated;
@@ -746,6 +763,9 @@
     renderService('dns-status', status.dns);
     renderService('gateway-status', status.gateway);
     renderService('host-status', status.host);
+    hasPrevious = status.has_previous !== false;
+    serviceInfo = data.service && typeof data.service === 'object' ? data.service : null;
+    renderServiceInfo(status);
     $('uptime').textContent = uptime(status.uptime);
     const dynamic = Number(status.dynamic_addresses);
     $('dynamic-addresses').textContent = Number.isFinite(dynamic) && dynamic >= 0 ? `${Math.floor(dynamic)} 个` : '—';
@@ -757,9 +777,51 @@
 
     renderLogs(data.logs);
     renderFirewall(data.firewall);
+    renderQuickLinks();
     setConnection('状态已同步', 'good');
     $('sync-time').textContent = `${formatTime(new Date())} · 每 8 秒刷新`;
     updateControls();
+  }
+
+  function renderServiceInfo(status) {
+    const info = serviceInfo || {};
+    const ports = info.ports && typeof info.ports === 'object' ? info.ports : {};
+    const paths = info.paths && typeof info.paths === 'object' ? info.paths : {};
+    const units = info.units && typeof info.units === 'object' ? info.units : {};
+    const hostIp = asText(status.host_ip, location.hostname);
+    const port = (key, fallback) => (Number.isInteger(ports[key]) ? ports[key] : fallback);
+    const adminPort = port('admin', 8443);
+    const repoPort = port('repo', 8080);
+    $('dns-status-hint').textContent = `UDP / TCP ${port('dns', 53)}`;
+    $('host-status-hint').textContent = `HTTPS ${port('https', 443)} · ${asText(units.host && units.host.name, 'ps5-jb-host')}`;
+    $('info-admin').textContent = `https://${hostIp}:${adminPort}/`;
+    $('info-ports').textContent = `DNS ${port('dns', 53)} · 用户手册 ${port('https', 443)}/${port('http', 80)} · 仓库 ${repoPort} · 管理 ${adminPort}`;
+    $('info-subnet').textContent = asText(info.subnet, '—');
+    $('info-repo-dir').textContent = paths.repo ? `${paths.repo}/（repo.json + payloads/）` : '—';
+    $('info-data-dir').textContent = asText(paths.data, '—');
+    $('info-config').textContent = asText(paths.config, '—');
+    const names = ['host', 'server', 'repo'].map((role) => units[role] && units[role].name).filter(Boolean);
+    $('info-units').textContent = names.length ? names.map((name) => `${name}.service`).join(' · ') : '—';
+    $('info-repo-url').textContent = `http://${hostIp}:${repoPort}/repo.json`;
+    if (names.length) $('info-stop-command').textContent = `systemctl disable --now ${names.join(' ')}`;
+  }
+
+  function renderQuickLinks() {
+    const set = (id, text) => { const node = $(id); if (node && text) node.textContent = text; };
+    if (activity.loaded) {
+      const { blocked } = activity.counts;
+      set('quick-activity', blocked ? `${blocked} 条未放行 · 共 ${activity.events.length} 条记录` : `共 ${activity.events.length} 条记录，暂无未放行`);
+    }
+    const domains = lines($('domains').value).length;
+    const networks = lines($('networks').value).length;
+    if (baseline !== null) set('quick-policy', `域名 ${domains} 项 · IPv4 ${networks} 项${dirty ? ' · 有未保存修改' : ''}`);
+    if (ps5.loaded) {
+      const online = ps5.hosts.filter((host) => host.online);
+      if (ps5.discovery.scanning && !ps5.hosts.length) set('quick-ps5', '正在扫描局域网…');
+      else if (!ps5.hosts.length) set('quick-ps5', '未发现主机，进入页面重新扫描');
+      else set('quick-ps5', `${online.length} 台在线 · ${ps5.hosts.map((host) => host.ip).join('、')}`);
+    }
+    if (files.info && files.info.host) set('quick-files', `${files.info.reachable ? '已连接' : '无法连接'} ${files.info.host}`);
   }
 
   /* ── 轮询 ───────────────────────────────────────────────────────────── */
@@ -791,7 +853,9 @@
       if (manual) toast('服务状态已刷新。', 'success');
       if (requestEpoch === epoch) refreshRepo();
       if (requestEpoch === epoch) refreshActivity();
-      if (requestEpoch === epoch && currentSection === 'ps5') refreshPs5();
+      // The PS5 page polls hosts every cycle; elsewhere a slower refresh keeps
+      // the overview summary current without hammering the console.
+      if (requestEpoch === epoch && (currentSection === 'ps5' || Date.now() - ps5FetchedAt > 30000)) refreshPs5();
       return true;
     } catch (error) {
       if (requestEpoch !== epoch) return false;
@@ -1019,7 +1083,8 @@
         category: str(entry.category),
         author: str(entry.author),
         description: str(entry.description),
-        size: Number.isFinite(size) && size >= 0 ? size : null
+        size: Number.isFinite(size) && size >= 0 ? size : null,
+        missing: entry.missing === true
       });
     }
     const reportedTotal = Number(data && data.total_bytes);
@@ -1027,8 +1092,10 @@
       ? reportedTotal
       : items.reduce((sum, item) => sum + (item.size || 0), 0);
     const reportedPort = Number(data && data.port);
+    const reportedLimit = Number(data && data.max_upload);
     return {
       loaded: true,
+      maxUpload: Number.isFinite(reportedLimit) && reportedLimit > 0 ? reportedLimit : UPLOAD_MAX,
       items,
       totalBytes,
       host: str(data && data.host),
@@ -1088,6 +1155,13 @@
     const filenameCell = document.createElement('td');
     filenameCell.className = 'mono';
     filenameCell.textContent = item.filename;
+    if (item.missing) {
+      const missing = document.createElement('span');
+      missing.className = 'repo-missing';
+      missing.textContent = '文件缺失';
+      missing.title = '目录中记录了此插件，但仓库里没有对应文件；可用「替换」重新上传。';
+      filenameCell.append(missing);
+    }
 
     const versionCell = document.createElement('td');
     versionCell.textContent = asText(item.version);
@@ -1116,6 +1190,13 @@
     edit.setAttribute('aria-label', `编辑 ${item.name} 的信息`);
     edit.addEventListener('click', () => openEditDialog(item));
 
+    const replace = document.createElement('button');
+    replace.className = 'repo-action';
+    replace.type = 'button';
+    replace.textContent = '替换';
+    replace.setAttribute('aria-label', `上传新文件替换 ${item.filename}`);
+    replace.addEventListener('click', () => openUploadDialog(item));
+
     const remove = document.createElement('button');
     remove.className = 'repo-action';
     remove.type = 'button';
@@ -1124,7 +1205,7 @@
     remove.setAttribute('aria-label', `删除 ${item.filename}`);
     remove.addEventListener('click', () => openDeleteDialog(item));
 
-    actions.append(download, edit, remove);
+    actions.append(download, edit, replace, remove);
     actionsCell.append(actions);
     row.append(nameCell, filenameCell, versionCell, categoryCell, sizeCell, actionsCell);
     return row;
@@ -1178,9 +1259,9 @@
       : repoReadError ? '插件仓库读取失败，请刷新重试。' : '正在读取插件仓库…';
     $('repo-summary').textContent = repo.loaded ? `共 ${repo.items.length} 个插件 · 合计 ${formatBytes(repo.totalBytes)}`
       : repoReadError ? '插件仓库读取失败。' : '正在读取插件仓库…';
-    const endpoint = repo.loaded ? `${repo.catalogName ? `${repo.catalogName} · ` : ''}${repoBaseUrl()}/payloads/` : '';
+    const endpoint = repo.loaded ? `${repoBaseUrl()}/repo.json` : '';
     $('repo-endpoint').textContent = endpoint;
-    $('repo-endpoint').hidden = !endpoint;
+    $('repo-endpoint-row').hidden = !endpoint;
     $('repo-status').textContent = repo.loaded ? `${repo.items.length} 个插件` : '—';
     $('repo-status-hint').textContent = repo.loaded ? `合计 ${formatBytes(repo.totalBytes)} · ${repoBaseUrl()}` : '等待读取仓库…';
     setBadge('repository', repo.loaded ? repo.items.length : 0);
@@ -1203,6 +1284,7 @@
     $('repo-body').replaceChildren(fragment);
     updateRepoControls();
     ps5CatalogRefreshHook();
+    renderQuickLinks();
   }
 
   async function refreshRepo({ manual = false } = {}) {
@@ -1383,16 +1465,52 @@
   }
 
   function resetUploadForm() {
+    uploadReplace = null;
     $('repo-upload-form').reset();
     clearUploadErrors();
     $('repo-upload-status').textContent = '';
   }
 
-  function openUploadDialog() {
+  function openUploadDialog(replaceItem) {
     if (!authenticated || uploading || repoBusy) return;
     resetUploadForm();
+    uploadReplace = replaceItem && typeof replaceItem === 'object' && replaceItem.filename ? replaceItem : null;
+    const limit = formatLimit(repo.maxUpload || UPLOAD_MAX);
+    if (uploadReplace) {
+      $('repo-upload-title').textContent = `替换 ${uploadReplace.filename}`;
+      $('repo-upload-subtitle').textContent = `上传新文件覆盖 ${uploadReplace.filename}（不超过 ${limit}），下载地址不变；留空的信息保持原值。`;
+      $('repo-upload-name').placeholder = uploadReplace.name || '保持原名称';
+      $('repo-upload-version').placeholder = uploadReplace.version || '保持原版本';
+      $('repo-upload-category').placeholder = uploadReplace.category || '保持原分类';
+      $('repo-upload-author').placeholder = uploadReplace.author || '保持原作者';
+      $('repo-upload-description').placeholder = uploadReplace.description || '保持原描述';
+    } else {
+      $('repo-upload-title').textContent = '上传新插件';
+      $('repo-upload-subtitle').textContent = `单个文件不超过 ${limit}。文件名取自所选文件，也是下载地址中的文件名。`;
+      $('repo-upload-name').placeholder = '例如 etaHEN';
+      $('repo-upload-version').placeholder = '例如 v1.8';
+      $('repo-upload-category').placeholder = '例如 载荷';
+      $('repo-upload-author').placeholder = '可选';
+      $('repo-upload-description').placeholder = '可选，简要说明用途';
+    }
     $('repo-upload-dialog').showModal();
     $('repo-upload-file').focus({ preventScroll: true });
+  }
+
+  async function copyRepoUrl() {
+    const url = $('repo-endpoint').textContent;
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('已复制仓库源地址。', 'success');
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents($('repo-endpoint'));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      toast('浏览器不允许直接复制，已选中地址，请手动复制。', 'info');
+    }
   }
 
   function closeUploadDialog() {
@@ -1416,27 +1534,31 @@
       $(errorId).hidden = false;
       if (!first) first = $(field);
     };
+    const replacing = uploadReplace;
+    const limit = repo.maxUpload || UPLOAD_MAX;
     if (!file) {
       invalid('repo-upload-file', 'repo-upload-file-error', '请选择要上传的 .elf 或 .bin 文件。');
     } else {
       const lower = file.name.toLowerCase();
       if (!UPLOAD_EXTENSIONS.some((extension) => lower.endsWith(extension))) invalid('repo-upload-file', 'repo-upload-file-error', '只支持 .elf 与 .bin 文件。');
       else if (!file.size) invalid('repo-upload-file', 'repo-upload-file-error', '所选文件为空，请重新选择。');
-      else if (file.size > UPLOAD_MAX) invalid('repo-upload-file', 'repo-upload-file-error', `文件大小 ${formatBytes(file.size)} 超过 64 MB 限制。`);
+      else if (file.size > limit) invalid('repo-upload-file', 'repo-upload-file-error', `文件大小 ${formatBytes(file.size)} 超过 ${formatLimit(limit)} 限制。`);
+      else if (!replacing && repo.items.some((item) => item.filename === file.name)) invalid('repo-upload-file', 'repo-upload-file-error', `仓库中已有 ${file.name}，如需更新请在列表中点「替换」。`);
     }
-    if (!name) invalid('repo-upload-name', 'repo-upload-name-error', '请填写插件名称。');
+    if (!name && !replacing) invalid('repo-upload-name', 'repo-upload-name-error', '请填写插件名称。');
     if (first) {
       first.focus();
       return;
     }
     const query = new URLSearchParams({
-      filename: file.name,
+      filename: replacing ? replacing.filename : file.name,
       name,
       version: $('repo-upload-version').value.trim(),
       category: $('repo-upload-category').value.trim(),
       author: $('repo-upload-author').value.trim(),
       description: $('repo-upload-description').value.trim()
     });
+    if (replacing) query.set('replace', '1');
     stopPolling();
     uploading = true;
     repoBusy = true;
@@ -1452,7 +1574,7 @@
       uploaded = true;
       $('repo-upload-dialog').close();
       resetUploadForm();
-      toast(`已上传 ${asText(result.filename, file.name)}。`, 'success');
+      toast(`${replacing ? '已替换' : '已上传'} ${asText(result.filename, file.name)}。`, 'success');
     } catch (error) {
       if (requestEpoch !== epoch) return;
       if (error.status === 401) {
@@ -1488,8 +1610,9 @@
       events.push({
         target,
         kind,
-        // Service rows are terminal observations, not whitelist targets.
-        selectable: kind !== 'service' && Boolean(target),
+        // Service rows are terminal observations, not whitelist targets; rows
+        // already covered by the current whitelist need no second approval.
+        selectable: kind !== 'service' && Boolean(target) && entry.allowed_now !== true,
         time: str(entry.time),
         client: str(entry.client),
         dst,
@@ -1536,7 +1659,10 @@
   function activityVisibleEvents() {
     const query = searchQuery('activity-search');
     const sources = { flow: '网关连接 gateway flow', dns: 'DNS 域名解析', service: '本机服务 local service' };
+    const kindMatches = (event) => activityKindValue === 'all'
+      || (activityKindValue === 'external' ? event.kind !== 'service' : event.kind === activityKindValue);
     return activity.events.filter((event) => (activityFilterValue === 'all' || event.verdict === activityFilterValue)
+      && kindMatches(event)
       && matchesSearch(query, [event.domain, event.dst, event.client, event.port, event.name, event.category, event.kind, sources[event.kind]]));
   }
 
@@ -1648,6 +1774,12 @@
       tag.className = 'activity-kind';
       tag.textContent = '域名解析';
       nameCell.append(tag);
+      if (event.name) {
+        const label = document.createElement('span');
+        label.className = 'activity-label-name';
+        label.textContent = event.name;
+        nameCell.append(label);
+      }
     } else {
       nameCell.textContent = asText(event.name, '');
     }
@@ -1720,6 +1852,7 @@
     renderActivityCategories();
     renderActivityRows();
     updateActivityControls();
+    renderQuickLinks();
   }
 
   function updateActivityControls() {
@@ -1748,6 +1881,7 @@
     setDisabled('allow', locked || !hasSelection);
     setDisabled('label', locked || !hasSelection);
     $('activity-filter').disabled = !authenticated || activityBusy;
+    $('activity-kind').disabled = !authenticated || activityBusy;
     $('activity-search').disabled = !authenticated || activityBusy;
     for (const segment of $$('.segment')) segment.disabled = !authenticated || activityBusy;
     $('activity-selection').textContent = hasSelection ? `已选 ${activitySelected.size} 项` : '未选择';
@@ -1768,6 +1902,15 @@
     activityFilterValue = value === 'blocked' || value === 'allowed' ? value : 'all';
     if ($('activity-filter').value !== activityFilterValue) $('activity-filter').value = activityFilterValue;
     for (const segment of $$('.segment')) segment.setAttribute('aria-pressed', String(segment.dataset.filter === activityFilterValue));
+    renderActivityRows();
+    updateActivityControls();
+    flushActivityPending();
+  }
+
+  function setActivityKind(value) {
+    activityKindValue = ['flow', 'dns', 'service', 'external'].includes(value) ? value : 'all';
+    if ($('activity-kind').value !== activityKindValue) $('activity-kind').value = activityKindValue;
+    try { localStorage.setItem('ps5jb.activityKind', activityKindValue); } catch { /* private mode */ }
     renderActivityRows();
     updateActivityControls();
     flushActivityPending();
@@ -2062,26 +2205,54 @@
     }
     const autoloadRaw = entry.autoload && typeof entry.autoload === 'object' ? entry.autoload : {};
     const statusRaw = autoloadRaw.status && typeof autoloadRaw.status === 'object' ? autoloadRaw.status : {};
-    const remaining = Number(statusRaw.remaining);
-    const done = Number(statusRaw.done);
+    const count = (value) => { const number = Number(value); return Number.isFinite(number) && number >= 0 ? Math.floor(number) : null; };
     const repoPayloads = Number(entry.repo_payloads);
+    const payloads = [];
+    for (const item of Array.isArray(entry.payloads) ? entry.payloads : []) {
+      if (!item || typeof item !== 'object' || !str(item.slot)) continue;
+      payloads.push({ slot: str(item.slot), filename: str(item.filename) || str(item.slot) });
+    }
+    const items = [];
+    for (const item of Array.isArray(autoloadRaw.items) ? autoloadRaw.items : []) {
+      if (!item || typeof item !== 'object' || !str(item.key)) continue;
+      items.push({
+        key: str(item.key),
+        filename: str(item.filename) || str(item.key),
+        installed: item.installed === true,
+        delayMs: count(item.delay_ms) || 0,
+        outcome: ['success', 'failed', 'skipped'].includes(str(item.outcome)) ? str(item.outcome) : ''
+      });
+    }
+    if (!items.length && Array.isArray(autoloadRaw.list)) {
+      for (const key of autoloadRaw.list.map((name) => str(name)).filter((name) => name && !name.startsWith('!'))) {
+        items.push({ key, filename: key, installed: false, delayMs: 0, outcome: '' });
+      }
+    }
     return {
       ip,
       online: entry.online === true,
       elfldr: entry.elfldr === true,
       pldmgr: entry.pldmgr === true,
+      pldmgrPort: count(entry.pldmgr_port) || 8084,
       version: str(entry.version),
       sourceAttached: entry.source_attached === true,
       sourceUrl: str(entry.source_url),
       repoPayloads: Number.isFinite(repoPayloads) && repoPayloads >= 0 ? Math.floor(repoPayloads) : null,
       installed: Array.isArray(entry.installed) ? [...new Set(entry.installed.map((name) => str(name)).filter(Boolean))] : [],
+      payloads,
       running,
       autoload: {
         enabled: autoloadRaw.enabled === true,
-        list: Array.isArray(autoloadRaw.list) ? [...new Set(autoloadRaw.list.map((name) => str(name)).filter(Boolean))] : [],
+        startDelay: count(autoloadRaw.start_delay) === null ? 5 : count(autoloadRaw.start_delay),
+        leadMs: count(autoloadRaw.lead_ms) || 0,
+        items,
+        list: items.map((item) => item.key),
         status: {
-          remaining: Number.isFinite(remaining) && remaining >= 0 ? Math.floor(remaining) : null,
-          done: Number.isFinite(done) && done >= 0 ? Math.floor(done) : null,
+          state: str(statusRaw.state),
+          remaining: count(statusRaw.remaining),
+          done: count(statusRaw.done),
+          total: count(statusRaw.total),
+          failed: count(statusRaw.failed),
           current: str(statusRaw.current)
         }
       },
@@ -2159,6 +2330,7 @@
     try {
       const data = await api('/api/ps5');
       if (requestEpoch !== epoch) return false;
+      ps5FetchedAt = Date.now();
       setPs5Error('');
       applyPs5(data);
       return true;
@@ -2209,6 +2381,7 @@
 
   function renderPs5() {
     if (!$('ps5-scan-info')) return;
+    renderQuickLinks();
     renderPs5ScanInfo();
     renderPs5HostCount();
     const disabled = $('ps5-disabled-note');
@@ -2366,9 +2539,14 @@
     if (action === 'select') {
       disabled = false;
     } else if (action === 'attach') {
+      const label = button.querySelector('.button-label');
+      if (label) label.textContent = host.sourceAttached ? '仓库已接入' : '接入本服务仓库';
       if (!host.pldmgr) {
         disabled = true;
         reason = '需要主机运行 pldmgr（8084）';
+      } else if (host.sourceAttached) {
+        disabled = true;
+        reason = '本服务仓库已在 Payload Manager 的源列表中';
       }
     } else if (action === 'catalog') {
       if (!host.pldmgr && !host.elfldr) {
@@ -2408,7 +2586,7 @@
     elfldr.dataset.tone = host.elfldr ? 'good' : 'neutral';
     const version = ps5VersionLabel(host.version);
     const pldmgr = card.querySelector('[data-field="pldmgr"]');
-    pldmgr.textContent = host.pldmgr ? `pldmgr 8084${version ? ` · ${version}` : ''}` : 'pldmgr 不可用';
+    pldmgr.textContent = host.pldmgr ? `pldmgr ${host.pldmgrPort}${version ? ` · ${version}` : ''}` : 'pldmgr 不可用';
     pldmgr.dataset.tone = host.pldmgr ? 'good' : 'neutral';
     const source = card.querySelector('[data-field="source"]');
     source.textContent = host.sourceAttached ? '仓库已接入' : '仓库未接入';
@@ -2753,29 +2931,46 @@
     }
   }
 
+  const ps5SecondsLabel = (ms) => {
+    const seconds = ms / 1000;
+    return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
+  };
+
+  function ps5HostDraftOf(host) {
+    return {
+      ip: host.ip,
+      enabled: host.autoload.enabled,
+      startDelay: host.autoload.startDelay,
+      leadMs: host.autoload.leadMs,
+      items: host.autoload.items.map((item) => ({ key: item.key, delayMs: item.delayMs }))
+    };
+  }
+
   function ps5AutoloadValues(host) {
-    if (ps5Draft && ps5Draft.ip === host.ip) {
-      return { enabled: ps5Draft.enabled, files: [...ps5Draft.files] };
-    }
-    return { enabled: host.autoload.enabled, files: [...host.autoload.list] };
+    return ps5Draft && ps5Draft.ip === host.ip ? ps5Draft : ps5HostDraftOf(host);
   }
 
   function ps5EnsureDraft(host) {
-    if (!ps5Draft || ps5Draft.ip !== host.ip) {
-      ps5Draft = { ip: host.ip, enabled: host.autoload.enabled, files: new Set(host.autoload.list) };
-    }
+    if (!ps5Draft || ps5Draft.ip !== host.ip) ps5Draft = ps5HostDraftOf(host);
     return ps5Draft;
   }
 
+  const ps5DraftSignature = (draft) => JSON.stringify([draft.enabled, draft.startDelay, draft.leadMs,
+    draft.items.map((item) => [item.key, item.delayMs])]);
+
   function ps5DraftDirty(host) {
     if (!ps5Draft || ps5Draft.ip !== host.ip) return false;
-    return ps5Draft.enabled !== host.autoload.enabled || !sameStringSet(ps5Draft.files, host.autoload.list);
+    return ps5DraftSignature(ps5Draft) !== ps5DraftSignature(ps5HostDraftOf(host));
   }
 
-  function ps5AutoloadOptions(host) {
-    const names = new Set([...host.installed, ...host.autoload.list]);
-    if (ps5Draft && ps5Draft.ip === host.ip) for (const name of ps5Draft.files) names.add(name);
-    return [...names].sort((left, right) => left.localeCompare(right, 'zh', { numeric: true }));
+  function ps5AutoloadMeta(host, key) {
+    const known = host.autoload.items.find((item) => item.key === key);
+    const slot = host.payloads.find((item) => item.slot === key);
+    return {
+      filename: (slot && slot.filename) || (known && known.filename) || key.split('/').pop(),
+      installed: Boolean(slot) || Boolean(known && known.installed),
+      outcome: known ? known.outcome : ''
+    };
   }
 
   function syncPs5AutoloadMeta(host) {
@@ -2791,10 +2986,19 @@
     const allowed = Boolean(host && host.online && host.pldmgr);
     const locked = !authenticated || ps5Busy || !allowed;
     enabled.disabled = locked;
-    for (const box of $$('#ps5-autoload-items input[type="checkbox"]')) box.disabled = locked;
+    const start = $('ps5-autoload-start-delay');
+    if (document.activeElement !== start) start.value = String(values.startDelay);
+    start.disabled = locked;
+    for (const control of $$('#ps5-autoload-items input, #ps5-autoload-items button')) {
+      control.disabled = locked || (control.dataset.move === 'up' && control.dataset.index === '0')
+        || (control.dataset.move === 'down' && Number(control.dataset.index) === values.items.length - 1);
+    }
+    const addSelect = $('ps5-autoload-add-select');
+    addSelect.disabled = locked || addSelect.options.length === 0;
+    $('ps5-autoload-add').disabled = locked || addSelect.options.length === 0;
     const save = $('ps5-autoload-save');
     const saveBusy = Boolean(ps5Action && ps5Action.kind === 'autoload' && ps5Action.ip === host.ip);
-    save.disabled = locked || saveBusy;
+    save.disabled = locked || saveBusy || !ps5DraftDirty(host);
     save.setAttribute('aria-busy', String(saveBusy));
     const spinner = save.querySelector('.spinner');
     if (spinner) spinner.hidden = !saveBusy;
@@ -2804,12 +3008,20 @@
     errorNode.hidden = !error;
   }
 
+  function ps5OutcomeBadge(outcome) {
+    const [label, tone] = { success: ['上次启动：成功', 'good'], failed: ['上次启动：失败', 'error'], skipped: ['上次启动：跳过', 'neutral'] }[outcome] || [];
+    if (!label) return null;
+    const badge = makeElement('span', 'result-badge', label);
+    badge.dataset.tone = tone;
+    return badge;
+  }
+
   function renderPs5Autoload(host, options = {}) {
     const values = ps5AutoloadValues(host);
     syncPs5AutoloadMeta(host);
     const note = $('ps5-autoload-note');
     if (!host.pldmgr) {
-      note.textContent = '自动加载需要 pldmgr（8084）。该主机当前未运行 pldmgr，设置已禁用。';
+      note.textContent = `自动加载需要 pldmgr（${host.pldmgrPort}）。该主机当前未运行 pldmgr，设置已禁用。`;
       note.hidden = false;
     } else if (!host.online) {
       note.textContent = '主机当前离线，自动加载设置已禁用。';
@@ -2820,72 +3032,151 @@
     }
     const progress = $('ps5-autoload-progress');
     const status = host.autoload.status;
-    const hasProgress = Boolean(status && (status.remaining !== null || status.done !== null || status.current));
-    if (hasProgress) {
-      const parts = [];
-      if (status.remaining !== null) parts.push(`剩余 ${status.remaining}`);
-      if (status.done !== null) parts.push(`已完成 ${status.done}`);
-      if (status.current) parts.push(`当前 ${status.current}`);
-      progress.textContent = `pldmgr 自动加载：${parts.join(' · ')}`;
-      progress.hidden = false;
-    } else {
-      progress.textContent = '';
-      progress.hidden = true;
-    }
-    const optionsList = ps5AutoloadOptions(host);
-    $('ps5-autoload-list').hidden = optionsList.length === 0;
-    $('ps5-autoload-empty').hidden = optionsList.length > 0;
-    const key = JSON.stringify([
-      host.ip,
-      optionsList,
-      host.autoload.enabled,
-      host.autoload.list,
-      host.autoload.status,
-      host.installed,
-      host.pldmgr,
-      host.online
-    ]);
+    const stateLabels = { done: '已完成', running: '加载中', countdown: '倒计时中', aborted: '已中止', disabled: '未启用', idle: '未运行' };
+    const parts = [];
+    if (status.state) parts.push(stateLabels[status.state] || status.state);
+    if (status.total !== null && status.done !== null) parts.push(`${status.done} / ${status.total} 项`);
+    if (status.failed) parts.push(`失败 ${status.failed}`);
+    if (status.current && status.current !== 'DONE') parts.push(`当前 ${status.current}`);
+    progress.textContent = parts.length ? `本次开机的自动加载：${parts.join(' · ')}` : '';
+    progress.hidden = !parts.length;
+    const lead = $('ps5-autoload-lead');
+    lead.textContent = values.leadMs ? `倒计时结束后另有 ${ps5SecondsLabel(values.leadMs)} 秒等待（列表开头的 !${values.leadMs}，保存时保留）。` : '';
+    lead.hidden = !values.leadMs;
+
+    const key = JSON.stringify([host.ip, values.items, host.payloads, host.autoload.items, host.pldmgr, host.online]);
     if (!options.force && key === ps5AutoloadKey) {
       syncPs5AutoloadControls(host, values);
       return;
     }
     ps5AutoloadKey = key;
     const fragment = document.createDocumentFragment();
-    for (const filename of optionsList) {
-      const label = makeElement('label', 'ps5-autoload-item');
-      const box = document.createElement('input');
-      box.type = 'checkbox';
-      box.className = 'ps5-autoload-check';
-      box.dataset.ps5File = filename;
-      box.checked = values.files.includes(filename);
-      box.setAttribute('aria-label', `自动加载 ${filename}`);
-      label.append(box, makeElement('span', 'mono ps5-autoload-name', filename));
-      if (!host.installed.includes(filename)) label.append(makeElement('span', 'ps5-autoload-missing', '未安装'));
-      fragment.append(label);
-    }
+    values.items.forEach((item, index) => {
+      const meta = ps5AutoloadMeta(host, item.key);
+      const row = makeElement('li', 'ps5-seq-row');
+      row.append(makeElement('span', 'ps5-seq-index', String(index + 1)));
+      const main = makeElement('div', 'ps5-seq-main');
+      main.append(makeElement('span', 'ps5-seq-name', meta.filename), makeElement('span', 'ps5-seq-key', item.key));
+      const tags = makeElement('span', 'ps5-seq-tags');
+      const outcome = ps5OutcomeBadge(meta.outcome);
+      if (outcome) tags.append(outcome);
+      if (!meta.installed) {
+        const missing = makeElement('span', 'result-badge', '主机上未找到');
+        missing.dataset.tone = 'warning';
+        tags.append(missing);
+      }
+      if (tags.childNodes.length) main.append(tags);
+      const wait = makeElement('label', 'ps5-delay-input ps5-seq-wait');
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.min = '0';
+      input.max = '3600';
+      input.step = '0.5';
+      input.inputMode = 'decimal';
+      input.value = ps5SecondsLabel(item.delayMs);
+      input.dataset.index = String(index);
+      input.dataset.field = 'delay';
+      input.setAttribute('aria-label', `${meta.filename} 加载后等待的秒数`);
+      wait.append(makeElement('span', '', '加载后等待'), input, makeElement('span', '', '秒'));
+      const tools = makeElement('span', 'ps5-seq-tools');
+      for (const [move, text, label] of [['up', '↑', '上移'], ['down', '↓', '下移'], ['remove', '移除', '移除']]) {
+        const button = makeElement('button', 'button button-secondary button-small', text);
+        button.type = 'button';
+        button.dataset.move = move;
+        button.dataset.index = String(index);
+        button.setAttribute('aria-label', `${label} ${meta.filename}`);
+        if (move === 'remove') button.dataset.tone = 'danger';
+        tools.append(button);
+      }
+      row.append(main, wait, tools);
+      fragment.append(row);
+    });
     $('ps5-autoload-items').replaceChildren(fragment);
+    $('ps5-autoload-empty').hidden = values.items.length > 0;
+
+    const used = new Set(values.items.map((item) => item.key));
+    const select = $('ps5-autoload-add-select');
+    const choices = host.payloads.filter((item) => !used.has(item.slot))
+      .sort((left, right) => left.filename.localeCompare(right.filename, 'zh', { numeric: true }));
+    select.replaceChildren(...choices.map((item) => {
+      const option = document.createElement('option');
+      option.value = item.slot;
+      option.textContent = `${item.filename}（${item.slot}）`;
+      return option;
+    }));
+    if (!choices.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = host.payloads.length ? '已安装的插件都在列表中' : '主机上还没有已安装的插件';
+      select.replaceChildren(option);
+      select.options.length = 1;
+    }
     syncPs5AutoloadControls(host, values);
   }
 
-  function onPs5AutoloadToggle(event) {
+  function ps5EditAutoload(change) {
     const host = ps5SelectedHost();
     if (!host || ps5Busy || !authenticated) return;
     const draft = ps5EnsureDraft(host);
-    draft.enabled = event.target.checked;
-    syncPs5AutoloadMeta(host);
+    change(draft, host);
+    ps5AutoloadKey = '';
+    renderPs5Autoload(host);
     updatePs5Controls();
   }
 
+  function onPs5AutoloadToggle(event) {
+    ps5EditAutoload((draft) => { draft.enabled = event.target.checked; });
+  }
+
+  function onPs5AutoloadStartDelay(event) {
+    const value = Math.round(Number(event.target.value));
+    if (!Number.isFinite(value) || value < 0 || value > 3600) {
+      event.target.setAttribute('aria-invalid', 'true');
+      return;
+    }
+    event.target.removeAttribute('aria-invalid');
+    ps5EditAutoload((draft) => { draft.startDelay = value; });
+  }
+
   function onPs5AutoloadFile(event) {
-    const host = ps5SelectedHost();
-    if (!host || ps5Busy || !authenticated) return;
-    const box = event.target.closest('.ps5-autoload-check');
-    if (!box || !box.dataset.ps5File) return;
-    const draft = ps5EnsureDraft(host);
-    if (box.checked) draft.files.add(box.dataset.ps5File);
-    else draft.files.delete(box.dataset.ps5File);
-    syncPs5AutoloadMeta(host);
-    updatePs5Controls();
+    const input = event.target.closest('input[data-field="delay"]');
+    if (!input) return;
+    const seconds = Number(input.value);
+    if (!Number.isFinite(seconds) || seconds < 0 || seconds > 3600) {
+      input.setAttribute('aria-invalid', 'true');
+      return;
+    }
+    input.removeAttribute('aria-invalid');
+    const index = Number(input.dataset.index);
+    ps5EditAutoload((draft) => { if (draft.items[index]) draft.items[index].delayMs = Math.round(seconds * 1000); });
+  }
+
+  function onPs5AutoloadClick(event) {
+    const button = event.target.closest('button[data-move]');
+    if (!button) return;
+    const index = Number(button.dataset.index);
+    const move = button.dataset.move;
+    ps5EditAutoload((draft) => {
+      const items = draft.items;
+      if (move === 'remove') items.splice(index, 1);
+      else if (move === 'up' && index > 0) [items[index - 1], items[index]] = [items[index], items[index - 1]];
+      else if (move === 'down' && index < items.length - 1) [items[index + 1], items[index]] = [items[index], items[index + 1]];
+    });
+    const focusTarget = $$(`#ps5-autoload-items button[data-move="${move}"]`)[Math.max(0, move === 'up' ? index - 1 : move === 'down' ? index + 1 : index)];
+    if (focusTarget && !focusTarget.disabled) focusTarget.focus({ preventScroll: true });
+  }
+
+  function onPs5AutoloadAdd() {
+    const key = $('ps5-autoload-add-select').value;
+    if (!key) return;
+    ps5EditAutoload((draft) => {
+      if (!draft.items.some((item) => item.key === key)) {
+        // Match the common 3-second spacing used by the existing list.
+        const last = draft.items[draft.items.length - 1];
+        if (last && !last.delayMs) last.delayMs = 3000;
+        draft.items.push({ key, delayMs: 0 });
+      }
+    });
   }
 
   function ps5RememberFocus() {
@@ -2900,19 +3191,17 @@
 
   function requestPs5AutoloadSave() {
     const host = ps5SelectedHost();
-    if (!host || ps5Busy || !authenticated) return;
+    if (!host || ps5Busy || !authenticated || !ps5DraftDirty(host)) return;
     const values = ps5AutoloadValues(host);
-    const files = [...values.files].sort((left, right) => left.localeCompare(right, 'zh', { numeric: true }));
-    const overwrite = !sameStringSet(files, host.autoload.list);
-    if (overwrite) {
-      ps5AutoloadTarget = { ip: host.ip, enabled: values.enabled, files };
+    const nextKeys = values.items.map((item) => item.key);
+    const removed = host.autoload.items.filter((item) => !nextKeys.includes(item.key));
+    const target = { ip: host.ip, values: JSON.parse(JSON.stringify(values)) };
+    if (removed.length) {
+      ps5AutoloadTarget = target;
       $('ps5-autoload-dialog-host').textContent = host.ip;
-      $('ps5-autoload-dialog-current').textContent = String(host.autoload.list.length);
-      $('ps5-autoload-dialog-next').textContent = String(files.length);
-      const removed = host.autoload.list.filter((name) => !files.includes(name));
-      $('ps5-autoload-dialog-note').textContent = removed.length
-        ? `将移除：${removed.join('、')}`
-        : '列表按文件名字母序保存。';
+      $('ps5-autoload-dialog-current').textContent = String(host.autoload.items.length);
+      $('ps5-autoload-dialog-next').textContent = String(values.items.length);
+      $('ps5-autoload-dialog-note').textContent = `将从自动加载中移除：${removed.map((item) => ps5AutoloadMeta(host, item.key).filename).join('、')}`;
       $('ps5-autoload-dialog-error').textContent = '';
       $('ps5-autoload-dialog-error').hidden = true;
       $('ps5-autoload-dialog-cancel').disabled = false;
@@ -2922,11 +3211,12 @@
       $('ps5-autoload-dialog-cancel').focus({ preventScroll: true });
       return;
     }
-    submitPs5Autoload(host.ip, values.enabled, files);
+    submitPs5Autoload(target);
   }
 
-  async function submitPs5Autoload(ip, enabled, files) {
-    if (ps5Busy || !authenticated) return;
+  async function submitPs5Autoload(target) {
+    if (ps5Busy || !authenticated || !target) return;
+    const { ip, values } = target;
     const dialog = $('ps5-autoload-dialog');
     ps5Begin('autoload', ip, { label: '正在保存自动加载…' });
     ps5InlineError = null;
@@ -2942,14 +3232,20 @@
     const requestEpoch = epoch;
     let saved = false;
     try {
-      const result = await api('/api/ps5/autoload', { ip, enabled: Boolean(enabled), files });
+      const result = await api('/api/ps5/autoload', {
+        ip,
+        enabled: Boolean(values.enabled),
+        start_delay: values.startDelay,
+        lead_ms: values.leadMs,
+        items: values.items.map((item) => ({ key: item.key, delay_ms: item.delayMs }))
+      });
       if (requestEpoch !== epoch) return;
       if (result.ok !== true) throw new ApiError('服务未确认自动加载设置，请刷新后检查。');
       if (result.host) updatePs5Host(result.host);
       ps5Draft = null;
       saved = true;
       if (dialog.open) dialog.close();
-      toast('自动加载设置已保存。', 'success');
+      toast('自动加载设置已保存，下次开机按新顺序加载。', 'success');
     } catch (error) {
       if (requestEpoch !== epoch) return;
       if (error.status === 401) {
@@ -2974,6 +3270,7 @@
     }
     if (saved) {
       ps5AutoloadTarget = null;
+      ps5AutoloadKey = '';
       refreshPs5();
     }
   }
@@ -3400,6 +3697,7 @@
     system: '系统存储',
     usb: 'USB 存储',
     extended: '扩展存储',
+    ext: '扩展存储',
     m2: 'M.2 存储',
     internal: '内置存储'
   }[kind] || '存储');
@@ -3444,6 +3742,7 @@
       base: str(info.base),
       host: str(info.host),
       reachable: info.reachable === true,
+      backend: str(info.backend),
       error: str(info.error),
       hosts: Array.isArray(info.hosts) ? [...new Set(info.hosts.map((host) => str(host)).filter(Boolean))] : []
     };
@@ -3455,13 +3754,13 @@
       if (!entry || typeof entry !== 'object') continue;
       const path = str(entry.path);
       if (!path) continue;
-      const total = Number(entry.total);
-      const free = Number(entry.free);
+      const total = entry.total === null || entry.total === undefined ? NaN : Number(entry.total);
+      const free = entry.free === null || entry.free === undefined ? NaN : Number(entry.free);
       volumes.push({
         path,
         label: str(entry.label) || filesVolumeLabel(str(entry.kind)),
         kind: str(entry.kind) || 'system',
-        total: Number.isFinite(total) && total >= 0 ? total : null,
+        total: Number.isFinite(total) && total > 0 ? total : null,
         free: Number.isFinite(free) && free >= 0 ? free : null
       });
     }
@@ -3502,6 +3801,10 @@
       percent: Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null,
       done: Number.isFinite(done) && done >= 0 ? done : null,
       total: Number.isFinite(total) && total >= 0 ? total : null,
+      kind: str(job.kind),
+      name: str(job.name),
+      elapsed: Number.isFinite(Number(job.elapsed)) ? Number(job.elapsed) : null,
+      speed: Number.isFinite(Number(job.speed)) ? Number(job.speed) : 0,
       error: str(job.error)
     };
   }
@@ -3672,11 +3975,13 @@
     else if (!info.reachable) chip.textContent = '未连接';
     else chip.textContent = info.host || '已连接';
     $('files-host-sub').textContent = info && info.configured
-      ? (info.reachable ? `已连接 ${info.host || '主机'}${info.base ? ` · ${info.base}` : ''}` : `无法连接 ${info.host || '文件服务'}`)
+      ? (info.reachable
+        ? `已连接 ${info.host || '主机'}${info.backend === 'ftp' ? ' · 通过 FTP（zftpd）' : info.backend === 'http' ? ' · 通过 tom-ps5-usbnet' : ''}${info.base ? ` · ${info.base}` : ''}`
+        : `无法连接 ${info.host || '文件服务'}`)
       : '选择要浏览的 PS5 主机。';
     if (showSetup) renderFilesSetup();
     if (showUnreachable) {
-      $('files-unreachable-text').textContent = info.error || `无法连接 ${info.host || '文件服务'}，请确认主机已开机并运行 pldmgr。`;
+      $('files-unreachable-text').textContent = info.error || `无法连接 ${info.host || '文件服务'}，请确认主机已开机，并运行 zftpd（FTP）或 tom-ps5-usbnet。`;
     }
     setFilesError(files.error);
     if (main.hidden) {
@@ -3689,6 +3994,8 @@
     renderFilesRows();
     renderFilesStatus();
     renderFilesTransfers();
+    $('files-ps5-pane').hidden = files.mode !== 'ps5';
+    $('files-nas-pane').hidden = files.mode !== 'nas';
     updateFilesControls();
   }
 
@@ -3732,10 +4039,13 @@
       button.type = 'button';
       button.className = 'files-vol';
       button.dataset.path = volume.path;
-      const isActive = Boolean(active && active.path === volume.path);
+      const isActive = files.mode === 'ps5' && Boolean(active && active.path === volume.path);
       if (isActive) button.dataset.active = 'true';
       button.setAttribute('aria-pressed', String(isActive));
-      button.setAttribute('aria-label', `${volume.label}（${volume.path}），可用 ${formatBytes(volume.free)}，共 ${formatBytes(volume.total)}`);
+      const capacity = volume.total === null || volume.free === null
+        ? '容量未知（PS5 上未运行 web-file-mgr）'
+        : `可用 ${formatBytes(volume.free)} · 共 ${formatBytes(volume.total)}`;
+      button.setAttribute('aria-label', `${volume.label}（${volume.path}），${capacity}`);
       const top = makeElement('div', 'files-vol-top');
       top.append(makeIcon(filesVolumeIcon(volume.kind)), makeElement('span', 'files-vol-name', volume.label));
       const sub = makeElement('div', 'files-vol-sub');
@@ -3745,12 +4055,14 @@
       fill.style.width = `${used === null ? 0 : used.toFixed(1)}%`;
       if (used !== null && used >= 92) fill.className = 'full';
       bar.append(fill);
-      const foot = makeElement('p', 'files-vol-foot num', `可用 ${formatBytes(volume.free)} · 共 ${formatBytes(volume.total)}`);
+      bar.hidden = used === null;
+      const foot = makeElement('p', 'files-vol-foot num', capacity);
       button.append(top, sub, bar, foot);
-      button.addEventListener('click', () => navigateFiles(volume.path));
+      button.addEventListener('click', () => { setFilesMode('ps5'); navigateFiles(volume.path); });
       fragment.append(button);
     }
     box.replaceChildren(fragment);
+    renderNasRail();
   }
 
   function renderFilesCrumbs() {
@@ -3896,13 +4208,13 @@
     if (filter) filter.disabled = locked || !mainReady;
     setButton('files-retry', files.loading || files.configBusy);
     setButton('files-switch-host', files.configBusy);
-    setButton('files-job-cancel', !files.jobActive || files.busy);
     setButton('files-name-cancel', files.busy);
     setButton('files-dest-cancel', files.busy);
     setButton('files-host-cancel', files.configBusy);
     for (const button of $$('#files-body [data-files-menu-button]')) button.disabled = locked || !mainReady;
     for (const item of $$('#files-menu [data-files-menu]')) item.disabled = locked || !files.menuTarget;
-    $('files-transfers-toggle').setAttribute('aria-expanded', String(files.drawer));
+    for (const button of $$('[data-files-transfers]')) button.setAttribute('aria-expanded', String(files.drawer));
+    updateNasControls();
   }
 
   function openFilesMenu(trigger) {
@@ -4197,6 +4509,8 @@
     files.destMode = mode;
     files.destTarget = entry;
     files.destPath = files.path;
+    $('files-dest-overwrite-row').hidden = true;
+    $('files-dest-space').hidden = true;
     $('files-dest-title').textContent = mode === 'move' ? '移动到…' : '复制到…';
     $('files-dest-description').textContent = `选择目标文件夹。目标不能是当前文件夹；跨硬盘${mode === 'move' ? '移动' : '复制'}可能较慢。`;
     $('files-dest-confirm').querySelector('.button-label').textContent = mode === 'move' ? '移动到这里' : '复制到这里';
@@ -4210,10 +4524,28 @@
     loadFilesDest(files.path);
   }
 
+  function renderFilesDestSpace() {
+    const node = $('files-dest-space');
+    const target = files.destTarget;
+    const volume = files.destPath ? filesVolumeOf(files.destPath) : null;
+    if (files.destMode !== 'nas' || !volume || volume.free === null) {
+      node.hidden = true;
+      return;
+    }
+    const need = target && Number.isFinite(target.bytes) ? target.bytes : 0;
+    let text = `目标存储 ${volume.label} 可用 ${formatBytes(volume.free)}`;
+    if (need) text += `；选中的文件约 ${formatBytes(need)}${target.hasFolders ? '（另含文件夹，传输时再统计）' : ''}`;
+    if (need && need > volume.free) text += '，空间不足，传输会失败。';
+    node.textContent = text;
+    node.dataset.tone = need && need > volume.free ? 'error' : '';
+    node.hidden = false;
+  }
+
   async function loadFilesDest(path) {
     if (!authenticated) return;
     files.destPath = path;
     $('files-dest-path').textContent = path || '存储位置';
+    renderFilesDestSpace();
     const list = $('files-dest-list');
     list.replaceChildren(makeElement('p', 'files-dest-empty', '正在读取…'));
     files.destLoading = true;
@@ -4257,6 +4589,10 @@
   }
 
   async function confirmFilesDest() {
+    if (files.destMode === 'nas') {
+      startNasTransfer();
+      return;
+    }
     const target = files.destTarget;
     if (!target || !authenticated || files.busy) return;
     if (!files.destPath) {
@@ -4321,7 +4657,7 @@
 
   async function filesTransfersTick() {
     if (!authenticated || currentSection !== 'files' || filesPollBusy) return;
-    if (!files.drawer && !files.jobActive && !files.uploading) return;
+    if (!files.drawer && !files.jobActive && !files.uploading && !nasJobsActive()) return;
     filesPollBusy = true;
     const requestEpoch = epoch;
     try {
@@ -4330,6 +4666,13 @@
         if (requestEpoch !== epoch) return;
         files.transfers = normalizeFilesTransfers(data);
         files.transfersError = '';
+      }
+      if (files.drawer || nasJobsActive()) {
+        const data = await api('/api/transfers');
+        if (requestEpoch !== epoch) return;
+        const wasActive = nasJobsActive();
+        nasJobs = Array.isArray(data.jobs) ? data.jobs.filter((job) => job && typeof job === 'object' && job.id) : [];
+        if (wasActive && !nasJobsActive() && files.mode === 'ps5' && files.path) refreshFilesPage({ manual: false });
       }
       if (files.drawer || files.jobActive) {
         const data = await api('/api/files/job');
@@ -4362,8 +4705,8 @@
   }
 
   function ensureFilesPolling() {
-    const should = authenticated && currentSection === 'files' && (files.drawer || files.jobActive || files.uploading);
-    if (should && !filesPollTimer) filesPollTimer = setInterval(filesTransfersTick, 1200);
+    const should = authenticated && currentSection === 'files' && (files.drawer || files.jobActive || files.uploading || nasJobsActive());
+    if (should && !filesPollTimer) filesPollTimer = setInterval(filesTransfersTick, 1000);
     else if (!should && filesPollTimer) {
       clearInterval(filesPollTimer);
       filesPollTimer = null;
@@ -4379,7 +4722,6 @@
     if (!authenticated || files.busy || !files.jobActive) return;
     files.busy = true;
     updateFilesControls();
-    buttonBusy('files-job-cancel', true, '取消中…');
     try {
       await api('/api/files/cancel', {});
       toast('已请求取消当前任务。', 'info');
@@ -4391,114 +4733,192 @@
       files.transfersError = error.message;
     } finally {
       files.busy = false;
-      buttonBusy('files-job-cancel', false, '取消');
       updateFilesControls();
       renderFilesTransfers();
     }
     filesTransfersTick();
   }
 
-  function filesUploadRow(task) {
-    const row = document.createElement('tr');
-    row.dataset.uploadId = String(task.id);
-    const typeCell = makeElement('td', '', filesKindLabel(task.kind));
-    const nameCell = makeElement('td', 'files-transfer-name', task.name);
-    nameCell.title = task.name;
-    const sizeCell = makeElement('td', 'num', formatBytes(task.size));
-    const progressCell = document.createElement('td');
-    const progress = makeElement('div', 'files-progress');
-    const fill = document.createElement('i');
-    const percent = task.size > 0 ? Math.min(100, (task.done / task.size) * 100) : task.state === 'done' ? 100 : 0;
-    fill.style.width = `${percent}%`;
-    progress.append(fill);
-    progressCell.append(progress);
-    const stateCell = makeElement('td', task.state === 'fail' ? 'bad' : task.state === 'done' ? 'good' : 'mut');
-    stateCell.textContent = task.state === 'run' ? `上传中 ${percent.toFixed(percent < 10 ? 1 : 0)}%` : asText(task.state === 'sync' ? '正在落盘' : filesStateLabel(task.state), '');
-    if (task.note) stateCell.title = task.note;
-    if (task.state === 'fail' && task.note) stateCell.textContent = `失败：${task.note}`;
-    const speedCell = makeElement('td', 'num mut', task.speed > 0 ? `${task.speed.toFixed(1)} MB/s` : '—');
-    row.append(typeCell, nameCell, sizeCell, progressCell, stateCell, speedCell);
-    return row;
-  }
+  const formatDuration = (seconds) => {
+    const value = Math.max(0, Math.round(Number(seconds) || 0));
+    const hours = Math.floor(value / 3600);
+    const minutes = Math.floor((value % 3600) / 60);
+    const secs = value % 60;
+    return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}` : `${minutes}:${String(secs).padStart(2, '0')}`;
+  };
+  const formatRate = (bytesPerSecond) => (bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : '—');
+  const XFER_ACTIVE = new Set(['wait', 'run', 'sync', 'queued', 'scanning', 'running', 'copying', 'moving', 'active', 'pending', 'wait-confirm']);
+  const XFER_LABEL = { wait: '等待', run: '传输中', sync: '正在落盘', queued: '排队中', scanning: '正在统计文件', running: '传输中', copying: '复制中', moving: '移动中', active: '进行中', pending: '等待', done: '完成', fail: '失败', failed: '失败', cancel: '已取消', canceled: '已取消', skip: '已跳过', 'wait-confirm': '等待确认' };
+  const XFER_KIND = { upload: '上传', copy: '复制', move: '移动', nas: 'NAS → PS5', remote: 'PS5' };
 
-  function filesTransferRow(item) {
-    const row = document.createElement('tr');
-    const typeCell = makeElement('td', '', filesKindLabel(item.kind));
-    const nameCell = makeElement('td', 'files-transfer-name', item.name);
-    nameCell.title = item.name;
-    const sizeCell = makeElement('td', 'num', item.size === null ? '—' : formatBytes(item.size));
-    const progressCell = document.createElement('td');
-    const progress = makeElement('div', 'files-progress');
-    const fill = document.createElement('i');
-    const size = item.size === null ? 0 : item.size;
-    const percent = size > 0 && item.done !== null ? Math.min(100, (item.done / size) * 100) : item.state === 'done' ? 100 : 0;
-    fill.style.width = `${percent}%`;
-    progress.append(fill);
-    progressCell.append(progress);
-    const stateCell = makeElement('td');
-    const stateName = str(item.state).toLowerCase();
-    stateCell.className = stateName === 'done' ? 'good' : stateName === 'failed' ? 'bad' : 'mut';
-    stateCell.textContent = filesStateLabel(item.state);
-    const speed = Number.isFinite(item.speed) && item.speed > 0
-      ? `${item.speed.toFixed(1)} MB/s`
-      : item.done !== null && item.ms > 0 ? `${(item.done / item.ms / 1000).toFixed(1)} MB/s` : '—';
-    const speedCell = makeElement('td', 'num mut', speed);
-    row.append(typeCell, nameCell, sizeCell, progressCell, stateCell, speedCell);
-    return row;
-  }
-
-  function renderFilesJob() {
-    const box = $('files-job');
-    const job = files.job;
-    const show = Boolean(job && job.state !== 'idle');
-    if (!show) {
-      box.hidden = true;
-      return;
+  function filesTransferTasks() {
+    const tasks = [];
+    for (const job of nasJobs) {
+      tasks.push({
+        key: `nas:${job.id}`, kind: 'nas', name: job.name, state: job.state,
+        sub: `${job.source} → ${job.dest}`,
+        done: job.bytes_done, total: job.bytes_total, speed: job.speed, elapsed: job.elapsed, eta: job.eta,
+        files: { done: job.files_done, total: job.files_total, skipped: job.files_skipped, failed: job.files_failed },
+        current: job.state === 'running' ? job.current : '',
+        error: job.error, errors: job.errors || [],
+        cancel: XFER_ACTIVE.has(job.state) ? () => cancelNasJob(job.id) : null
+      });
     }
-    box.hidden = false;
-    $('files-job-label').textContent = `${job.kind === 'move' ? '移动' : '复制'}任务`;
-    $('files-job-fill').style.width = `${job.percent === null ? 0 : job.percent}%`;
-    const parts = [filesStateLabel(job.state)];
-    if (job.percent !== null) parts.push(`${job.percent.toFixed(job.percent < 10 ? 1 : 0)}%`);
-    if (job.done !== null && job.total !== null) parts.push(`${formatBytes(job.done)} / ${formatBytes(job.total)}`);
-    if (job.error) parts.push(job.error);
-    $('files-job-text').textContent = parts.join(' · ');
-    $('files-job-cancel').disabled = !files.jobActive || files.busy;
+    const job = files.job;
+    if (job && job.state !== 'idle') {
+      tasks.push({
+        key: 'copy-job', kind: job.kind === 'move' ? 'move' : 'copy', name: job.name || (job.kind === 'move' ? '移动任务' : '复制任务'),
+        state: job.state, sub: '在 PS5 上执行', done: job.done, total: job.total, speed: job.speed,
+        elapsed: job.elapsed, eta: job.speed > 0 && job.total && job.done !== null ? (job.total - job.done) / job.speed : null,
+        error: job.error, cancel: files.jobActive ? cancelFilesJob : null
+      });
+    }
+    for (const task of files.uploads) {
+      const end = task.finished || Date.now();
+      const elapsed = task.started ? (end - task.started) / 1000 : null;
+      tasks.push({
+        key: `upload:${task.id}`, kind: 'upload', name: task.name, state: task.state,
+        sub: `本机浏览器 → ${files.path || 'PS5'}`, done: task.done, total: task.size,
+        speed: task.state === 'run' ? task.speed : 0, elapsed,
+        eta: task.state === 'run' && task.speed > 0 ? (task.size - task.done) / task.speed : null,
+        error: task.state === 'fail' ? task.note : '',
+        cancel: ['wait', 'run'].includes(task.state) ? () => cancelFilesUpload(task) : null
+      });
+    }
+    const localNames = new Set(files.uploads.map((task) => task.name));
+    for (const item of files.transfers) {
+      if (String(item.kind).toLowerCase() === 'upload' && localNames.has(item.name)) continue;
+      tasks.push({
+        key: `remote:${item.id || item.name}`, kind: 'remote', name: item.name, state: String(item.state).toLowerCase(),
+        sub: filesKindLabel(item.kind), done: item.done, total: item.size,
+        speed: Number.isFinite(item.speed) && item.speed > 0 ? item.speed * 1048576 : 0,
+        elapsed: item.ms > 0 ? item.ms / 1000 : null, eta: null, error: '', cancel: null
+      });
+    }
+    return tasks;
+  }
+
+  function filesTransferCard(task) {
+    const item = makeElement('li', 'xfer');
+    item.dataset.state = XFER_ACTIVE.has(task.state) ? 'active' : task.state;
+    const head = makeElement('div', 'xfer-head');
+    const title = makeElement('div', 'xfer-title');
+    title.append(makeElement('span', 'xfer-kind', XFER_KIND[task.kind] || task.kind), makeElement('span', 'xfer-name', task.name));
+    title.lastChild.title = task.name;
+    const badge = makeElement('span', 'result-badge', XFER_LABEL[task.state] || task.state || '—');
+    badge.dataset.tone = task.state === 'done' ? 'good' : ['fail', 'failed'].includes(task.state) ? 'error' : XFER_ACTIVE.has(task.state) ? 'info' : 'neutral';
+    head.append(title, badge);
+    if (task.cancel) {
+      const cancel = makeElement('button', 'button button-secondary button-small', '取消');
+      cancel.type = 'button';
+      cancel.setAttribute('aria-label', `取消 ${task.name}`);
+      cancel.addEventListener('click', task.cancel);
+      head.append(cancel);
+    }
+    item.append(head);
+    if (task.sub) item.append(makeElement('p', 'xfer-sub mono', task.sub));
+
+    const total = Number(task.total) || 0;
+    const done = Math.min(Number(task.done) || 0, total || Number(task.done) || 0);
+    const percent = total > 0 ? Math.min(100, (done / total) * 100) : task.state === 'done' ? 100 : 0;
+    const meter = makeElement('div', 'xfer-meter');
+    meter.setAttribute('role', 'progressbar');
+    meter.setAttribute('aria-valuemin', '0');
+    meter.setAttribute('aria-valuemax', '100');
+    meter.setAttribute('aria-valuenow', percent.toFixed(1));
+    meter.setAttribute('aria-label', `${task.name} 进度`);
+    const fill = document.createElement('i');
+    fill.style.width = `${percent}%`;
+    if (task.state === 'scanning' || task.state === 'queued') meter.dataset.indeterminate = 'true';
+    meter.append(fill);
+    item.append(meter);
+
+    const stats = makeElement('div', 'xfer-stats');
+    const stat = (label, value, strong = false) => {
+      const node = makeElement('span', 'xfer-stat');
+      node.append(makeElement('span', 'xfer-stat-label', label), makeElement(strong ? 'strong' : 'span', 'xfer-stat-value', value));
+      stats.append(node);
+    };
+    stat('进度', total > 0 ? `${percent.toFixed(percent < 10 && percent > 0 ? 1 : 0)}%` : task.state === 'scanning' ? '统计中' : '—', true);
+    stat('已传', total > 0 ? `${formatBytes(done)} / ${formatBytes(total)}` : formatBytes(done));
+    stat('剩余', total > 0 ? formatBytes(Math.max(0, total - done)) : '—');
+    stat('速度', XFER_ACTIVE.has(task.state) ? formatRate(task.speed) : task.elapsed > 0 && done > 0 ? `平均 ${formatRate(done / task.elapsed)}` : '—');
+    stat('用时', task.elapsed !== null && task.elapsed !== undefined ? formatDuration(task.elapsed) : '—');
+    stat('预计剩余', XFER_ACTIVE.has(task.state) && task.eta !== null && task.eta !== undefined ? formatDuration(task.eta) : '—');
+    item.append(stats);
+
+    if (task.files && task.files.total) {
+      const parts = [`文件 ${task.files.done} / ${task.files.total}`];
+      if (task.files.skipped) parts.push(`跳过 ${task.files.skipped}`);
+      if (task.files.failed) parts.push(`失败 ${task.files.failed}`);
+      if (task.current) parts.push(`当前 ${task.current}`);
+      item.append(makeElement('p', 'xfer-sub', parts.join(' · ')));
+    }
+    if (task.error) {
+      const error = makeElement('p', 'xfer-error', task.error);
+      if (task.errors && task.errors.length) error.title = task.errors.join('\n');
+      item.append(error);
+    }
+    return item;
   }
 
   function renderFilesTransfers() {
     if (!$('files-transfers')) return;
-    const activeUploads = files.uploads.filter((task) => ['wait', 'run', 'sync'].includes(task.state));
-    const activeTransfers = files.transfers.filter((item) => String(item.state).toLowerCase() === 'active');
-    const count = activeUploads.length + activeTransfers.length + (files.jobActive ? 1 : 0);
-    const badge = $('files-transfers-count');
-    badge.textContent = count ? String(count) : '';
-    badge.hidden = !count;
-    $('files-transfers').hidden = !files.drawer;
-    $('files-transfers-toggle').setAttribute('aria-expanded', String(files.drawer));
-    if (!files.drawer) return;
-    renderFilesJob();
-    const body = $('files-transfers-body');
-    const localNames = new Set(files.uploads.map((task) => task.name));
-    const rows = [];
-    for (const task of files.uploads) rows.push(filesUploadRow(task));
-    for (const item of files.transfers) {
-      if (String(item.kind).toLowerCase() === 'upload' && localNames.has(item.name)) continue;
-      rows.push(filesTransferRow(item));
+    const tasks = filesTransferTasks();
+    const count = tasks.filter((task) => XFER_ACTIVE.has(task.state)).length;
+    for (const badge of $$('[data-files-transfers-count]')) {
+      badge.textContent = count ? String(count) : '';
+      badge.hidden = !count;
     }
-    if (!rows.length) body.replaceChildren(tableEmptyRow(6, '暂无传输任务。'));
-    else body.replaceChildren(...rows);
+    $('files-transfers').hidden = !files.drawer;
+    for (const button of $$('[data-files-transfers]')) button.setAttribute('aria-expanded', String(files.drawer));
+    if (!files.drawer) return;
+    const list = $('files-transfers-list');
+    if (!tasks.length) list.replaceChildren(makeElement('li', 'xfer-empty', '暂无传输任务。'));
+    else list.replaceChildren(...tasks.map(filesTransferCard));
+    $('files-transfers-clear').disabled = !tasks.some((task) => !XFER_ACTIVE.has(task.state));
     const error = $('files-transfers-error');
     error.textContent = files.transfersError || '';
     error.hidden = !files.transfersError;
     updateFilesControls();
   }
 
+  function cancelFilesUpload(task) {
+    if (task.state === 'wait') {
+      task.state = 'cancel';
+      renderFilesTransfers();
+    } else if (task.state === 'run' && files.uploadXhr) {
+      files.uploadXhr.abort();
+    }
+  }
+
+  async function clearFilesTransfers() {
+    files.uploads = files.uploads.filter((task) => XFER_ACTIVE.has(task.state));
+    if (files.job && !files.jobActive) files.job = null;
+    nasJobs = nasJobs.filter((job) => XFER_ACTIVE.has(job.state));
+    renderFilesTransfers();
+    try {
+      await api('/api/transfers/clear', {});
+    } catch (error) {
+      if (error.status === 401) showLogin(error.message);
+    }
+  }
+
   function toggleFilesDrawer(force) {
     files.drawer = typeof force === 'boolean' ? force : !files.drawer;
     renderFilesTransfers();
     ensureFilesPolling();
-    if (files.drawer) filesTransfersTick();
+    if (files.drawer) {
+      filesTransfersTick();
+      revealFilesTransfers();
+    }
+  }
+
+  function revealFilesTransfers() {
+    const panel = $('files-transfers');
+    if (!panel || panel.hidden) return;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    panel.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'nearest' });
   }
 
   function openFilesOverwrite(names, onChoice) {
@@ -4543,6 +4963,8 @@
         done: 0,
         state: skipping ? 'skip' : 'wait',
         speed: 0,
+        started: 0,
+        finished: 0,
         note: '',
         file,
         overwrite: overwrite.has(file.name)
@@ -4551,6 +4973,7 @@
     files.drawer = true;
     renderFilesTransfers();
     ensureFilesPolling();
+    revealFilesTransfers();
     pumpFilesUploads();
   }
 
@@ -4589,6 +5012,7 @@
       const xhr = new XMLHttpRequest();
       files.uploadXhr = xhr;
       const started = performance.now();
+      task.started = Date.now();
       let lastAt = started;
       let lastBytes = 0;
       xhr.open('POST', `/api/files/upload?path=${encodeURIComponent(files.path)}&overwrite=${task.overwrite ? 'true' : 'false'}`);
@@ -4599,8 +5023,10 @@
       xhr.upload.addEventListener('progress', (event) => {
         task.done = event.loaded;
         const now = performance.now();
-        if (now - lastAt >= 200) {
-          task.speed = ((event.loaded - lastBytes) / 1048576) / ((now - lastAt) / 1000);
+        if (now - lastAt >= 400) {
+          // bytes per second, smoothed so the number does not jump around
+          const instant = (event.loaded - lastBytes) / ((now - lastAt) / 1000);
+          task.speed = task.speed ? task.speed * 0.6 + instant * 0.4 : instant;
           lastAt = now;
           lastBytes = event.loaded;
           renderFilesTransfers();
@@ -4610,7 +5036,8 @@
         const payload = xhr.response && typeof xhr.response === 'object' ? xhr.response : {};
         if (xhr.status >= 200 && xhr.status < 300 && typeof payload.error !== 'string') {
           task.done = task.size;
-          task.speed = (task.size / 1048576) / Math.max(0.001, (performance.now() - started) / 1000);
+          task.speed = task.size / Math.max(0.001, (performance.now() - started) / 1000);
+          task.finished = Date.now();
           resolve();
           return;
         }
@@ -4800,8 +5227,9 @@
     $('files-body').replaceChildren(tableEmptyRow(4, '正在读取文件列表…'));
     $('files-volumes').replaceChildren();
     $('files-crumbs').replaceChildren();
-    $('files-transfers-body').replaceChildren(tableEmptyRow(6, '暂无传输任务。'));
-    $('files-job').hidden = true;
+    $('files-transfers-list').replaceChildren();
+    nasJobs = [];
+    resetNasPanel();
     $('files-transfers-error').textContent = '';
     $('files-transfers-error').hidden = true;
     $('files-drop').hidden = true;
@@ -4813,6 +5241,480 @@
 
 
   /* ── 事件绑定 ───────────────────────────────────────────────────────── */
+
+
+  /* ── NAS 存储 ───────────────────────────────────────────────────────── */
+
+  const NAS_PROTOCOL = { webdav: 'WebDAV', smb: 'SMB', ftp: 'FTP' };
+  const NAS_DEFAULT_PORT = { webdav: 5005, smb: 445, ftp: 21 };
+  const nasJobsActive = () => nasJobs.some((job) => ['queued', 'scanning', 'running'].includes(job.state));
+  const nasActive = () => nas.connections.find((item) => item.id === nas.activeId) || null;
+
+  function setFilesMode(mode) {
+    files.mode = mode === 'nas' ? 'nas' : 'ps5';
+    $('files-ps5-pane').hidden = files.mode !== 'ps5';
+    $('files-nas-pane').hidden = files.mode !== 'nas';
+    renderFilesVolumes();
+    updateFilesControls();
+  }
+
+  function resetNasPanel() {
+    Object.assign(nas, { loaded: false, connections: [], activeId: '', path: '/', entries: [], loading: false, error: '', editing: null, busy: false });
+    nas.selected.clear();
+    files.mode = 'ps5';
+    if ($('nas-list')) $('nas-list').replaceChildren();
+    if ($('nas-body')) $('nas-body').replaceChildren();
+  }
+
+  async function refreshNas() {
+    if (!authenticated) return;
+    try {
+      const data = await api('/api/nas');
+      nas.connections = Array.isArray(data.connections) ? data.connections.filter((item) => item && item.id) : [];
+      nas.protocols = data.protocols && typeof data.protocols === 'object' ? data.protocols : nas.protocols;
+      nas.encryption = data.encryption !== false;
+      nas.loaded = true;
+      if (nas.activeId && !nasActive()) setFilesMode('ps5');
+    } catch (error) {
+      if (error.status === 401) showLogin(error.message);
+      nas.loaded = true;
+    }
+    renderNasRail();
+  }
+
+  function renderNasRail() {
+    const box = $('nas-list');
+    if (!box) return;
+    const fragment = document.createDocumentFragment();
+    if (nas.loaded && !nas.connections.length) {
+      fragment.append(makeElement('p', 'files-rail-empty', '还没有 NAS。添加后可把 NAS 上的文件直接传到 PS5。'));
+    }
+    for (const item of nas.connections) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'files-vol nas-vol';
+      const active = files.mode === 'nas' && item.id === nas.activeId;
+      if (active) button.dataset.active = 'true';
+      button.setAttribute('aria-pressed', String(active));
+      button.setAttribute('aria-label', `打开 NAS ${item.name}（${NAS_PROTOCOL[item.protocol] || item.protocol} ${item.host}）`);
+      const top = makeElement('div', 'files-vol-top');
+      top.append(makeIcon('i-nas'), makeElement('span', 'files-vol-name', item.name));
+      const sub = makeElement('div', 'files-vol-sub');
+      sub.append(makeElement('span', 'mono', `${item.host}${item.share ? `/${item.share}` : ''}`), makeElement('span', '', NAS_PROTOCOL[item.protocol] || item.protocol));
+      button.append(top, sub);
+      if (item.credentials_ok === false) button.append(makeElement('p', 'files-vol-foot nas-warn', '账号无法解密，请编辑后重新填写'));
+      button.addEventListener('click', () => openNas(item.id));
+      fragment.append(button);
+    }
+    box.replaceChildren(fragment);
+  }
+
+  function openNas(id) {
+    if (nas.activeId !== id) {
+      nas.activeId = id;
+      nas.selected.clear();
+      nas.entries = [];
+      $('nas-filter').value = '';
+    }
+    setFilesMode('nas');
+    loadNasPath(nas.activeId === id && nas.path && nas.entries.length ? nas.path : '/');
+  }
+
+  async function loadNasPath(path) {
+    const item = nasActive();
+    if (!item || !authenticated) return;
+    const seq = ++nas.seq;
+    nas.loading = true;
+    nas.error = '';
+    nas.path = path;
+    nas.selected.clear();
+    renderNasPane();
+    try {
+      const data = await api(`/api/nas/list?id=${encodeURIComponent(item.id)}&path=${encodeURIComponent(path)}`);
+      if (seq !== nas.seq) return;
+      nas.path = str(data.path) || path;
+      nas.entries = (Array.isArray(data.entries) ? data.entries : []).filter((entry) => entry && entry.name).map((entry) => ({
+        name: str(entry.name), path: str(entry.path), dir: entry.dir === true,
+        size: Number(entry.size) || 0, mtime: Number(entry.mtime) || null
+      }));
+    } catch (error) {
+      if (seq !== nas.seq) return;
+      if (error.status === 401) {
+        showLogin(error.message);
+        return;
+      }
+      nas.entries = [];
+      nas.error = error.message;
+    } finally {
+      if (seq === nas.seq) {
+        nas.loading = false;
+        renderNasPane();
+      }
+    }
+  }
+
+  function nasVisibleEntries() {
+    const query = $('nas-filter').value.trim().toLowerCase();
+    return query ? nas.entries.filter((entry) => entry.name.toLowerCase().includes(query)) : nas.entries;
+  }
+
+  function renderNasPane() {
+    const item = nasActive();
+    if (!item || !$('nas-body')) return;
+    const crumbs = document.createDocumentFragment();
+    const root = makeElement('button', 'files-crumb', item.name);
+    root.type = 'button';
+    root.addEventListener('click', () => loadNasPath('/'));
+    crumbs.append(root);
+    let acc = '';
+    const parts = nas.path.split('/').filter(Boolean);
+    parts.forEach((part, index) => {
+      acc += `/${part}`;
+      const target = acc;
+      crumbs.append(makeElement('span', 'files-crumb-sep', '/'));
+      const crumb = makeElement('button', 'files-crumb', part);
+      crumb.type = 'button';
+      if (index === parts.length - 1) crumb.setAttribute('aria-current', 'page');
+      crumb.addEventListener('click', () => loadNasPath(target));
+      crumbs.append(crumb);
+    });
+    if (!parts.length) root.setAttribute('aria-current', 'page');
+    $('nas-crumbs').replaceChildren(crumbs);
+
+    const errorNode = $('nas-error');
+    errorNode.textContent = nas.error;
+    errorNode.hidden = !nas.error;
+    const body = $('nas-body');
+    const visible = nasVisibleEntries();
+    if (nas.loading) body.replaceChildren(tableEmptyRow(4, '正在读取 NAS…'));
+    else if (nas.error) body.replaceChildren(tableEmptyRow(4, '读取失败，请检查连接设置后重试。'));
+    else if (!nas.entries.length) body.replaceChildren(tableEmptyRow(4, '这个文件夹是空的。'));
+    else if (!visible.length) body.replaceChildren(tableEmptyRow(4, '没有匹配的文件。'));
+    else body.replaceChildren(...visible.map(nasRow));
+    renderNasStatus();
+    updateNasControls();
+  }
+
+  function renderNasStatus() {
+    const plain = nas.entries.filter((entry) => !entry.dir);
+    const total = plain.reduce((sum, entry) => sum + entry.size, 0);
+    const chosen = nas.entries.filter((entry) => nas.selected.has(entry.path));
+    const chosenBytes = chosen.reduce((sum, entry) => sum + (entry.dir ? 0 : entry.size), 0);
+    let text = nas.loading ? '' : `${nas.entries.length - plain.length} 个文件夹 · ${plain.length} 个文件 · 合计 ${formatBytes(total)}`;
+    if (!nas.loading && chosen.length) {
+      text += ` · 已选 ${chosen.length} 项`;
+      if (chosenBytes) text += `（文件 ${formatBytes(chosenBytes)}${chosen.some((entry) => entry.dir) ? '，另含文件夹' : ''}）`;
+    }
+    $('nas-status').textContent = text;
+  }
+
+  function nasRow(entry) {
+    const row = document.createElement('tr');
+    const check = makeElement('td', 'check-cell');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = nas.selected.has(entry.path);
+    box.setAttribute('aria-label', `选择 ${entry.name}`);
+    box.addEventListener('change', () => {
+      if (box.checked) nas.selected.add(entry.path);
+      else nas.selected.delete(entry.path);
+      renderNasStatus();
+      updateNasControls();
+    });
+    check.append(box);
+    const nameCell = document.createElement('td');
+    const wrap = makeElement('div', 'files-name');
+    const icon = makeIcon(entry.dir ? 'i-folder' : 'i-file');
+    if (entry.dir) icon.classList.add('folder');
+    wrap.append(icon);
+    if (entry.dir) {
+      const open = makeElement('button', 'files-name-button', entry.name);
+      open.type = 'button';
+      open.setAttribute('aria-label', `打开文件夹 ${entry.name}`);
+      open.addEventListener('click', () => loadNasPath(entry.path));
+      wrap.append(open);
+    } else {
+      wrap.append(makeElement('span', 'files-name-text', entry.name));
+    }
+    nameCell.append(wrap);
+    row.append(check, nameCell,
+      makeElement('td', 'num files-size-col', entry.dir ? '—' : formatBytes(entry.size)),
+      makeElement('td', 'num files-time-col', formatFileTime(entry.mtime)));
+    row.addEventListener('dblclick', (event) => {
+      if (!event.target.closest('button, input') && entry.dir) loadNasPath(entry.path);
+    });
+    return row;
+  }
+
+  function updateNasControls() {
+    if (!$('nas-send')) return;
+    const locked = !authenticated || nas.loading || nas.busy;
+    $('nas-send').disabled = locked || !nas.selected.size || !(files.info && files.info.reachable);
+    $('nas-send').title = files.info && files.info.reachable ? '' : '需要先连接 PS5 文件服务';
+    $('nas-refresh').disabled = locked;
+    $('nas-edit').disabled = !authenticated || !nasActive();
+    $('nas-add').disabled = !authenticated;
+    const all = $('nas-select-all');
+    const visible = nasVisibleEntries();
+    const chosen = visible.filter((entry) => nas.selected.has(entry.path)).length;
+    all.disabled = locked || !visible.length;
+    all.checked = visible.length > 0 && chosen === visible.length;
+    all.indeterminate = chosen > 0 && chosen < visible.length;
+  }
+
+  function openNasSendDialog() {
+    if (!authenticated || !nas.selected.size || !(files.info && files.info.reachable)) return;
+    const paths = [...nas.selected];
+    const item = nasActive();
+    files.destMode = 'nas';
+    const chosen = nas.entries.filter((entry) => nas.selected.has(entry.path));
+    files.destTarget = {
+      name: paths.length === 1 ? paths[0].split('/').pop() : `${paths.length} 项`, paths, nasId: item.id,
+      bytes: chosen.reduce((sum, entry) => sum + (entry.dir ? 0 : entry.size), 0),
+      hasFolders: chosen.some((entry) => entry.dir)
+    };
+    files.destPath = files.path;
+    $('files-dest-title').textContent = '传到 PS5…';
+    $('files-dest-description').textContent = `把 ${item.name} 上选中的 ${paths.length} 项（文件夹会连同内容）传到所选的 PS5 文件夹。传输由服务器执行，可以关闭页面。`;
+    $('files-dest-confirm').querySelector('.button-label').textContent = '开始传输';
+    $('files-dest-confirm').setAttribute('aria-label', '开始把 NAS 文件传到所选的 PS5 文件夹');
+    $('files-dest-overwrite-row').hidden = false;
+    $('files-dest-error').textContent = '';
+    $('files-dest-error').hidden = true;
+    $('files-dest-cancel').disabled = false;
+    $('files-dest-confirm').disabled = false;
+    $('files-dest-dialog').showModal();
+    $('files-dest-cancel').focus({ preventScroll: true });
+    loadFilesDest(files.path);
+  }
+
+  async function startNasTransfer() {
+    const target = files.destTarget;
+    if (!target || !target.paths || !authenticated || files.busy) return;
+    if (!files.destPath) {
+      $('files-dest-error').textContent = '请选择 PS5 上的目标文件夹。';
+      $('files-dest-error').hidden = false;
+      return;
+    }
+    files.busy = true;
+    buttonBusy('files-dest-confirm', true, '提交中…');
+    try {
+      const result = await api('/api/nas/transfer', {
+        id: target.nasId, paths: target.paths, dest: files.destPath,
+        overwrite: $('files-dest-overwrite').value === 'overwrite' ? 'overwrite' : 'skip'
+      });
+      if (result.job && result.job.id) nasJobs = [result.job, ...nasJobs.filter((job) => job.id !== result.job.id)];
+      $('files-dest-dialog').close();
+      nas.selected.clear();
+      renderNasPane();
+      toast(`已开始传输 ${target.name} → ${files.destPath}。`, 'success');
+      files.drawer = true;
+      renderFilesTransfers();
+      ensureFilesPolling();
+      revealFilesTransfers();
+    } catch (error) {
+      if (error.status === 401) {
+        $('files-dest-dialog').close();
+        showLogin(error.message);
+        return;
+      }
+      $('files-dest-error').textContent = error.message;
+      $('files-dest-error').hidden = false;
+    } finally {
+      files.busy = false;
+      buttonBusy('files-dest-confirm', false, '开始传输');
+    }
+  }
+
+  async function refreshNasJobs() {
+    // Jobs run on the server: pick up ones started before this page loaded.
+    if (!authenticated) return;
+    try {
+      const data = await api('/api/transfers');
+      nasJobs = Array.isArray(data.jobs) ? data.jobs.filter((job) => job && typeof job === 'object' && job.id) : [];
+      if (nasJobsActive()) files.drawer = true;
+      renderFilesTransfers();
+      ensureFilesPolling();
+    } catch (error) {
+      if (error.status === 401) showLogin(error.message);
+    }
+  }
+
+  async function cancelNasJob(id) {
+    try {
+      await api('/api/transfers/cancel', { id });
+      toast('已请求取消传输。', 'info');
+    } catch (error) {
+      if (error.status === 401) {
+        showLogin(error.message);
+        return;
+      }
+      toast(error.message, 'error');
+    }
+    filesTransfersTick();
+  }
+
+  function syncNasDialogProtocol() {
+    const protocol = $('nas-protocol').value;
+    $('nas-share-group').hidden = protocol !== 'smb';
+    $('nas-workgroup-group').hidden = protocol !== 'smb';
+    $('nas-tls-group').hidden = protocol === 'smb';
+    $('nas-tls-label').textContent = protocol === 'ftp' ? '使用 FTPS（显式 TLS）' : '使用 HTTPS';
+    $('nas-port').placeholder = String(NAS_DEFAULT_PORT[protocol] || '');
+    const hints = {
+      smb: '群晖/威联通/Windows 共享常用 445 端口；共享名留空会先列出所有共享。',
+      webdav: '群晖 WebDAV 默认 HTTP 5005 / HTTPS 5006；起始路径可填 /video 等子目录。',
+      ftp: '如果 NAS 只开放 FTP，可用此方式；匿名访问时用户名和密码留空。'
+    };
+    let hint = hints[protocol] || '';
+    if (protocol === 'smb' && nas.protocols.smb === false) hint = '服务器缺少 SMB 支持：请在本服务主机执行 apt install python3-smbc 后重启服务。';
+    if (nas.encryption === false) hint = '服务器缺少加密组件（python3-cryptography），为保证账号加密保存，暂时无法保存带账号的连接。';
+    $('nas-hint').textContent = hint;
+  }
+
+  function nasDialogValues() {
+    const port = $('nas-port').value.trim();
+    return {
+      id: nas.editing ? nas.editing.id : undefined,
+      name: $('nas-name').value.trim(),
+      protocol: $('nas-protocol').value,
+      host: $('nas-host').value.trim(),
+      port: port ? Number(port) : null,
+      share: $('nas-share').value.trim(),
+      path: $('nas-path').value.trim() || '/',
+      username: $('nas-username').value,
+      password: $('nas-password').value,
+      keep_password: true,
+      workgroup: $('nas-workgroup').value.trim(),
+      tls: $('nas-tls').checked,
+      verify_tls: $('nas-verify').checked
+    };
+  }
+
+  function openNasDialog(item) {
+    if (!authenticated) return;
+    nas.editing = item || null;
+    $('nas-form').reset();
+    $('nas-dialog-title').textContent = item ? `编辑 ${item.name}` : '添加 NAS 存储';
+    $('nas-name').value = item ? item.name : '';
+    $('nas-protocol').value = item ? item.protocol : 'smb';
+    $('nas-host').value = item ? item.host : '';
+    $('nas-port').value = item ? String(item.port || '') : '';
+    $('nas-share').value = item ? item.share || '' : '';
+    $('nas-path').value = item ? item.path || '/' : '/';
+    $('nas-username').value = item ? item.username || '' : '';
+    $('nas-password').placeholder = item && item.has_password ? '已加密保存，留空则保持不变' : '';
+    $('nas-workgroup').value = item ? item.workgroup || '' : '';
+    $('nas-tls').checked = Boolean(item && item.tls);
+    $('nas-verify').checked = Boolean(item && item.verify_tls);
+    $('nas-delete').hidden = !item;
+    $('nas-dialog-status').textContent = '';
+    $('nas-dialog-error').hidden = true;
+    syncNasDialogProtocol();
+    $('nas-dialog').showModal();
+    $('nas-name').focus({ preventScroll: true });
+  }
+
+  function nasDialogError(message) {
+    $('nas-dialog-error').textContent = message || '';
+    $('nas-dialog-error').hidden = !message;
+  }
+
+  async function testNasDialog() {
+    if (nas.busy) return;
+    nas.busy = true;
+    nasDialogError('');
+    $('nas-dialog-status').textContent = '正在连接 NAS…';
+    buttonBusy('nas-test', true, '测试中…');
+    try {
+      const result = await api('/api/nas/test', nasDialogValues());
+      $('nas-dialog-status').textContent = `连接成功，起始路径下有 ${result.entries} 项。`;
+    } catch (error) {
+      if (error.status === 401) {
+        $('nas-dialog').close();
+        showLogin(error.message);
+        return;
+      }
+      $('nas-dialog-status').textContent = '';
+      nasDialogError(error.message);
+    } finally {
+      nas.busy = false;
+      buttonBusy('nas-test', false, '测试连接');
+    }
+  }
+
+  async function submitNasDialog(event) {
+    event.preventDefault();
+    if (nas.busy) return;
+    const values = nasDialogValues();
+    if (!values.host) {
+      nasDialogError('请填写 NAS 地址。');
+      $('nas-host').focus();
+      return;
+    }
+    nas.busy = true;
+    nasDialogError('');
+    buttonBusy('nas-save', true, '保存中…');
+    try {
+      const result = await api('/api/nas/save', values);
+      $('nas-dialog').close();
+      toast(`已保存 ${result.connection.name}。`, 'success');
+      await refreshNas();
+      openNas(result.connection.id);
+    } catch (error) {
+      if (error.status === 401) {
+        $('nas-dialog').close();
+        showLogin(error.message);
+        return;
+      }
+      nasDialogError(error.message);
+    } finally {
+      nas.busy = false;
+      buttonBusy('nas-save', false, '保存');
+    }
+  }
+
+  async function deleteNasDialog() {
+    const item = nas.editing;
+    if (!item || nas.busy) return;
+    if (!window.confirm(`删除 NAS 连接「${item.name}」？NAS 上的文件不受影响。`)) return;
+    nas.busy = true;
+    try {
+      await api('/api/nas/delete', { id: item.id });
+      $('nas-dialog').close();
+      toast(`已删除 ${item.name}。`, 'success');
+      if (nas.activeId === item.id) {
+        nas.activeId = '';
+        setFilesMode('ps5');
+      }
+      await refreshNas();
+    } catch (error) {
+      nasDialogError(error.message);
+    } finally {
+      nas.busy = false;
+    }
+  }
+
+  function bindNasEvents() {
+    $('nas-add').addEventListener('click', () => openNasDialog(null));
+    $('nas-edit').addEventListener('click', () => openNasDialog(nasActive()));
+    $('nas-refresh').addEventListener('click', () => loadNasPath(nas.path));
+    $('nas-send').addEventListener('click', openNasSendDialog);
+    $('nas-filter').addEventListener('input', renderNasPane);
+    $('nas-select-all').addEventListener('change', () => {
+      const visible = nasVisibleEntries();
+      if ($('nas-select-all').checked) for (const entry of visible) nas.selected.add(entry.path);
+      else for (const entry of visible) nas.selected.delete(entry.path);
+      for (const box of $$('#nas-body input[type="checkbox"]')) box.checked = $('nas-select-all').checked;
+      renderNasStatus();
+      updateNasControls();
+    });
+    $('nas-protocol').addEventListener('change', syncNasDialogProtocol);
+    $('nas-form').addEventListener('submit', submitNasDialog);
+    $('nas-test').addEventListener('click', testNasDialog);
+    $('nas-cancel').addEventListener('click', () => $('nas-dialog').close());
+    $('nas-delete').addEventListener('click', deleteNasDialog);
+  }
 
   function bindEvents() {
     $('login-form').addEventListener('submit', submitLogin);
@@ -4863,7 +5765,8 @@
 
     for (const button of acts('logout')) button.addEventListener('click', logout);
     for (const button of acts('refresh')) button.addEventListener('click', handleRefresh);
-    for (const button of acts('upload')) button.addEventListener('click', openUploadDialog);
+    for (const button of acts('upload')) button.addEventListener('click', () => openUploadDialog());
+    $('repo-copy-url').addEventListener('click', copyRepoUrl);
 
     $('password-form').addEventListener('submit', submitPassword);
     for (const [field, error] of [['current-password', 'current-password-error'], ['new-password', 'new-password-error'], ['confirm-password', 'confirm-password-error']]) {
@@ -4914,6 +5817,8 @@
     for (const button of acts('allow')) button.addEventListener('click', openActivityAllowDialog);
     for (const button of acts('label')) button.addEventListener('click', openActivityLabelDialog);
     $('activity-filter').addEventListener('change', () => setActivityFilter($('activity-filter').value));
+    $('activity-kind').addEventListener('change', () => setActivityKind($('activity-kind').value));
+    try { setActivityKind(localStorage.getItem('ps5jb.activityKind') || 'all'); } catch { /* private mode */ }
     for (const segment of $$('.segment')) segment.addEventListener('click', () => setActivityFilter(segment.dataset.filter));
 
     $('activity-select-all').addEventListener('change', () => {
@@ -4945,6 +5850,9 @@
     $('ps5-tabs').addEventListener('keydown', onPs5TabsKeydown);
     $('ps5-autoload-enabled').addEventListener('change', onPs5AutoloadToggle);
     $('ps5-autoload-items').addEventListener('change', onPs5AutoloadFile);
+    $('ps5-autoload-items').addEventListener('click', onPs5AutoloadClick);
+    $('ps5-autoload-start-delay').addEventListener('change', onPs5AutoloadStartDelay);
+    $('ps5-autoload-add').addEventListener('click', onPs5AutoloadAdd);
     $('ps5-autoload-save').addEventListener('click', requestPs5AutoloadSave);
     $('ps5-shutdown-cancel').addEventListener('click', () => $('ps5-shutdown-dialog').close());
     $('ps5-shutdown-confirm').addEventListener('click', confirmPs5Shutdown);
@@ -4953,7 +5861,7 @@
     $('ps5-autoload-dialog-cancel').addEventListener('click', () => $('ps5-autoload-dialog').close());
     $('ps5-autoload-dialog-confirm').addEventListener('click', () => {
       const target = ps5AutoloadTarget;
-      if (target) submitPs5Autoload(target.ip, target.enabled, target.files);
+      if (target) submitPs5Autoload(target);
     });
     for (const id of ['ps5-shutdown-dialog', 'ps5-kill-dialog', 'ps5-autoload-dialog']) {
       const dialog = $(id);
@@ -4977,7 +5885,9 @@
     });
     $('files-mkdir').addEventListener('click', () => openFilesNameDialog('mkdir', null));
     $('files-refresh').addEventListener('click', () => refreshFilesPage({ manual: true }));
-    $('files-transfers-toggle').addEventListener('click', () => toggleFilesDrawer());
+    for (const button of $$('[data-files-transfers]')) button.addEventListener('click', () => toggleFilesDrawer());
+    $('files-transfers-clear').addEventListener('click', clearFilesTransfers);
+    bindNasEvents();
     $('files-transfers-close').addEventListener('click', () => toggleFilesDrawer(false));
     $('files-setup-connect').addEventListener('click', connectFilesSetup);
     $('files-setup-host').addEventListener('change', () => setFilesSetupError(''));
@@ -4986,7 +5896,6 @@
       loadFiles({ manual: true });
     });
     $('files-switch-host').addEventListener('click', openFilesHostDialog);
-    $('files-job-cancel').addEventListener('click', cancelFilesJob);
     $('files-filter').addEventListener('input', () => {
       files.filter = $('files-filter').value;
       renderFilesRows();
