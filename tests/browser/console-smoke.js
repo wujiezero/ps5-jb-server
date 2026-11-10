@@ -51,7 +51,10 @@ module.exports = async (page) => {
       case '/api/files/info': json = { configured: true, reachable: true, host: host.ip, hosts: [host.ip], base: 'http://192.168.1.142' }; break;
       case '/api/files/volumes': json = { volumes: [{ path: '/data', label: '内置存储', kind: 'internal', total: 1000000000000, free: 450000000000 }] }; break;
       case '/api/files/list': json = { path: url.searchParams.get('path') || '/data', entries: [{ name: 'homebrew', dir: true, path: '/data/homebrew', size: 0, mtime: 1794200000 }, { name: 'pldmgr', dir: true, path: '/data/pldmgr', size: 0, mtime: 1794200000 }, { name: 'console-settings-backup-with-a-long-file-name.json', dir: false, path: '/data/console-settings-backup-with-a-long-file-name.json', size: 4096, mtime: 1794200000 }] }; break;
-      case '/api/files/transfers': json = { transfers: [] }; break;
+      case '/api/files/transfers':
+      case '/api/transfers': json = { transfers: [] }; break;
+      case '/api/nas': json = { connections: [] }; break;
+      case '/api/titles': json = { titles: {} }; break;
       case '/api/files/job': json = { state: 'idle' }; break;
       default: return route.fulfill({ status: 404, json: { error: 'Unknown fixture API: ' + url.pathname } });
     }
@@ -96,8 +99,8 @@ module.exports = async (page) => {
     check(await trigger.getAttribute('aria-expanded') === 'true', 'More aria-expanded missing');
     await page.keyboard.press('Escape');
     await page.locator('#mobile-more-dialog').waitFor({ state: 'hidden' });
-    check(await trigger.evaluate((el) => document.activeElement === el), 'Focus was not restored');
-    check(await trigger.getAttribute('aria-expanded') === 'false', 'More aria-expanded did not reset');
+    await eventually(async () => await trigger.evaluate((el) => document.activeElement === el), 'Focus was not restored');
+    await eventually(async () => await trigger.getAttribute('aria-expanded') === 'false', 'More aria-expanded did not reset');
   });
   await test('More links expose all secondary routes and current state', async () => {
     check(await page.locator('#mobile-more-trigger').count() === 1, 'Missing More trigger');
@@ -105,7 +108,7 @@ module.exports = async (page) => {
       await page.locator('#mobile-more-trigger').click();
       await page.locator('#mobile-more-dialog a[data-section="' + section + '"]').click();
       await page.locator('#view-' + section).waitFor({ state: 'visible' });
-      check(!(await page.locator('#mobile-more-dialog').isVisible()), 'More stayed open after navigation');
+      await page.locator('#mobile-more-dialog').waitFor({ state: 'hidden' });
       check(await page.locator('#mobile-more-trigger').getAttribute('aria-current') === 'page', 'More has no current-page state');
     }
   });
@@ -167,6 +170,93 @@ module.exports = async (page) => {
     }
     check(!overflows.length, 'Page overflows: ' + JSON.stringify(overflows));
   });
+  await test('All routes share compact gutters, aligned panels and consistent corners', async () => {
+    const violations = [];
+    const samples = [];
+    for (const colorScheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' });
+      for (const width of [320, 390, 767, 768, 1023, 1024, 1440, 1920, 2560]) {
+        await page.setViewportSize({ width, height: 900 });
+        for (const section of ['overview', 'policy', 'activity', 'ps5', 'files', 'repository', 'settings']) {
+          await routeTo(section);
+          await page.evaluate(() => new Promise(requestAnimationFrame));
+          const sample = await page.evaluate(() => {
+            const header = document.querySelector('.app-bar');
+            const view = document.querySelector('.view:not([hidden])');
+            const rect = (el) => { const r = el.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width }; };
+            const visible = (el) => el.getClientRects().length > 0;
+            const panel = (el) => getComputedStyle(el).borderTopLeftRadius;
+            const controls = [...view.querySelectorAll('.button, .search-field, .files-search, input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="search"]), textarea, select')].filter(visible);
+            return {
+              header: rect(header), view: rect(view),
+              sidebar: visible(document.querySelector('.sidebar')) ? rect(document.querySelector('.sidebar')) : null,
+              viewport: document.documentElement.clientWidth,
+              usableWidth: document.body.clientWidth,
+              scrollWidth: document.documentElement.scrollWidth,
+              panelRadii: [header, ...view.querySelectorAll('.card')].filter(visible).map(panel),
+              controls: controls.map((el) => ({ id: el.id || el.className, radius: panel(el) }))
+            };
+          });
+          const gutter = width < 768 ? 12 : 16;
+          const prefix = `${colorScheme}/${width}/${section}`;
+          const report = (condition, message) => { if (!condition) violations.push(`${prefix}: ${message}`); };
+          report(Math.abs(sample.header.left - sample.view.left) <= 1 && Math.abs(sample.header.right - sample.view.right) <= 1, 'header and content edges do not align');
+          report(Math.abs(sample.view.left - (sample.sidebar?.right || 0) - gutter) <= 1 && Math.abs(sample.usableWidth - sample.view.right - gutter) <= 1, 'page gutters exceed compact spacing');
+          report(sample.panelRadii.every((radius) => radius === '12px'), 'major panels use inconsistent corners: ' + sample.panelRadii.join(','));
+          report(sample.controls.every((control) => control.radius === '8px'), 'controls use inconsistent corners: ' + JSON.stringify(sample.controls.filter((control) => control.radius !== '8px')));
+          report(sample.scrollWidth <= sample.viewport + 1, 'page overflows horizontally');
+          samples.push({ colorScheme, width, section, ...sample });
+        }
+      }
+    }
+    // Retain compact measurements for the calling runner/report.
+    page.__layoutSamples = samples;
+    check(!violations.length, violations.join('; '));
+  });
+  await test('Overview details keep one inset and file storage follows the panel corner', async () => {
+    for (const width of [390, 768, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await routeTo('overview');
+      const details = await page.locator('.detail-card').evaluateAll((elements) => elements.map((el) => ({
+        padding: getComputedStyle(el).padding,
+        summaryInset: el.querySelector('summary').getBoundingClientRect().left - el.getBoundingClientRect().left,
+        radius: getComputedStyle(el).borderTopLeftRadius
+      })));
+      check(details.every((item) => item.padding === '0px' && item.summaryInset <= 1 && item.radius === '12px'), 'Overview details gained a duplicate inset: ' + JSON.stringify(details));
+      await routeTo('files');
+      const corners = await page.locator('.files-rail').evaluate((el) => ({
+        rail: getComputedStyle(el).borderBottomLeftRadius,
+        frame: getComputedStyle(el.parentElement).borderBottomLeftRadius
+      }));
+      check(corners.frame === '11px' && corners.rail === (width >= 1024 ? '11px' : '0px'), 'Storage background misses the panel corner: ' + JSON.stringify(corners));
+      if (width < 1024) {
+        const empty = await page.locator('#nas-list .files-rail-empty').boundingBox();
+        check(empty && empty.width >= 160 && empty.height < 100, 'Empty NAS hint was squeezed into a tall narrow column: ' + JSON.stringify(empty));
+      }
+    }
+  });
+  await test('Disclosure focus remains inside its clip and host details clear the sticky header', async () => {
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 500 });
+      await routeTo('overview');
+      await page.keyboard.press('Tab');
+      const focus = await page.locator('.detail-summary').first().evaluate((el) => {
+        el.focus();
+        const style = getComputedStyle(el);
+        return { width: parseFloat(style.outlineWidth), offset: parseFloat(style.outlineOffset) };
+      });
+      check(focus.width >= 2 && focus.offset <= -focus.width, 'Disclosure focus ring is clipped: ' + JSON.stringify(focus));
+      await routeTo('ps5');
+      await page.locator('#ps5-detail').waitFor({ state: 'visible' });
+      await page.locator('#ps5-detail').evaluate((el) => el.scrollIntoView({ block: 'start', behavior: 'instant' }));
+      const positions = await page.evaluate(() => ({
+        header: document.querySelector('.app-bar').getBoundingClientRect().bottom,
+        detail: document.querySelector('#ps5-detail').getBoundingClientRect().top
+      }));
+      check(positions.detail >= positions.header + 8, 'Sticky header covers the host detail: ' + JSON.stringify(positions));
+      await page.evaluate(() => window.scrollTo(0, 0));
+    }
+  });
   await test('More dialog closes when switching to desktop', async () => {
     await page.setViewportSize({ width: 390, height: 844 });
     check(await page.locator('#mobile-more-trigger').count() === 1, 'Missing More trigger');
@@ -189,7 +279,7 @@ module.exports = async (page) => {
     await routeTo('repository');
     emptyRepo = true;
     await page.locator('#app-refresh').click();
-    await eventually(async () => (await page.locator('#repo-summary').innerText()).includes('0'), 'Empty fixture not applied');
+    await eventually(async () => (await page.locator('#repo-summary').innerText()).startsWith('共 0 个插件'), 'Empty fixture not applied');
     check((await page.locator('#repo-body').innerText()).includes('暂无插件'), 'Empty repository state missing');
     emptyRepo = false;
     await page.locator('#app-refresh').click();
@@ -203,7 +293,17 @@ module.exports = async (page) => {
     expired = true;
     await page.evaluate(() => document.querySelector('#app-refresh').click());
     await page.locator('#login-view').waitFor({ state: 'visible' });
-    check(!(await page.locator('#mobile-more-dialog').isVisible()), 'Session expiry left modal open');
+    await page.locator('#mobile-more-dialog').waitFor({ state: 'hidden' });
+    for (const width of [320, 390, 768, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      const login = await page.locator('.login-main').evaluate((el) => ({
+        padding: getComputedStyle(el).padding,
+        radius: getComputedStyle(el.querySelector('.login-card')).borderTopLeftRadius,
+        content: document.documentElement.scrollWidth,
+        viewport: document.documentElement.clientWidth
+      }));
+      check(login.padding === '0px' && login.radius === '12px' && login.content <= login.viewport + 1, 'Login inherits app layout or overflows: ' + JSON.stringify({ width, ...login }));
+    }
     expired = false;
   });
   await test('Read-only UI interactions did not issue any writes or JS errors', async () => {
