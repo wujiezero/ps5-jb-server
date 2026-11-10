@@ -2063,6 +2063,11 @@ tbody tr { transition: background var(--dur) var(--ease); }
 }
 .files-name-button:hover { color: var(--accent); text-decoration: underline; }
 .files-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Game name under a CUSA/PPSA file name; the file name itself is unchanged. */
+.files-name-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 0; max-width: 100%; }
+.files-name-stack > .files-name-button, .files-name-stack > .files-name-text { max-width: 100%; }
+.title-name { max-width: 100%; overflow: hidden; color: var(--mut); font-size: 0.75rem; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.title-name[hidden] { display: none; }
 .files-row-menu { width: 32px; min-height: 30px; padding: 0; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--mut); }
 .files-row-menu:hover:not(:disabled) { border-color: var(--line); background: var(--raised); color: var(--fg); }
 .files-status { color: var(--mut); font-size: 0.75rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
@@ -2270,6 +2275,9 @@ tbody tr { transition: background var(--dur) var(--ease); }
   .files-name { min-height: 44px; }
   .files-name-button { flex: 1; min-width: 0; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
   .files-name-text { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .files-name-stack { flex: 1; padding: 4px 0; }
+  .files-name-stack > .files-name-button { width: 100%; min-height: 32px; text-align: left; }
+  .title-name { white-space: normal; overflow-wrap: anywhere; }
   .files-transfers-wrap { max-height: none; border: 0; border-radius: 0; }
   .files-transfers-table td { min-width: 0; overflow-wrap: anywhere; }
   .files-transfer-name { max-width: none; white-space: normal; }

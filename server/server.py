@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from activity import Classifier, FlowObserver, LabelsStore, make_poller
 from api_console import ConsoleAPI
 from settings import Settings
+from titles import TitleCatalog, proxy_reader
 from dns_service import DNSPolicy, LimitedThreads, diagnostic_error, start_dns
 from policy import ConfigStore, Firewall
 
@@ -620,6 +621,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 logging.exception('Read repository failed')
                 self.send_body(500, {'error': '读取插件仓库失败，请检查服务日志'})
             return
+        if self.path.split('?', 1)[0] == '/api/titles':
+            self.handle_titles()
+            return
         if self.path.startswith(('/api/ps5', '/api/files', '/api/nas', '/api/transfers')):
             if self.server.app.console_get(self):
                 return
@@ -635,6 +639,24 @@ class AdminHandler(BaseHTTPRequestHandler):
             self.send_body(200, (self.server.static_dir / name).read_bytes(), ctype)
         except OSError:
             self.send_body(503, {'error': '页面文件暂不可用'})
+
+    def handle_titles(self):
+        """GET /api/titles?ids=CUSA1,PPSA2&folder=/mnt/ext0/games/PPSA2 -> names."""
+        if not self.require_session():
+            return
+        catalog = getattr(self.server.app, 'titles', None)
+        if catalog is None:
+            self.send_body(200, {'titles': {}, 'pending': [], 'enabled': False})
+            return
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        ids = [part for value in query.get('ids', []) for part in value.split(',') if part]
+        try:
+            result = catalog.lookup(ids, query.get('folder', []))
+        except Exception:
+            logging.exception('Title lookup failed')
+            self.send_body(500, {'error': '查询游戏名称失败，请检查服务日志'})
+            return
+        self.send_body(200, result)
 
     def handle_upload(self):
         """Raw-body upload: metadata in the query string, bytes in the body."""
@@ -844,6 +866,8 @@ def main():
     admin.app.settings = settings
     admin.app.console = ConsoleAPI(settings, _catalog_reader(repo_dir / 'repo.json'),
                                    autoscan=True)
+    admin.app.titles = TitleCatalog(settings.titles_path, data / 'titles-cache.json',
+                                    reader=proxy_reader(admin.app.console.files))
     admin.repo = RepoManager(repo_dir,
                              base_url=f'http://{host_ip}:{settings.repo_port}/payloads/',
                              max_upload=settings.max_upload)

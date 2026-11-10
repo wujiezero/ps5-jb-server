@@ -4192,9 +4192,102 @@
     box.replaceChildren(fragment);
   }
 
+  /* ── 游戏名称：CUSA12345 / PPSA01234 这类编号 → 游戏名 ─────────────── */
+  // Names come from /api/titles (offline catalog + the console's param.json);
+  // rows render first and their labels are filled in place when the batch returns.
+  const TITLE_ID_PATTERN = /(?<![A-Za-z0-9])(CUSA|PPSA|PLAS|PCAS|PLJS|PCJS|PLJM|PCJM|PCKS|PLKS|ELAS|ECAS|ELJS|ECJS|ELJM|ECJM|ELKS|ECKS|NPXS)(\d{5})(?!\d)/i;
+  const titleNames = { cache: new Map(), queued: new Set(), folders: new Set(), sentFolders: new Set(), timer: null };
+
+  const titleIdOf = (name) => {
+    const match = TITLE_ID_PATTERN.exec(str(name));
+    return match ? (match[1] + match[2]).toUpperCase() : null;
+  };
+
+  const titleNameOf = (id) => {
+    const entry = id ? titleNames.cache.get(id) : null;
+    return entry ? entry.name : '';
+  };
+
+  function fillTitleLabel(node, entry) {
+    const name = entry && entry.name ? entry.name : '';
+    node.textContent = name;
+    node.hidden = !name;
+    const other = entry && entry.zh && entry.en && entry.en !== name ? entry.en : '';
+    if (name) node.setAttribute('title', other ? `${name}\n${other}` : name);
+    else node.removeAttribute('title');
+  }
+
+  // Returns a label element for names that carry a title ID, else null.
+  // folder: PS5 folder path, lets the server read sce_sys/param.json once.
+  function titleLabel(name, folder) {
+    const id = titleIdOf(name);
+    if (!id) return null;
+    const node = makeElement('span', 'title-name');
+    node.dataset.titleId = id;
+    fillTitleLabel(node, titleNames.cache.get(id));
+    if (!titleNames.cache.has(id)) titleNames.queued.add(id);
+    if (folder && !titleNames.sentFolders.has(folder)) titleNames.folders.add(folder);
+    if ((titleNames.queued.size || titleNames.folders.size) && !titleNames.timer) {
+      titleNames.timer = setTimeout(flushTitleNames, 0);
+    }
+    return node;
+  }
+
+  async function flushTitleNames() {
+    titleNames.timer = null;
+    if (!authenticated) return;
+    const ids = [...titleNames.queued].slice(0, 200);
+    const folders = [...titleNames.folders].slice(0, 48);
+    ids.forEach((id) => titleNames.queued.delete(id));
+    folders.forEach((folder) => {
+      titleNames.folders.delete(folder);
+      titleNames.sentFolders.add(folder);
+    });
+    if (!ids.length && !folders.length) return;
+    const query = [`ids=${encodeURIComponent(ids.join(','))}`, ...folders.map((folder) => `folder=${encodeURIComponent(folder)}`)];
+    let data = null;
+    try {
+      data = await api(`/api/titles?${query.join('&')}`);
+    } catch {
+      // Not fatal: rows keep their file names; a later render asks again.
+      folders.forEach((folder) => titleNames.sentFolders.delete(folder));
+      return;
+    }
+    const found = data && typeof data.titles === 'object' && data.titles ? data.titles : {};
+    const pending = new Set(Array.isArray(data.pending) ? data.pending : []);
+    const asked = new Set([...ids, ...folders.map((folder) => titleIdOf(folder.split('/').pop())).filter(Boolean)]);
+    for (const id of asked) {
+      const entry = found[id];
+      if (entry && typeof entry === 'object') {
+        titleNames.cache.set(id, { name: str(entry.name), en: str(entry.en), zh: str(entry.zh), source: str(entry.source) });
+      } else if (!pending.has(id)) {
+        titleNames.cache.set(id, null);
+      }
+    }
+    // The console did not get to these folders (time budget / offline): retry on the next render.
+    folders.forEach((folder) => {
+      if (pending.has(titleIdOf(folder.split('/').pop()))) titleNames.sentFolders.delete(folder);
+    });
+    for (const node of document.querySelectorAll('.title-name[data-title-id]')) {
+      if (asked.has(node.dataset.titleId)) fillTitleLabel(node, titleNames.cache.get(node.dataset.titleId));
+    }
+    if (titleNames.queued.size || titleNames.folders.size) titleNames.timer = setTimeout(flushTitleNames, 0);
+  }
+
+  // Name cell content: the original file name stays as-is, the game name sits under it.
+  function withTitleLabel(nameNode, name, folder) {
+    const label = titleLabel(name, folder);
+    if (!label) return nameNode;
+    const stack = makeElement('span', 'files-name-stack');
+    stack.append(nameNode, label);
+    return stack;
+  }
+
   function filesVisibleEntries() {
     const needle = files.filter.trim().toLowerCase();
-    const list = needle ? files.entries.filter((entry) => entry.name.toLowerCase().includes(needle)) : files.entries.slice();
+    const matches = (entry) => entry.name.toLowerCase().includes(needle)
+      || titleNameOf(titleIdOf(entry.name)).toLowerCase().includes(needle);
+    const list = needle ? files.entries.filter(matches) : files.entries.slice();
     list.sort((left, right) => {
       if (left.dir !== right.dir) return left.dir ? -1 : 1;
       return left.name.localeCompare(right.name, 'zh', { numeric: true });
@@ -4219,9 +4312,9 @@
       open.textContent = entry.name;
       open.setAttribute('aria-label', `打开文件夹 ${entry.name}`);
       open.addEventListener('click', () => navigateFiles(entry.path));
-      nameWrap.append(open);
+      nameWrap.append(withTitleLabel(open, entry.name, entry.path));
     } else {
-      nameWrap.append(makeElement('span', 'files-name-text', entry.name));
+      nameWrap.append(withTitleLabel(makeElement('span', 'files-name-text', entry.name), entry.name));
     }
     nameCell.append(nameWrap);
     const sizeCell = makeElement('td', 'num files-size-col', entry.dir ? '—' : formatBytes(entry.size));
@@ -5607,9 +5700,9 @@
       open.type = 'button';
       open.setAttribute('aria-label', `打开文件夹 ${entry.name}`);
       open.addEventListener('click', () => loadNasPath(entry.path));
-      wrap.append(open);
+      wrap.append(withTitleLabel(open, entry.name));
     } else {
-      wrap.append(makeElement('span', 'files-name-text', entry.name));
+      wrap.append(withTitleLabel(makeElement('span', 'files-name-text', entry.name), entry.name));
     }
     nameCell.append(wrap);
     row.append(check, nameCell,

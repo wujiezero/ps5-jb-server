@@ -36,6 +36,11 @@ class StepError(RuntimeError):
     pass
 
 
+def server_modules():
+    """File names of all server modules that get installed into the program directory."""
+    return sorted(path.name for path in (REPO / 'server').glob('*.py'))
+
+
 @dataclass
 class Layout:
     prefix: Path = Path('/')
@@ -223,15 +228,18 @@ def check_dnspython():
 def install_files(layout, runner):
     print('\n[1/9] 目录与程序文件')
     for path, mode in ((layout.opt, 0o755), (layout.opt / 'web', 0o755), (layout.opt / 'rulesets', 0o755),
+                       (layout.opt / 'titledb', 0o755),
                        (layout.etc, 0o700), (layout.certs, 0o700), (layout.data, 0o700),
                        (layout.repo / 'payloads', 0o755)):
         runner.mkdir(path, mode)
-    for name in ('server.py', 'dns_service.py', 'policy.py', 'payload_repo.py', 'activity.py',
-                 'ps5.py', 'files.py', 'api_console.py', 'settings.py'):
+    # Every module ships: a hand-kept list silently missed ftp_files/nas/power once.
+    for name in server_modules():
         runner.copy_file(REPO / 'server' / name, layout.opt / name)
     for name in ('index.html', 'app.js', 'style.css'):
         runner.copy_file(REPO / 'web' / name, layout.opt / 'web' / name)
     runner.copy_file(REPO / 'rulesets' / 'compiled.json', layout.opt / 'rulesets' / 'compiled.json')
+    for name in ('titles.json', 'UPSTREAM_LICENSE'):
+        runner.copy_file(REPO / 'titledb' / name, layout.opt / 'titledb' / name)
 
 
 def write_config(layout, runner):
@@ -271,6 +279,7 @@ static = "{layout.opt / 'web'}"
 certs = "{layout.certs}"
 credentials = "{layout.data / 'credentials.json'}"
 rulesets = "{layout.opt / 'rulesets/compiled.json'}"
+titles = "{layout.opt / 'titledb/titles.json'}"
 ''', 0o644)
 
 

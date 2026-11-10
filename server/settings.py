@@ -20,7 +20,8 @@ DEFAULTS = {
               'static': '/opt/ps5-jb-server/web', 'certs': '/etc/ps5-jb-server/tls',
               'credentials': '/var/lib/ps5-jb-server/credentials.json',
               'config': '/etc/ps5-jb-server/config.toml',
-              'rulesets': '/opt/ps5-jb-server/rulesets/compiled.json'},
+              'rulesets': '/opt/ps5-jb-server/rulesets/compiled.json',
+              'titles': '/opt/ps5-jb-server/titledb/titles.json'},
 }
 
 
@@ -51,6 +52,8 @@ class Settings:
     credentials_path: Path = Path('/var/lib/ps5-jb-server/credentials.json')
     config_path: Path = Path('/etc/ps5-jb-server/config.toml')
     rulesets_path: Path = Path('/opt/ps5-jb-server/rulesets/compiled.json')
+    # Offline title-ID -> game-name catalog (scripts/build_titles.py).
+    titles_path: Path = Path('/opt/ps5-jb-server/titledb/titles.json')
     # AES key for NAS credentials; kept beside config.toml, away from the data dir.
     secret_key_path: Path = Path('/etc/ps5-jb-server/nas.key')
     systemd_prefix: str = 'ps5-jb-server'
@@ -115,6 +118,8 @@ class Settings:
             config_path=Path(path or DEFAULTS['paths']['config']),
             rulesets_path=Path(pick('paths', 'rulesets', 'PS5JB_RULESETS',
                                     DEFAULTS['paths']['rulesets'])),
+            titles_path=Path(pick('paths', 'titles', 'PS5JB_TITLES',
+                                  DEFAULTS['paths']['titles'])),
             secret_key_path=Path(pick('paths', 'secret_key', 'PS5JB_SECRET_KEY',
                                       str(Path(path or DEFAULTS['paths']['config']).parent / 'nas.key'))),
         )

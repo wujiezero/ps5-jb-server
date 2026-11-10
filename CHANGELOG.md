@@ -1,5 +1,18 @@
 # 变更记录
 
+## 未发布
+
+**新功能**
+- 游戏名称：「PS5 文件」与 NAS 列表里带 `CUSA…`/`PPSA…` 等标题 ID 的文件和文件夹，在原文件名下方显示游戏名
+  （中文优先），筛选框也可按游戏名搜索。名称来自随仓库发布的离线库 `titledb/titles.json`
+  （andshrew/PlayStation-Titles，MIT，约 7.1 万条，`scripts/build_titles.py` 生成），PS5 上解开的游戏文件夹
+  另读一次 `sce_sys/param.json`/`param.sfo` 补缺并缓存到 `<data>/titles-cache.json`。新接口 `GET /api/titles`，
+  新配置项 `[paths] titles`。
+
+**修复**
+- 安装器漏拷 `ftp_files.py`、`nas.py`、`power.py`，全新安装后服务因缺模块无法启动；现改为拷贝 `server/` 下全部模块，
+  并加测试按 systemd 入口（`server.py`、`payload_repo.py`）的导入关系核对安装清单。
+
 ## 1.3.0 — 2026-11-10
 
 **新功能**

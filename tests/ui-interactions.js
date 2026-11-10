@@ -26,17 +26,24 @@ class Element {
   addEventListener() {}
   querySelector() { return null; }
   querySelectorAll() { return []; }
+  get classList() {
+    const owner = this;
+    return { add(name) { owner.className = `${owner.className || ''} ${name}`.trim(); }, remove() {}, toggle() {}, contains: () => false };
+  }
 }
 
-function fixture() {
+function fixture(extra = {}) {
   const nodes = new Map();
+  const labels = [];
   const document = {
     getElementById(id) {
       if (!nodes.has(id)) nodes.set(id, new Element());
       return nodes.get(id);
     },
-    querySelectorAll() { return []; },
+    // Only the title-name labels are looked up by selector in these tests.
+    querySelectorAll(selector) { return selector.startsWith('.title-name') ? labels : []; },
     createElement: (tag) => new Element(tag),
+    createElementNS: (_, tag) => new Element(tag),
     createDocumentFragment: () => new Element('fragment'),
     body: new Element('body')
   };
@@ -46,11 +53,13 @@ function fixture() {
   const exposed = `${source.slice(0, startup)}
     globalThis.subject = { activity, repo, activitySelected, activityVisibleEvents,
       setActivityFilter, renderRepo, renderPs5Catalog,
+      files, filesRow, nasRow, filesVisibleEntries, titleIdOf, titleNames, flushTitleNames,
       setAuthenticated(value) { authenticated = value; } };
   })();`;
-  const context = { document, console, location: { hostname: '192.168.1.2' }, setTimeout, clearTimeout };
+  const context = { document, console, location: { hostname: '192.168.1.2' }, setTimeout, clearTimeout,
+    AbortController, ...extra };
   vm.runInNewContext(exposed, context);
-  return { ...context.subject, node: (id) => document.getElementById(id) };
+  return { ...context.subject, labels, node: (id) => document.getElementById(id) };
 }
 
 const event = (target, extra = {}) => ({ target, selectable: true, domain: '', dst: '', client: '', port: null, name: '', category: '', kind: 'flow', verdict: 'blocked', ...extra });
@@ -126,4 +135,69 @@ test('PS5 catalog searches description and distinguishes no match from empty', (
   ui.repo.items = [];
   ui.renderPs5Catalog(host);
   assert.match(textOf(ui.node('ps5-catalog-body')), /插件目录为空/);
+});
+
+const findAll = (node, predicate) => [...(predicate(node) ? [node] : []), ...node.children.flatMap((child) => findAll(child, predicate))];
+
+test('game title IDs in file and NAS names get a name label filled from one batch request', async () => {
+  const requests = [];
+  const fetch = async (url) => {
+    requests.push(url);
+    return {
+      ok: true, status: 200,
+      json: async () => ({
+        titles: {
+          PPSA21567: { name: '宇宙机器人', en: 'ASTRO BOT', zh: '宇宙机器人', source: 'builtin' },
+          PPSA99000: { name: 'ProsperoStore', en: 'ProsperoStore', zh: '', source: 'console' }
+        },
+        pending: []
+      })
+    };
+  };
+  const ui = fixture({ fetch });
+  ui.setAuthenticated(true);
+  const folder = ui.filesRow({ name: 'PPSA99000', path: '/data/homebrew/PPSA99000', dir: true, size: 0, mtime: 0 });
+  const image = ui.filesRow({ name: 'PPSA21567.ffpfsc', path: '/mnt/ext0/games/PPSA21567.ffpfsc', dir: false, size: 1, mtime: 0 });
+  const plain = ui.filesRow({ name: 'README.md', path: '/data/homebrew/README.md', dir: false, size: 1, mtime: 0 });
+  const unknown = ui.nasRow({ name: 'CUSA00000-app', path: '/games/CUSA00000-app', dir: true, size: 0, mtime: 0 });
+  const nas = ui.nasRow({ name: 'ppsa21567.part01.rar', path: '/games/ppsa21567.part01.rar', dir: false, size: 1, mtime: 0 });
+  const isLabel = (node) => node.className === 'title-name';
+  const labels = [folder, image, plain, unknown, nas].map((row) => findAll(row, isLabel));
+  assert.deepEqual(labels.map((found) => found.length), [1, 1, 0, 1, 1], 'only title-ID names get a label');
+  ui.labels.push(...labels.flat());
+  // The original file name is untouched.
+  assert.match(textOf(image), /PPSA21567\.ffpfsc/);
+  await ui.flushTitleNames();
+  assert.equal(requests.length, 1, 'all rows share one request');
+  const url = new URL(requests[0], 'https://x');
+  assert.deepEqual(url.searchParams.get('ids').split(',').sort(), ['CUSA00000', 'PPSA21567', 'PPSA99000']);
+  assert.deepEqual(url.searchParams.getAll('folder'), ['/data/homebrew/PPSA99000'], 'only PS5 folders ask for param.json');
+  const [folderLabel, imageLabel, , unknownLabel, nasLabel] = labels.map((found) => found[0]);
+  assert.equal(folderLabel.textContent, 'ProsperoStore');
+  assert.equal(imageLabel.textContent, '宇宙机器人');
+  assert.equal(imageLabel.attributes.title, '宇宙机器人\nASTRO BOT');
+  assert.equal(nasLabel.textContent, '宇宙机器人');
+  assert.equal(unknownLabel.hidden, true, 'unknown IDs keep only the file name');
+  assert.equal(unknownLabel.textContent, '');
+  // Cached afterwards (including misses): re-rendering issues no new request.
+  ui.filesRow({ name: 'PPSA21567.ffpfsc', path: '/x/PPSA21567.ffpfsc', dir: false, size: 1, mtime: 0 });
+  ui.nasRow({ name: 'CUSA00000-app', path: '/games/CUSA00000-app', dir: true, size: 0, mtime: 0 });
+  assert.equal(ui.titleNames.queued.size, 0);
+  // The file filter also matches the game name.
+  ui.files.entries = [{ name: 'PPSA21567.ffpfsc', dir: false }, { name: 'README.md', dir: false }];
+  ui.files.filter = '宇宙';
+  assert.deepEqual(ui.filesVisibleEntries().map((entry) => entry.name), ['PPSA21567.ffpfsc']);
+});
+
+test('failed title lookups leave file names alone and are retried later', async () => {
+  const fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: 'boom' }) });
+  const ui = fixture({ fetch });
+  ui.setAuthenticated(true);
+  const row = ui.filesRow({ name: 'PPSA03671', path: '/mnt/ext0/games/PPSA03671', dir: true, size: 0, mtime: 0 });
+  await ui.flushTitleNames();
+  assert.equal(ui.titleNames.cache.has('PPSA03671'), false);
+  assert.equal(ui.titleNames.sentFolders.has('/mnt/ext0/games/PPSA03671'), false);
+  assert.match(textOf(row), /PPSA03671/);
+  assert.equal(ui.titleIdOf('UP9000-PPSA03671_00-MARVELSWOLVERINE'), 'PPSA03671');
+  assert.equal(ui.titleIdOf('XPPSA03671'), null);
 });

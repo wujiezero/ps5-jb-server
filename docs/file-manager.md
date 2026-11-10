@@ -82,6 +82,47 @@ PS5 的 `/data/tom-ps5-usbnet/log.txt`，没有链路时会写 `no Ethernet link
 2026-11-10 在 Debian 12 容器里对 Samba 4.23、rclone WebDAV、rclone FTP 做过端到端联调：
 中文与空格文件名、40 MB 文件字节一致、同名跳过、取消、错误密码提示均通过。
 
+## 游戏名称（标题 ID → 游戏名）
+
+「PS5 文件」和 NAS 列表里，名称中带 PS4/PS5 标题 ID 的条目（`CUSA36464`、`PPSA03671`、
+`PPSA01576.ffpfsc`、`PPSA03671-app`、`UP9000-PPSA03671_00-....pkg` 等）会在原文件名下方显示游戏名，
+原文件名不变；中文名优先，悬停可看英文名；筛选框也能按游戏名搜索。识别规则为
+`(CUSA|PPSA|PLAS|PCAS|PLJS|…)\d{5}`，前后不能紧挨字母或数字（`server/titles.py` 的 `PREFIXES`，
+前端 `web/app.js` 的 `TITLE_ID_PATTERN`，两处保持一致）。查不到名称的条目只显示原名，不报错。
+
+名称来源分两层，按标题 ID 合并（内置库优先，PS5 只补缺）：
+
+1. **内置离线库** `titledb/titles.json`：由 [andshrew/PlayStation-Titles](https://github.com/andshrew/PlayStation-Titles)
+   （MIT，Copyright (c) 2022 andshrew，数据采自 PlayStation Store）编译，约 7.1 万个 PS4/PS5 标题 ID。
+   上游每行是某一地区的标题 ID，中文名只出现在亚洲区（HP/HB）的 ID 上；生成脚本按商店 `conceptId`
+   把中文名扩散到同一游戏其他地区的 ID（例如欧版 `PPSA21567` 也得到「宇宙机器人」），
+   日文汉字名不会被当成中文。格式 `{"PPSA21567": ["ASTRO BOT", "宇宙机器人"]}`，去掉 ™ ®。
+   上游许可证原文随附在 `titledb/UPSTREAM_LICENSE`。服务端在第一次查询时才载入（约 20 MB 内存）。
+2. **PS5 上的游戏自身信息**：列表里是 PS5 文件夹（如 `/mnt/ext0/games/PPSA03671`）且内置库缺名称或中文名时，
+   服务端经文件代理读一次 `sce_sys/param.json`（PS5，`localizedParameters.<语言>.titleName`，
+   中文取 `zh-Hans` → `zh-Hant`）或 `sce_sys/param.sfo`（PS4，`TITLE_11`/`TITLE_10`/`TITLE`）。
+   读到的结果写入 `<data>/titles-cache.json`，之后列目录不再读 PS5；读不到的文件夹 10 分钟内不重试；
+   每次请求最多读 5 秒，PS5 不在线时立即停止，未读到的在 `pending` 里返回，下次渲染再查。
+   `.ffpfsc` 镜像不读（需要挂载），只靠内置库。
+
+接口：`GET /api/titles?ids=CUSA36464,PPSA01576.ffpfsc&folder=/mnt/ext0/games/PPSA03671`（需登录；
+`ids` 可直接传文件名，最多 500 个；`folder` 可重复，最多 64 个，路径受文件代理同样的白名单约束）。
+返回 `{titles: {ID: {name, en, zh, source}}, pending: [ID…]}`，`source` 为 `builtin` / `console` /
+`builtin+console`。前端渲染行时先显示文件名，再把当前页面所有 ID 合成一次请求，结果在内存里缓存（含未命中）。
+
+**更新内置库**（上游基本每天更新）：
+
+```sh
+python3 scripts/build_titles.py                 # 下载上游 main，记录所用 commit
+python3 scripts/build_titles.py --ref <commit>  # 固定某个上游版本
+```
+
+下载走 `HTTPS_PROXY`；若只能用 SOCKS 代理，先用 `curl --socks5-hostname <代理> -O` 下载上游的
+`All_Titles.tsv` 与 `LICENSE` 到一个目录，再 `python3 scripts/build_titles.py --source <目录>`。
+生成后跑 `python3 -m unittest tests.test_titles` 并提交 `titledb/`。部署时把 `titledb/titles.json`
+放到 `[paths] titles`（默认 `/opt/ps5-jb-server/titledb/titles.json`）；未配置时也会找
+`server/` 同级的 `titledb/` 或程序同目录的 `titles.json`（旧的平铺 `/opt/ps5-manager` 布局）。
+
 ## 依赖
 
 对端需要有 zftpd（FTP）或 `tom-ps5-usbnet.elf`（或任何实现上述 `/fs/*` 的服务）在跑，

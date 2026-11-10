@@ -144,7 +144,7 @@ PS5 的待机即休息模式（黄灯）：插件留在内存里，唤醒后不�
 | `[ps5]` | `control` / `file_manager` | 关掉可禁用对应页面 |
 | `[limits]` | `max_upload` | 插件仓库上传上限，默认 64 MiB |
 | `[limits]` | `max_file_upload` | PS5 文件上传上限（流式转发不落盘），默认 0 = 不限制 |
-| `[paths]` | `data` `repo` `static` `certs` `credentials` `rulesets` | 全部可改 |
+| `[paths]` | `data` `repo` `static` `certs` `credentials` `rulesets` `titles` | 全部可改（`titles` 为游戏名称库） |
 | `[paths]` | `secret_key` | NAS 账号加密密钥，默认与配置文件同目录的 `nas.key` |
 | `[ps5]` | `engine_url` | 唤醒/待机所用 PS5Upload 引擎地址，默认 `http://127.0.0.1:19113` |
 
@@ -161,6 +161,9 @@ PS5 的待机即休息模式（黄灯）：插件留在内存里，唤醒后不�
   也可用 `--no-manuals-host` 跳过。
 - 域名分类规则集：由 [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)（MIT）
   编译而来，构建脚本见 `scripts/build_rulesets.py`。
+- 游戏名称库 `titledb/titles.json`：由 [andshrew/PlayStation-Titles](https://github.com/andshrew/PlayStation-Titles)（MIT）
+  编译而来，文件页与 NAS 列表据此把 `CUSA…`/`PPSA…` 显示为游戏名；构建脚本 `scripts/build_titles.py`，
+  数据来源与更新方法见 [`docs/file-manager.md`](docs/file-manager.md#游戏名称标题-id--游戏名)。
 - 唤醒 / 待机（可选）：[PS5Upload](https://github.com/phantomptr/ps5upload) 引擎 v12.4.2（**GPL-3.0**），
   作为独立进程运行、由本服务通过本机 HTTP 调用；安装器按 `components.json` 下载并校验 SHA-256，不随仓库分发。
 - 自动加载格式与 [itsPLK/ps5-payload-manager](https://github.com/itsPLK/ps5-payload-manager) 的
@@ -218,9 +221,9 @@ sudo ./install.sh --dry-run --prefix /tmp/x    # 安装器演练
 ```
 
 目录：`server/`（服务端）、`web/`（前端）、`installer/`（安装器）、`tests/`、`systemd/`、
-`rulesets/`、`scripts/`、`docs/`。设计与接口细节见 [`docs/architecture.md`](docs/architecture.md)
+`rulesets/`、`titledb/`、`scripts/`、`docs/`。设计与接口细节见 [`docs/architecture.md`](docs/architecture.md)
 与 [`docs/file-manager.md`](docs/file-manager.md)，变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 许可
 
-自有代码 [MIT](LICENSE)。上游组件遵循各自许可（用户手册宿主 GPL-3.0、规则集 MIT、各插件见其项目）。
+自有代码 [MIT](LICENSE)。上游组件遵循各自许可（用户手册宿主 GPL-3.0、规则集 MIT、游戏名称库 MIT、各插件见其项目）。
