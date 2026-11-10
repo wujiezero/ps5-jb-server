@@ -603,6 +603,10 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-upload"></use></svg>
                     <span class="button-label">传到 PS5</span>
                   </button>
+                  <button id="nas-extract" class="button button-secondary" type="button" aria-label="把选中的分卷压缩包解压安装到 PS5" disabled>
+                    <svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg>
+                    <span class="button-label">解压安装</span>
+                  </button>
                   <button id="nas-refresh" class="button button-secondary button-icon" type="button" aria-label="刷新 NAS 文件列表" title="刷新">
                     <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
                   </button>
@@ -1213,7 +1217,14 @@
         </span>
       </div>
       <div id="files-dest-list" class="files-dest-list" role="group" aria-label="目标文件夹"></div>
+      <p id="files-dest-archive" class="field-help" hidden></p>
       <p id="files-dest-space" class="field-help" hidden></p>
+      <label id="files-dest-extract-row" class="files-dest-option" for="files-dest-extract-mode" hidden>安装方式
+        <select id="files-dest-extract-mode">
+          <option value="install">在所选文件夹下新建游戏文件夹</option>
+          <option value="merge">合并到所选的游戏文件夹（补丁、DLC）</option>
+        </select>
+      </label>
       <label id="files-dest-overwrite-row" class="files-dest-option" for="files-dest-overwrite" hidden>同名文件
         <select id="files-dest-overwrite">
           <option value="skip">跳过（保留 PS5 上的文件）</option>

@@ -8,10 +8,25 @@
   （andshrew/PlayStation-Titles，MIT，约 7.1 万条，`scripts/build_titles.py` 生成），PS5 上解开的游戏文件夹
   另读一次 `sce_sys/param.json`/`param.sfo` 补缺并缓存到 `<data>/titles-cache.json`。新接口 `GET /api/titles`，
   新配置项 `[paths] titles`。
+- 分卷压缩包解压安装：NAS 页选中某个 `.partNN.rar`（或单个 `.rar`）点「解压安装」，服务器按顺序读完全部分卷、
+  边解压边写进 PS5，不占服务器磁盘。可「新建游戏文件夹」（按 `param.json` 的 titleId 命名，如
+  `/mnt/ext0/games/PPSA03671`）或「合并到已有游戏文件夹」（补丁、DLC）。先解到隐藏的 `.extract-<任务>` 目录，
+  全部写完并核对后才一次改名到位，失败或取消时清理干净，原游戏不受影响。开始前检查分卷是否齐全、顺序、目标空间；
+  固实（solid）、加密、RAR4、字典超过 64 MB 的包会直接说明原因并拒绝。需要 `python3-libarchive-c`。
+  开始前按偏移跳读扫描全部分卷的包头（WebDAV Range / SMB seek / FTP REST，百 GB 级约 1–2 秒），提前拒绝不能处理的包，
+  并给出解压后大小与文件数用于空间检查和进度。忽略 macOS 的 `._` 元数据文件；包里是 `.pkg` 时完成后会说明。
+  新接口 `GET /api/nas/archive`、`POST /api/nas/extract`。
+- 第二个解压引擎 unrar（libunrar5）：固实包和字典超过 64 MB 的包（常见的 4 GB 字典发布包）在独立的 systemd 临时单元
+  `ps5-extract-<任务>` 里解压，按字典大小单独分配内存、低优先级运行；用 rclone 只读挂载 NAS 目录，数据仍直接写进 PS5，
+  不占服务器磁盘。需要 `libunrar5`、`rclone`、`fuse3` 与 LXC 的 FUSE 功能。
+- 「PS5 文件」与 NAS 列表默认隐藏 macOS 的 `._` 元数据文件。
+- 安装器新增 `--with-extract`：安装解压引擎所需的软件包，并检查 non-free 源、`/dev/fuse` 与内存；`doctor` 报告解压引擎状态。
+  README 写明已验证的环境（Proxmox 上的 Debian 12 非特权 LXC）、各功能的硬件要求与需要开启的 LXC 功能。
 
 **修复**
 - 安装器漏拷 `ftp_files.py`、`nas.py`、`power.py`，全新安装后服务因缺模块无法启动；现改为拷贝 `server/` 下全部模块，
   并加测试按 systemd 入口（`server.py`、`payload_repo.py`）的导入关系核对安装清单。
+- NAS 传输的速度显示在读取块较小时几乎不更新、显示偏低（实测 26 MB/s，实际 64 MB/s）：测速改为按时间采样。
 
 ## 1.3.0 — 2026-11-10
 

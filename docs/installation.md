@@ -26,6 +26,15 @@
    `ps5-jb-repo`（插件仓库 8080）。
 8. 健康检查：管理页、仓库、用户手册三个 URL；最后打印地址与密码位置。
 
+可选步骤（显式加参数才执行）：
+
+- `--with-power-engine`：下载并校验 PS5Upload 引擎，装为 `ps5upload-engine.service`（仅 x86_64）。
+- `--with-extract`：`apt-get install python3-libarchive-c libunrar5 rclone fuse3`，用于从 NAS 解压安装游戏压缩包。
+  软件源里没有 `libunrar5`（Debian 需要 non-free 组件）时跳过它并提示；装完检查 `/dev/fuse`（Proxmox LXC 要在
+  「选项 → 功能」勾选 FUSE 后重启容器）和内存（4 GB 字典的包需要约 5 GB，建议给容器 6 GB）。
+  unrar 解压在 `systemd-run` 临时起的 `ps5-extract-<任务>` 单元里运行，不改动三个常驻服务的沙箱设置。
+  只在 Proxmox 上的 Debian 12 非特权 LXC 里实测过。
+
 ## 参数
 
 ```sh
@@ -38,6 +47,8 @@
 --no-services         不安装 systemd 单元（只铺文件）
 --no-payloads         不下载插件，只建空仓库
 --no-manuals-host     不下载用户手册宿主
+--with-power-engine   同时安装 PS5Upload 引擎（唤醒 / 待机，可选）
+--with-extract        同时安装游戏压缩包解压引擎（可选）
 --dry-run             只打印动作
 ```
 
@@ -76,4 +87,4 @@ sudo ./install.sh --dry-run --prefix /tmp/ps5jb-dry   # 先看清单
 ```
 
 输出：源码位置、安装目录、配置路径、主机/网段、五个端口占用情况、数据与仓库是否存在、
-三个 unit 的 enabled/active 状态。
+解压引擎（libarchive / unrar 缺哪些组件）与内存、三个 unit 的 enabled/active 状态。

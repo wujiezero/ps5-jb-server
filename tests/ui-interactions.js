@@ -53,7 +53,8 @@ function fixture(extra = {}) {
   const exposed = `${source.slice(0, startup)}
     globalThis.subject = { activity, repo, activitySelected, activityVisibleEvents,
       setActivityFilter, renderRepo, renderPs5Catalog,
-      files, filesRow, nasRow, filesVisibleEntries, titleIdOf, titleNames, flushTitleNames,
+      files, filesRow, nasRow, filesVisibleEntries, titleIdOf, titleNames, flushTitleNames, normalizeFilesEntries,
+      nas, nasArchiveSelection, extractTask,
       setAuthenticated(value) { authenticated = value; } };
   })();`;
   const context = { document, console, location: { hostname: '192.168.1.2' }, setTimeout, clearTimeout,
@@ -200,4 +201,46 @@ test('failed title lookups leave file names alone and are retried later', async 
   assert.match(textOf(row), /PPSA03671/);
   assert.equal(ui.titleIdOf('UP9000-PPSA03671_00-MARVELSWOLVERINE'), 'PPSA03671');
   assert.equal(ui.titleIdOf('XPPSA03671'), null);
+});
+
+test('extract install is offered for one RAR volume and its job reads as an install', () => {
+  const ui = fixture();
+  ui.nas.entries = [
+    { name: 'PPSA03671-app.part02.rar', path: '/dl/PPSA03671-app.part02.rar', dir: false },
+    { name: 'notes.txt', path: '/dl/notes.txt', dir: false },
+    { name: 'PPSA03671-app', path: '/dl/PPSA03671-app', dir: true }
+  ];
+  ui.nas.selected.add('/dl/PPSA03671-app.part02.rar');
+  assert.equal(ui.nasArchiveSelection().name, 'PPSA03671-app.part02.rar');
+  ui.nas.selected.add('/dl/notes.txt');
+  assert.equal(ui.nasArchiveSelection(), null, 'only a single archive selection');
+  ui.nas.selected.clear();
+  ui.nas.selected.add('/dl/PPSA03671-app');
+  assert.equal(ui.nasArchiveSelection(), null, 'folders are not archives');
+  ui.nas.entries.push({ name: '._PPSA03671-app.part02.rar', path: '/dl/._PPSA03671-app.part02.rar', dir: false });
+  ui.nas.selected.clear();
+  ui.nas.selected.add('/dl/._PPSA03671-app.part02.rar');
+  assert.equal(ui.nasArchiveSelection(), null, 'macOS ._ metadata files are not archives');
+
+  const base = { id: 'j1', kind: 'extract', name: 'PPSA03671-app（7 个分卷）', source: 'NAS', dest: '/mnt/ext0/games',
+    mode: 'install', bytes_done: 5, bytes_total: 10, files_done: 3, current: 'PPSA03671-app/eboot.bin', speed: 1, elapsed: 2, eta: 5 };
+  const running = ui.extractTask({ ...base, state: 'running' });
+  assert.equal(running.kind, 'extract');
+  assert.equal(running.sub, 'NAS → /mnt/ext0/games');
+  assert.match(running.line, /已解出 3 个文件 · 当前 PPSA03671-app\/eboot.bin/);
+  assert.equal(typeof running.cancel, 'function');
+  const done = ui.extractTask({ ...base, state: 'done', result_path: '/mnt/ext0/games/PPSA03671', note: '目标已存在同名文件夹' });
+  assert.equal(done.sub, '已安装到 /mnt/ext0/games/PPSA03671');
+  assert.match(done.line, /目标已存在同名文件夹/);
+  assert.equal(done.cancel, null);
+  assert.match(ui.extractTask({ ...base, state: 'queued', mode: 'merge' }).sub, /（合并）/);
+  assert.match(ui.extractTask({ ...base, state: 'running', files_total: 308 }).line, /已解出 3 \/ 308 个文件/);
+});
+
+test('macOS ._ metadata files never show in the file list', () => {
+  const ui = fixture();
+  const listed = ui.normalizeFilesEntries({ path: '/data', entries: [
+    { name: '._PPSA03671', kind: 'file', size: 4096 }, { name: 'PPSA03671', dir: true }, { name: '.hidden', size: 1 }
+  ] }, '/data');
+  assert.equal(JSON.stringify(listed.entries.map((entry) => entry.name)), JSON.stringify(['PPSA03671', '.hidden']));
 });

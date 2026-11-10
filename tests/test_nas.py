@@ -295,6 +295,18 @@ class TransferTests(unittest.TestCase):
         for key in ('speed', 'eta', 'elapsed', 'started', 'finished'):
             self.assertIn(key, job)
 
+    def test_speed_follows_many_small_reads(self):
+        manager = self.manager()
+        job = {'bytes_done': 0, 'bytes_total': 10 ** 9, 'current_done': 0, 'speed': 0,
+               'percent': 0, 'eta': None, 'elapsed': 0, 'started': 1000.0}
+        samples = __import__('collections').deque(maxlen=80)
+        clock = [1000.0]
+        with mock.patch('nas.time.time', side_effect=lambda: clock[0]):
+            for _ in range(4000):           # 16 KiB every 0.25 ms = 64 MB/s for one second
+                clock[0] += 0.00025
+                manager._progress(job, 16000, 0, samples)
+        self.assertAlmostEqual(job['speed'] / 64e6, 1, delta=0.05)
+
     def test_skip_existing_then_overwrite(self):
         self.ps5.dirs.add('/data/movies')
         self.ps5.files['/data/movies/a b.mkv'] = b'old'

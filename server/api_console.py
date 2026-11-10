@@ -9,9 +9,10 @@ import logging
 import os
 import urllib.parse
 
+import archive
 from files import FileServiceError, FileProxy
 from nas import NasError, NasStore, SecretBox, TransferManager, check_connection, client_for, \
-    clean_path, smb_available
+    clean_path, smb_available, unrar_engine_available
 from power import EngineClient, PowerError, PowerManager
 from ps5 import ConsoleError, HostManager
 
@@ -32,7 +33,7 @@ class ConsoleAPI:
         self.file_manager = settings.file_manager
         self.nas = NasStore(settings.data_dir / 'nas.json',
                             getattr(settings, 'secret_key_path', None))
-        self.transfers = TransferManager(self.nas, self.files)
+        self.transfers = TransferManager(self.nas, self.files, work_dir=settings.data_dir / 'extract')
         self.power = PowerManager(EngineClient(getattr(settings, 'engine_url', 'http://127.0.0.1:19113')),
                                   self.ps5.validate_ip)
         if autoscan and self.enabled:
@@ -159,7 +160,13 @@ class ConsoleAPI:
                 handler.send_body(200, {'connections': self.nas.list_public(),
                                         'protocols': {'webdav': True, 'smb': smb_available(),
                                                       'ftp': True},
-                                        'encryption': SecretBox.available()})
+                                        'encryption': SecretBox.available(),
+                                        'archive': archive.available() or unrar_engine_available(),
+                                        'unrar': unrar_engine_available()})
+                return True
+            if path == '/api/nas/archive':
+                handler.send_body(200, self.transfers.inspect_archive(
+                    self._arg(handler, 'id'), self._arg(handler, 'path', '')))
                 return True
             if path == '/api/nas/list':
                 config = self.nas.get(self._arg(handler, 'id'))
@@ -279,6 +286,10 @@ class ConsoleAPI:
                 handler.send_body(200, {'ok': True, 'job': self.transfers.start(
                     body.get('id'), body.get('paths'), body.get('dest'),
                     body.get('overwrite') or 'skip')})
+            elif path == '/api/nas/extract':
+                handler.send_body(200, {'ok': True, 'job': self.transfers.start_extract(
+                    body.get('id'), body.get('path'), body.get('dest'),
+                    body.get('mode') or 'install')})
             elif path == '/api/transfers/cancel':
                 handler.send_body(200, self.transfers.cancel(body.get('id')))
             elif path == '/api/transfers/clear':

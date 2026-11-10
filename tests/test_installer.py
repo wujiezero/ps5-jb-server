@@ -10,8 +10,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 INSTALLER = REPO / 'installer' / '__main__.py'
-# Programs started by the systemd units (host.py is downloaded, not ours).
-ENTRY_POINTS = ('server.py', 'payload_repo.py')
+# Programs started by the systemd units (host.py is downloaded, not ours), and the
+# unrar worker that ps5-jb-server starts through systemd-run.
+ENTRY_POINTS = ('server.py', 'payload_repo.py', 'extract_worker.py')
 
 
 def local_imports(entry):
@@ -67,7 +68,8 @@ class InstallerDryRunTests(unittest.TestCase):
             self.assertIn('settings.py', local_imports('server.py'))
             self.assertFalse(needed - installed, f'{entry} imports modules the installer skips')
         # The modules that were once forgotten.
-        self.assertTrue({'ftp_files.py', 'nas.py', 'power.py', 'titles.py'} <= installed)
+        self.assertTrue({'ftp_files.py', 'nas.py', 'power.py', 'titles.py', 'archive.py', 'unrar.py',
+                         'extract_worker.py'} <= installed)
 
     def test_dry_run_copies_all_modules_and_data(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -84,6 +86,27 @@ class InstallerDryRunTests(unittest.TestCase):
         result = self.run_installer('--dry-run', 'doctor', '--host-ip', '192.0.2.10')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('doctor', result.stdout)
+        self.assertIn('解压引擎', result.stdout)
+
+    def test_with_extract_plans_the_packages(self):
+        from unittest import mock
+        installer = load_installer()
+        for candidate, expected in (('  Candidate: 1:6.2.6-1+deb12u1\n', installer.EXTRACT_PACKAGES),
+                                    ('  Candidate: (none)\n', tuple(p for p in installer.EXTRACT_PACKAGES
+                                                                    if p != 'libunrar5'))):
+            with tempfile.TemporaryDirectory() as tmp:
+                layout = installer.Layout(prefix=Path(tmp), host_ip='192.0.2.10', dry_run=True, extract=True)
+                runner = installer.Runner(layout)
+                policy = subprocess.CompletedProcess([], 0, 'libunrar5:\n' + candidate, '')
+                with mock.patch.object(installer.shutil, 'which', return_value='/usr/bin/apt-get'), \
+                        mock.patch.object(installer.subprocess, 'run', return_value=policy):
+                    installer.install_extract(layout, runner)
+                self.assertEqual(runner.actions[-1][:4], ['apt-get', 'install', '-y', '--no-install-recommends'])
+                self.assertEqual(tuple(runner.actions[-1][4:]), tuple(expected))
+            layout = installer.Layout(prefix=Path(tmp), host_ip='192.0.2.10', dry_run=True)
+            runner = installer.Runner(layout)
+            installer.install_extract(layout, runner)
+            self.assertEqual(runner.actions, [], 'nothing without --with-extract')
 
     def test_unknown_flag_fails(self):
         result = self.run_installer('--nope')

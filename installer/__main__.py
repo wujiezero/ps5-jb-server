@@ -56,6 +56,7 @@ class Layout:
     no_payloads: bool = False
     no_manuals_host: bool = False
     power_engine: bool = False
+    extract: bool = False
 
     # derived
     opt: Path = field(init=False)
@@ -221,6 +222,47 @@ def check_dnspython():
     if smb.returncode != 0:
         print('  提示：未安装 python3-smbc，NAS 存储将无法使用 SMB（WebDAV / FTP 不受影响）；'
               '需要时执行 apt-get install -y python3-smbc')
+    engines = extract_engines()
+    if not engines['libarchive'] and not engines['unrar']:
+        print('  提示：未安装解压引擎，NAS 上的 .rar / .partNN.rar 游戏包无法解压安装；'
+              '需要时加 --with-extract 重新运行安装')
+    elif not engines['unrar']:
+        print('  提示：unrar 解压引擎不完整（' + '、'.join(engines['missing']) + '），'
+              '固实包和压缩字典超过 64 MB 的游戏包无法解压安装；需要时加 --with-extract 重新运行安装')
+
+
+EXTRACT_PACKAGES = ('python3-libarchive-c', 'libunrar5', 'rclone', 'fuse3')
+
+
+def _has_libunrar():
+    import ctypes.util
+    try:
+        return ctypes.util.find_library('unrar') is not None
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def memory_total():
+    try:
+        with open('/proc/meminfo', encoding='ascii') as stream:
+            for line in stream:
+                if line.startswith('MemTotal:'):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def extract_engines():
+    """What the archive install feature can use on this host."""
+    libarchive = subprocess.run([sys.executable, '-c', 'import libarchive'],
+                                capture_output=True).returncode == 0
+    needs = {'libunrar5': _has_libunrar(), 'rclone': shutil.which('rclone') is not None,
+             'fuse3': shutil.which('fusermount3') is not None,
+             '/dev/fuse': os.path.exists('/dev/fuse'),
+             'systemd-run': shutil.which('systemd-run') is not None}
+    missing = [name for name, ok in needs.items() if not ok]
+    return {'libarchive': libarchive, 'unrar': not missing, 'missing': missing}
 
 
 # ---------------------------------------------------------------- steps
@@ -394,6 +436,35 @@ def install_power_engine(layout, runner):
     runner.note('引擎只接受本机调用（127.0.0.1:19113），并由 nft 表 inet ps5upload_guard 拦截外部连接')
 
 
+def install_extract(layout, runner):
+    """Optional: archive engines for NAS game packages (libarchive + unrar)."""
+    if not layout.extract:
+        return
+    print('\n[+] 游戏压缩包解压引擎（libarchive、unrar + rclone + FUSE）')
+    if shutil.which('apt-get') is None:
+        runner.note('不是 Debian/Ubuntu：请自行安装 ' + ' '.join(EXTRACT_PACKAGES))
+        return
+    policy = subprocess.run(['apt-cache', 'policy', 'libunrar5'], capture_output=True, text=True).stdout
+    packages = list(EXTRACT_PACKAGES)
+    if 'Candidate:' not in policy or 'Candidate: (none)' in policy:
+        packages.remove('libunrar5')
+        runner.note('软件源里没有 libunrar5（在 Debian 的 non-free 组件里）：在 /etc/apt/sources.list(.d) 加上 '
+                    'non-free 后 apt-get update 再重新运行；暂时只安装其余组件')
+    runner.run(['apt-get', 'install', '-y', '--no-install-recommends', *packages],
+               check=False, capture=False)
+    if layout.dry_run:
+        return
+    engines = extract_engines()
+    if not engines['unrar']:
+        runner.note('unrar 引擎仍缺：' + '、'.join(engines['missing']))
+    if '/dev/fuse' in engines['missing']:
+        runner.note('没有 /dev/fuse：Proxmox LXC 需在「选项 → 功能」勾选 FUSE 后重启容器')
+    total = memory_total()
+    if total and total < 5 * 1024 ** 3:
+        runner.note(f'本机内存 {total / 1024 ** 3:.1f} GB：压缩字典 4 GB 的游戏包需要约 5 GB 内存，'
+                    '这类包会在开始前被拒绝')
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with Path(path).open('rb') as handle:
@@ -533,7 +604,7 @@ def cmd_install(layout):
     runner = Runner(layout)
     preflight(layout, runner)
     steps = [install_files, write_config, make_certificates, make_credentials, make_nas_key,
-             fetch_components, write_firewall, install_units, install_power_engine]
+             fetch_components, write_firewall, install_units, install_power_engine, install_extract]
     for step in steps:
         step(layout, runner)
     health(layout, runner)
@@ -597,6 +668,10 @@ def cmd_doctor(layout):
     for name in PORT_NAMES:
         port = layout.ports[name]
         print(f'  端口 {name:<6} {port:<6} {"占用" if port_in_use(port) else "空闲"}')
+    engines = extract_engines()
+    print(f'  解压引擎     libarchive {"可用" if engines["libarchive"] else "未安装"}，unrar '
+          + ('可用' if engines['unrar'] else '缺 ' + '、'.join(engines['missing']))
+          + f'，内存 {memory_total() / 1024 ** 3:.1f} GB')
     if shutil.which('systemctl'):
         for unit in UNIT_FILES:
             state = subprocess.run(['systemctl', 'is-active', unit], capture_output=True, text=True)
@@ -629,6 +704,7 @@ def build_layout(args):
         dry_run=args.dry_run, no_firewall=args.no_firewall, no_services=args.no_services,
         no_payloads=args.no_payloads, no_manuals_host=args.no_manuals_host,
         power_engine=getattr(args, 'with_power_engine', False),
+        extract=getattr(args, 'with_extract', False),
     )
     return layout
 
@@ -653,6 +729,8 @@ def main(argv=None):
     parser.add_argument('--no-manuals-host', action='store_true')
     parser.add_argument('--with-power-engine', action='store_true',
                         help='同时安装 PS5Upload 引擎，用于从待机唤醒并登录、进入待机（GPL-3.0，约 93MB）')
+    parser.add_argument('--with-extract', action='store_true',
+                        help='同时安装游戏压缩包解压引擎（apt：python3-libarchive-c libunrar5 rclone fuse3）')
     parser.add_argument('--purge', action='store_true')
     args = parser.parse_args(argv)
 

@@ -25,6 +25,7 @@
 | PS5 主机 | 发现局域网 PS5（pldmgr 8084 / elfldr 9021，以及 DDP 广播，待机或未运行载荷也能发现），显示开机/待机/离线、主机名与固件；配对后可从待机唤醒并登录、一键进入待机（可选组件）；接入仓库、安装并运行、停止进程、退出 pldmgr；自动加载可编辑顺序、每个插件加载后的等待时间与启动倒计时 |
 | PS5 文件 | 优先使用 tom-ps5-usbnet 的 `/fs/*`，不可用时自动改走 PS5 上的 FTP（如 zftpd）；浏览卷与容量、上传、下载、整目录打包、新建、重命名、复制/移动、删除 |
 | NAS 存储 | 添加 SMB / WebDAV / FTP 的 NAS，浏览后把文件或文件夹直接传到 PS5 指定目录；服务器流式中转，可排队、取消、跳过或覆盖同名文件；账号加密保存 |
+| 解压安装 | NAS 上的 `.rar` / `.partNN.rar` 游戏包一键解压装到 PS5：开始前扫描全部分卷包头（缺卷、加密、空间、字典大小），边解压边写进 PS5、不占本机磁盘，先解到隐藏目录、核对后才改名到位；可合并补丁 / DLC 到已有游戏；固实包与 4 GB 字典的包走 unrar 引擎（需 FUSE 与足够内存） |
 | 传输任务 | 上传、复制/移动、NAS 传输统一显示进度条、百分比、已传/剩余大小、实时速度、已用时间与预计剩余 |
 
 管理界面以中文为主，提供明暗主题和响应式布局：桌面按功能分组的侧边栏、平板图标栏，手机底部可直接进入
@@ -54,13 +55,47 @@
 
 ## 要求
 
-- Debian 12 / Ubuntu 22.04 及以上的 LXC 容器或虚拟机，root，systemd。
-- 主机与 PS5 在同一 IPv4 局域网。
-- 软件包：`python3`、`python3-dnspython`、`python3-cryptography`、`nftables`、`conntrack`、`openssl`；
-  使用 SMB 类型的 NAS 时另需 `python3-smbc`（可选，WebDAV / FTP 不需要）。
-- 唤醒 / 待机（可选）：x86_64 主机上用 `--with-power-engine` 安装 PS5Upload 引擎，PS5 端运行 ps5upload 插件。
-  `install.sh` 会提示缺失项，不会静默安装。
-- PS5 端需要能触发一次内核越狱（WebKit/BD-J 等），本服务负责“用户手册入口 + 策略 + 仓库 + 遥控 + 文件”。
+### 已验证的环境
+
+| 项目 | 实测环境（2026-11-10） |
+| --- | --- |
+| 宿主 | Proxmox VE，Intel Celeron N5105（x86_64） |
+| 容器 | **Debian 12 非特权 LXC**，2 核，systemd，root |
+| 网络 | 千兆有线；PS5、NAS 与本机在同一个 IPv4 网段 |
+
+只有上面这套环境实际跑过。**Ubuntu、Debian 13、其他发行版、虚拟机、特权容器、ARM 主机都没有测试过**：
+程序是纯 Python 标准库 + Debian 软件包，理论上 Ubuntu 22.04 及以上也能装（软件包名基本相同，`libunrar5` 在 Ubuntu 的
+multiverse，`python3-libarchive-c` 在 universe），但请先用 `--dry-run` 看清每一步，装完跑 `doctor` 自查。
+唤醒 / 待机用到的 PS5Upload 引擎只有 x86_64 版本。
+
+### 硬件与容器配置
+
+| 用途 | CPU | 内存 | 磁盘 | LXC 功能 |
+| --- | --- | --- | --- | --- |
+| 基础功能：DNS 白名单、网关、管理页、插件仓库、PS5 文件 / NAS 传输 | 1 核即可 | 512 MB（服务自身约 70–130 MB） | 4 GB | 默认即可 |
+| 解压安装：普通压缩包（libarchive，字典 ≤64 MB） | 解压时占满 1 核 | 同上（在服务进程里，约 100 MB） | 不额外占用（流式写进 PS5） | 默认即可 |
+| 解压安装：固实包或大字典包（unrar，常见的 4 GB 字典） | 解压时约 1.5 核 | **≥ 字典大小 + 1 GB，4 GB 字典的包按 6 GB 配** | 不额外占用 | **开启 FUSE** |
+
+- **FUSE**：Proxmox 里选中容器 →「选项」→「功能」→ 勾选 **FUSE**，然后重启容器（重启期间 PS5 的 DNS 会断开）。
+  只有 unrar 引擎需要它：unrar 只能读文件形式的分卷，所以解压时用 rclone 把 NAS 目录只读挂载进来。
+- 实测部署里只额外开了 FUSE，其余功能项保持 Proxmox 新建非特权容器时的默认值；网关用的 nftables 与 IP 转发
+  在非特权容器里可以正常工作。
+- 速度参考（N5105，千兆网，NAS 走 HTTPS WebDAV）：普通压缩包约 64 MB/s，4 GB 字典的包约 78 MB/s（峰值 98 MB/s）。
+  解压时数据会经过本机两次（NAS → 本机 → PS5），千兆网是上限。
+
+### 软件包
+
+- 必需：`python3`、`python3-dnspython`、`python3-cryptography`、`nftables`、`conntrack`、`openssl`。
+- 可选：SMB 类型的 NAS 需要 `python3-smbc`（WebDAV / FTP 不需要）。
+- 可选：从 NAS 解压安装 `.rar` / `.partNN.rar` 游戏包，用 `--with-extract` 安装 `python3-libarchive-c`、`libunrar5`、
+  `rclone`、`fuse3`。`libunrar5` 在 Debian 的 **non-free** 组件里，软件源要先加上 non-free。
+- 可选：唤醒 / 待机，用 `--with-power-engine` 安装 PS5Upload 引擎，PS5 端运行 ps5upload 插件。
+
+除这两个选项外，`install.sh` 只提示缺失项，不会静默安装软件包。
+
+### PS5 端
+
+需要能触发一次内核越狱（WebKit/BD-J 等），本服务负责“用户手册入口 + 策略 + 仓库 + 遥控 + 文件”。
 
 ## 快速开始
 
@@ -84,6 +119,7 @@ sudo ./install.sh --host-ip 192.168.1.10 --subnet 192.168.1.0/24
 sudo ./install.sh --no-firewall       # 只用 DNS + 管理页，不做网关策略
 sudo ./install.sh upgrade             # 升级程序，保留配置、密码、密钥与数据
 sudo ./install.sh --with-power-engine # 同时安装唤醒/待机所需的 PS5Upload 引擎（可选）
+sudo ./install.sh --with-extract      # 同时安装游戏压缩包解压引擎（可选，见「要求」）
 sudo ./install.sh doctor              # 体检：目录、配置、端口、服务状态
 sudo ./install.sh reset-password      # 重设管理密码（旧会话立即失效）
 sudo ./install.sh uninstall [--purge] # 停服务并卸载；--purge 一并删除数据
@@ -213,7 +249,7 @@ dig @<本机> manuals.playstation.net  # 应返回本机地址
 ## 开发
 
 ```sh
-python3 -m unittest discover -s tests          # 172 项单测（需要 python3-dnspython 与 python3-cryptography）
+python3 -m unittest discover -s tests          # 227 项单测（需要 python3-dnspython 与 python3-cryptography）
 node --check web/app.js
 node --test tests/ui-interactions.js           # 前端交互测试
 ./scripts/check-secrets.sh                     # 提交前隐私扫描

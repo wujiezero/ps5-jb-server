@@ -3862,13 +3862,17 @@
     return volumes;
   }
 
+  // macOS writes ._name (AppleDouble) metadata next to files it copies to SMB,
+  // WebDAV, FTP and exFAT drives; they are noise in every list here.
+  const isAppleDouble = (name) => name.startsWith('._');
+
   function normalizeFilesEntries(data, fallbackPath) {
     const path = str(data && data.path) || fallbackPath;
     const entries = [];
     for (const item of Array.isArray(data && data.entries) ? data.entries : []) {
       if (!item || typeof item !== 'object') continue;
       const name = str(item.name);
-      if (!name) continue;
+      if (!name || isAppleDouble(name)) continue;
       const size = Number(item.size);
       const mtime = Number(item.mtime);
       entries.push({
@@ -4699,6 +4703,8 @@
     files.destTarget = entry;
     files.destPath = files.path;
     $('files-dest-overwrite-row').hidden = true;
+    $('files-dest-extract-row').hidden = true;
+    $('files-dest-archive').hidden = true;
     $('files-dest-space').hidden = true;
     $('files-dest-title').textContent = mode === 'move' ? '移动到…' : '复制到…';
     $('files-dest-description').textContent = `选择目标文件夹。目标不能是当前文件夹；跨硬盘${mode === 'move' ? '移动' : '复制'}可能较慢。`;
@@ -4717,13 +4723,16 @@
     const node = $('files-dest-space');
     const target = files.destTarget;
     const volume = files.destPath ? filesVolumeOf(files.destPath) : null;
-    if (files.destMode !== 'nas' || !volume || volume.free === null) {
+    if (!['nas', 'extract'].includes(files.destMode) || !volume || volume.free === null) {
       node.hidden = true;
       return;
     }
-    const need = target && Number.isFinite(target.bytes) ? target.bytes : 0;
+    const need = files.destMode === 'extract' && target && target.unpacked ? target.unpacked
+      : target && Number.isFinite(target.bytes) ? target.bytes : 0;
     let text = `目标存储 ${volume.label} 可用 ${formatBytes(volume.free)}`;
-    if (need) text += `；选中的文件约 ${formatBytes(need)}${target.hasFolders ? '（另含文件夹，传输时再统计）' : ''}`;
+    if (files.destMode === 'extract' && target && target.unpacked) text += `；解压后约 ${formatBytes(target.unpacked)}`;
+    else if (need && files.destMode === 'extract') text += `；压缩包共 ${formatBytes(need)}（解压后可能更大）`;
+    else if (need) text += `；选中的文件约 ${formatBytes(need)}${target.hasFolders ? '（另含文件夹，传输时再统计）' : ''}`;
     if (need && need > volume.free) text += '，空间不足，传输会失败。';
     node.textContent = text;
     node.dataset.tone = need && need > volume.free ? 'error' : '';
@@ -4780,6 +4789,10 @@
   async function confirmFilesDest() {
     if (files.destMode === 'nas') {
       startNasTransfer();
+      return;
+    }
+    if (files.destMode === 'extract') {
+      startNasExtract();
       return;
     }
     const target = files.destTarget;
@@ -4937,11 +4950,15 @@
   const formatRate = (bytesPerSecond) => (bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : '—');
   const XFER_ACTIVE = new Set(['wait', 'run', 'sync', 'queued', 'scanning', 'running', 'copying', 'moving', 'active', 'pending', 'wait-confirm']);
   const XFER_LABEL = { wait: '等待', run: '传输中', sync: '正在落盘', queued: '排队中', scanning: '正在统计文件', running: '传输中', copying: '复制中', moving: '移动中', active: '进行中', pending: '等待', done: '完成', fail: '失败', failed: '失败', cancel: '已取消', canceled: '已取消', skip: '已跳过', 'wait-confirm': '等待确认' };
-  const XFER_KIND = { upload: '上传', copy: '复制', move: '移动', nas: 'NAS → PS5', remote: 'PS5' };
+  const XFER_KIND = { upload: '上传', copy: '复制', move: '移动', nas: 'NAS → PS5', extract: '解压安装', remote: 'PS5' };
 
   function filesTransferTasks() {
     const tasks = [];
     for (const job of nasJobs) {
+      if (job.kind === 'extract') {
+        tasks.push(extractTask(job));
+        continue;
+      }
       tasks.push({
         key: `nas:${job.id}`, kind: 'nas', name: job.name, state: job.state,
         sub: `${job.source} → ${job.dest}`,
@@ -5035,6 +5052,7 @@
     stat('预计剩余', XFER_ACTIVE.has(task.state) && task.eta !== null && task.eta !== undefined ? formatDuration(task.eta) : '—');
     item.append(stats);
 
+    if (task.line) item.append(makeElement('p', 'xfer-sub', task.line));
     if (task.files && task.files.total) {
       const parts = [`文件 ${task.files.done} / ${task.files.total}`];
       if (task.files.skipped) parts.push(`跳过 ${task.files.skipped}`);
@@ -5540,6 +5558,7 @@
       nas.connections = Array.isArray(data.connections) ? data.connections.filter((item) => item && item.id) : [];
       nas.protocols = data.protocols && typeof data.protocols === 'object' ? data.protocols : nas.protocols;
       nas.encryption = data.encryption !== false;
+      nas.archive = data.archive !== false;
       nas.loaded = true;
       if (nas.activeId && !nasActive()) setFilesMode('ps5');
     } catch (error) {
@@ -5601,7 +5620,7 @@
       if (seq !== nas.seq) return;
       nas.path = str(data.path) || path;
       playEnter($('nas-body'));
-      nas.entries = (Array.isArray(data.entries) ? data.entries : []).filter((entry) => entry && entry.name).map((entry) => ({
+      nas.entries = (Array.isArray(data.entries) ? data.entries : []).filter((entry) => entry && entry.name && !isAppleDouble(str(entry.name))).map((entry) => ({
         name: str(entry.name), path: str(entry.path), dir: entry.dir === true,
         size: Number(entry.size) || 0, mtime: Number(entry.mtime) || null
       }));
@@ -5719,6 +5738,11 @@
     const locked = !authenticated || nas.loading || nas.busy;
     $('nas-send').disabled = locked || !nas.selected.size || !(files.info && files.info.reachable);
     $('nas-send').title = files.info && files.info.reachable ? '' : '需要先连接 PS5 文件服务';
+    const archive = nasArchiveSelection();
+    $('nas-extract').disabled = locked || !archive || !(files.info && files.info.reachable) || nas.archive === false;
+    $('nas-extract').title = nas.archive === false ? '服务器没有安装解压库（python3-libarchive-c）'
+      : !(files.info && files.info.reachable) ? '需要先连接 PS5 文件服务'
+        : archive ? '' : '选中一个 .rar 或 .partNN.rar 分卷后可以解压安装';
     $('nas-refresh').disabled = locked;
     $('nas-edit').disabled = !authenticated || !nasActive();
     $('nas-add').disabled = !authenticated;
@@ -5747,6 +5771,8 @@
     $('files-dest-confirm').querySelector('.button-label').textContent = '开始传输';
     $('files-dest-confirm').setAttribute('aria-label', '开始把 NAS 文件传到所选的 PS5 文件夹');
     $('files-dest-overwrite-row').hidden = false;
+    $('files-dest-extract-row').hidden = true;
+    $('files-dest-archive').hidden = true;
     $('files-dest-error').textContent = '';
     $('files-dest-error').hidden = true;
     $('files-dest-cancel').disabled = false;
@@ -5754,6 +5780,133 @@
     $('files-dest-dialog').showModal();
     $('files-dest-cancel').focus({ preventScroll: true });
     loadFilesDest(files.path);
+  }
+
+  const NAS_ARCHIVE = /\.rar$/i;
+
+  function nasArchiveSelection() {
+    if (nas.selected.size !== 1) return null;
+    const [path] = nas.selected;
+    const entry = nas.entries.find((item) => item.path === path);
+    // macOS leaves ._name metadata files next to every volume; they are not archives.
+    return entry && !entry.dir && NAS_ARCHIVE.test(entry.name) && !entry.name.startsWith('._') ? entry : null;
+  }
+
+  function describeNasExtract() {
+    const target = files.destTarget;
+    if (files.destMode !== 'extract' || !target) return;
+    const merge = $('files-dest-extract-mode').value === 'merge';
+    const game = target.info && target.info.title ? target.info.title : '游戏';
+    $('files-dest-description').textContent = merge
+      ? `把压缩包里的文件覆盖进所选的游戏文件夹（例如 ${game}），用于补丁或 DLC。全部解压并校验通过后才会替换，失败不会改动原游戏。`
+      : `在所选文件夹（例如 /mnt/ext0/games）下新建以游戏编号命名的文件夹。服务器边读 NAS 边解压，直接写进 PS5，不占服务器磁盘；可以关闭页面。`;
+  }
+
+  async function openNasExtractDialog() {
+    const entry = nasArchiveSelection();
+    const item = nasActive();
+    if (!authenticated || !entry || !item || !(files.info && files.info.reachable)) return;
+    files.destMode = 'extract';
+    files.destTarget = { name: entry.name, path: entry.path, nasId: item.id, bytes: null, info: null };
+    files.destPath = files.path;
+    $('files-dest-title').textContent = '解压安装到 PS5…';
+    $('files-dest-confirm').querySelector('.button-label').textContent = '开始解压安装';
+    $('files-dest-confirm').setAttribute('aria-label', '开始把压缩包解压安装到所选的 PS5 文件夹');
+    $('files-dest-overwrite-row').hidden = true;
+    $('files-dest-extract-row').hidden = false;
+    $('files-dest-extract-mode').value = 'install';
+    describeNasExtract();
+    const info = $('files-dest-archive');
+    info.textContent = '正在检查压缩包…';
+    info.dataset.tone = '';
+    info.hidden = false;
+    $('files-dest-error').textContent = '';
+    $('files-dest-error').hidden = true;
+    $('files-dest-cancel').disabled = false;
+    $('files-dest-confirm').disabled = true;
+    $('files-dest-dialog').showModal();
+    $('files-dest-cancel').focus({ preventScroll: true });
+    loadFilesDest(files.path);
+    const target = files.destTarget;
+    try {
+      const data = await api(`/api/nas/archive?id=${encodeURIComponent(item.id)}&path=${encodeURIComponent(entry.path)}`);
+      if (files.destTarget !== target) return;
+      target.info = data;
+      target.bytes = Number(data.bytes) || 0;
+      target.unpacked = Number(data.unpacked) || 0;
+      const parts = [`${data.format || 'RAR5'}`, data.parts > 1 ? `${data.parts} 个分卷` : '单个压缩包', `共 ${formatBytes(target.bytes)}`];
+      if (target.unpacked) parts.push(`解压后 ${formatBytes(target.unpacked)}`);
+      if (data.files) parts.push(`${data.files} 个文件`);
+      if (data.title) parts.push(`游戏编号 ${data.title}`);
+      if (data.engine === 'unrar') parts.push(`unrar 引擎${data.memory ? `（约需 ${formatBytes(data.memory)} 内存）` : ''}`);
+      info.textContent = parts.join(' · ');
+      $('files-dest-confirm').disabled = false;
+      describeNasExtract();
+      renderFilesDestSpace();
+    } catch (error) {
+      if (files.destTarget !== target) return;
+      if (error.status === 401) {
+        $('files-dest-dialog').close();
+        showLogin(error.message);
+        return;
+      }
+      info.hidden = true;
+      $('files-dest-error').textContent = error.message;
+      $('files-dest-error').hidden = false;
+    }
+  }
+
+  async function startNasExtract() {
+    const target = files.destTarget;
+    if (!target || !target.info || !authenticated || files.busy) return;
+    if (!files.destPath) {
+      $('files-dest-error').textContent = '请选择 PS5 上的目标文件夹。';
+      $('files-dest-error').hidden = false;
+      return;
+    }
+    files.busy = true;
+    buttonBusy('files-dest-confirm', true, '提交中…');
+    try {
+      const result = await api('/api/nas/extract', {
+        id: target.nasId, path: target.path, dest: files.destPath,
+        mode: $('files-dest-extract-mode').value === 'merge' ? 'merge' : 'install'
+      });
+      if (result.job && result.job.id) nasJobs = [result.job, ...nasJobs.filter((job) => job.id !== result.job.id)];
+      $('files-dest-dialog').close();
+      nas.selected.clear();
+      renderNasPane();
+      toast(`已开始解压安装 ${target.info.base || target.name} → ${files.destPath}。`, 'success');
+      files.drawer = true;
+      renderFilesTransfers();
+      ensureFilesPolling();
+      revealFilesTransfers();
+    } catch (error) {
+      if (error.status === 401) {
+        $('files-dest-dialog').close();
+        showLogin(error.message);
+        return;
+      }
+      $('files-dest-error').textContent = error.message;
+      $('files-dest-error').hidden = false;
+    } finally {
+      files.busy = false;
+      buttonBusy('files-dest-confirm', false, '开始解压安装');
+    }
+  }
+
+  function extractTask(job) {
+    const done = job.state === 'done';
+    let line = '';
+    if (job.files_done) line = job.files_total > job.files_done ? `已解出 ${job.files_done} / ${job.files_total} 个文件` : `已解出 ${job.files_done} 个文件`;
+    if (job.state === 'running' && job.current) line += `${line ? ' · ' : ''}当前 ${job.current}`;
+    if (done && job.note) line += `${line ? ' · ' : ''}${job.note}`;
+    return {
+      key: `nas:${job.id}`, kind: 'extract', name: job.name, state: job.state,
+      sub: done && job.result_path ? `已安装到 ${job.result_path}` : `${job.source} → ${job.dest}${job.mode === 'merge' ? '（合并）' : ''}`,
+      done: job.bytes_done, total: job.bytes_total, speed: job.speed, elapsed: job.elapsed, eta: job.eta,
+      line, error: job.error, errors: job.errors || [],
+      cancel: XFER_ACTIVE.has(job.state) ? () => cancelNasJob(job.id) : null
+    };
   }
 
   async function startNasTransfer() {
@@ -5967,6 +6120,8 @@
     $('nas-edit').addEventListener('click', () => openNasDialog(nasActive()));
     $('nas-refresh').addEventListener('click', () => loadNasPath(nas.path));
     $('nas-send').addEventListener('click', openNasSendDialog);
+    $('nas-extract').addEventListener('click', openNasExtractDialog);
+    $('files-dest-extract-mode').addEventListener('change', describeNasExtract);
     $('nas-filter').addEventListener('input', renderNasPane);
     $('nas-select-all').addEventListener('change', () => {
       const visible = nasVisibleEntries();
@@ -6309,7 +6464,7 @@
     $('xfer-pill').addEventListener('click', () => toggleFilesDrawer());
     document.addEventListener('pointerdown', (event) => {
       if (!files.drawer || dialogsOpen()) return;
-      if (event.target.closest('#xfer-dock, [data-files-transfers], #nas-send, #files-upload, dialog')) return;
+      if (event.target.closest('#xfer-dock, [data-files-transfers], #nas-send, #nas-extract, #files-upload, dialog')) return;
       toggleFilesDrawer(false);
     });
     document.addEventListener('keydown', (event) => {

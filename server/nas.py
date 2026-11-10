@@ -28,7 +28,12 @@ import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from files import FileServiceError
+import archive
+import shutil
+import subprocess
+import sys
+import unrar
+from files import FileServiceError, VOLUME_PATTERN
 from ftp_files import listing
 
 PROTOCOLS = ('webdav', 'smb', 'ftp')
@@ -448,6 +453,14 @@ class WebDavClient:
         response = self._request('GET', path)
         return response
 
+    def read_at(self, path, offset, size):
+        """Bytes [offset, offset + size) of a file, or None when Range is ignored."""
+        response = self._request('GET', path, headers={'Range': f'bytes={offset}-{offset + size - 1}'})
+        with response:
+            if response.status != 206:
+                return None
+            return response.read(size)
+
     def close(self):
         pass
 
@@ -550,6 +563,17 @@ class SmbClient:
         except Exception as exc:
             raise self._wrap(exc, '打开文件') from exc
 
+    def read_at(self, path, offset, size):
+        try:
+            handle = self.context.open(self._url(path), os.O_RDONLY)
+            try:
+                handle.seek(offset)
+                return handle.read(size)
+            finally:
+                handle.close()
+        except Exception as exc:
+            raise self._wrap(exc, '读取文件') from exc
+
     def close(self):
         self.context = None
 
@@ -639,6 +663,29 @@ class FtpClient:
                 return {'dir': item['dir'], 'size': item['size'], 'mtime': item['mtime']}
         raise NasError('NAS 上找不到这个路径', status=404)
 
+    def read_at(self, path, offset, size):
+        # One connection per read: ending a transfer early leaves the control
+        # connection with replies that servers order differently.
+        reader = FtpClient(self.config, self.timeout)
+        conn = reader._connect()
+        try:
+            data = conn.transfercmd('RETR ' + self._full(path), rest=offset)
+            try:
+                chunks, got = [], 0
+                while got < size:
+                    piece = data.recv(min(CHUNK, size - got))
+                    if not piece:
+                        break
+                    chunks.append(piece)
+                    got += len(piece)
+                return b''.join(chunks)
+            finally:
+                data.close()
+        except ftplib.Error as exc:
+            raise NasError(f'FTP 读取文件失败：{str(exc)[:160]}') from exc
+        finally:
+            reader.close()
+
     def open(self, path):
         # A dedicated connection: the listing connection stays usable.
         reader = FtpClient(self.config, self.timeout)
@@ -705,10 +752,17 @@ class TransferManager:
 
     KEEP = 30
 
-    def __init__(self, store, files, client_factory=client_for):
+    def __init__(self, store, files, client_factory=client_for, work_dir=None, runner=None,
+                 engines=None):
+        """work_dir: where unrar jobs keep their spec and status files; runner
+        starts the worker unit (SystemdRunner by default); engines overrides
+        engine detection (tests)."""
         self.store = store
         self.files = files
         self.client_factory = client_factory
+        self.work_dir = Path(work_dir) if work_dir else None
+        self.runner = runner or SystemdRunner()
+        self._engines = engines
         self.lock = threading.RLock()
         self.jobs = collections.OrderedDict()
         self.queue = collections.deque()
@@ -735,6 +789,99 @@ class TransferManager:
                'bytes_total': 0, 'bytes_done': 0, 'current': '', 'current_size': 0,
                'current_done': 0, 'created': time.time(), 'started': None, 'finished': None,
                'elapsed': 0, 'speed': 0, 'eta': None, 'percent': 0, 'error': '', 'errors': []}
+        self._enqueue(job)
+        return self.snapshot_one(ident)
+
+    def engines(self):
+        if self._engines is not None:
+            return self._engines
+        return {'libarchive': archive.available(),
+                'unrar': self.work_dir is not None and unrar_engine_available(),
+                'memory': _worker_memory()}
+
+    def inspect_archive(self, nas_id, path):
+        """Volume set, header checks and engine choice for one NAS archive, for the page."""
+        engines = self.engines()
+        config = self.store.get(nas_id)
+        path = clean_path(path)
+        folder, name = posixpath.split(path)
+        client = self.client_factory(config)
+        try:
+            try:
+                base, volumes = archive.volume_set(client.list(folder or '/'), name)
+                info = archive.inspect(client, volumes, engines)
+            except archive.ArchiveError as exc:
+                raise ValueError(str(exc)) from None
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+        top = info['first_entry'].split('/')[0] if '/' in info['first_entry'] else ''
+        return {'base': base, 'format': info['format'], 'parts': len(volumes),
+                'volumes': [{'name': item['name'], 'path': item['path'], 'size': item['size']}
+                            for item in volumes],
+                'bytes': sum(item['size'] for item in volumes),
+                'title': archive.title_guess(top) or archive.title_guess(base),
+                'top': top, 'dictionary': info['dictionary'], 'source': config['name'],
+                # Known only when every header could be read up front (Range / seek / REST).
+                'files': info['files'], 'unpacked': info['unpacked'], 'checked': info['complete'],
+                'solid': info['solid'], 'engine': info['engine'], 'folder': folder or '/',
+                'memory': archive.unrar_memory(info['dictionary']) if info['engine'] == 'unrar' else 0}
+
+    def start_extract(self, nas_id, path, dest, mode='install'):
+        if mode not in ('install', 'merge'):
+            raise ValueError('安装方式只能是新建游戏文件夹或合并到已有文件夹')
+        if not isinstance(dest, str) or not dest.startswith('/'):
+            raise ValueError('请选择 PS5 上的目标文件夹')
+        dest = dest.rstrip('/') or '/'
+        listed = self.files.list(dest)          # validates the whitelist and that it exists
+        volume = VOLUME_PATTERN.match(dest)
+        if mode == 'merge' and volume and dest == volume.group(0).rstrip('/'):
+            raise ValueError('合并时请选中已有的游戏文件夹，而不是存储卷根目录')
+        info = self.inspect_archive(nas_id, path)
+        names = {entry['name'] for entry in listed.get('entries', [])}
+        if mode == 'install' and info['title'] and info['title'] in names:
+            raise ValueError(f'{dest} 下已经有 {info["title"]}。如果这是补丁或 DLC，'
+                             f'请选择“合并到已有游戏文件夹”，目标选 {info["title"]} 文件夹')
+        free = self._free_space(dest)
+        need = info['unpacked'] or info['bytes']
+        if free is not None and free < need:
+            what = '解压后' if info['unpacked'] else '压缩包'
+            raise ValueError(f'目标存储剩余 {free / 2 ** 30:.1f} GB，放不下{what} '
+                             f'{need / 2 ** 30:.1f} GB 的内容')
+        ident = uuid.uuid4().hex[:10]
+        job = {'id': ident, 'kind': 'extract', 'source': info['source'], 'nas_id': nas_id,
+               'protocol': self.store.get(nas_id)['protocol'],
+               'name': info['base'] + (f'（{info["parts"]} 个分卷）' if info['parts'] > 1 else ''),
+               'paths': [item['path'] for item in info['volumes']], 'volumes': info['volumes'],
+               'base': info['base'], 'dest': dest, 'mode': mode, 'overwrite': 'overwrite',
+               'state': 'queued', 'files_total': info['files'] or 0, 'files_done': 0, 'files_skipped': 0,
+               # unrar reports unpacked bytes, libarchive archive bytes read.
+               'files_failed': 0, 'bytes_total': (info['unpacked'] or 0) if info['engine'] == 'unrar'
+               else info['bytes'], 'bytes_done': 0, 'current': '',
+               'current_size': 0, 'current_done': 0, 'created': time.time(), 'started': None,
+               'finished': None, 'elapsed': 0, 'speed': 0, 'eta': None, 'percent': 0,
+               'error': '', 'errors': [], 'result_path': '', 'title': info['title'], 'note': '',
+               'engine': info['engine'], 'memory': info['memory'], 'folder': info['folder']}
+        self._enqueue(job)
+        return self.snapshot_one(ident)
+
+    def _free_space(self, dest):
+        try:
+            volumes = self.files.volumes().get('volumes', [])
+        except (FileServiceError, AttributeError):
+            return None
+        best = None
+        for volume in volumes:
+            root = (volume.get('path') or '').rstrip('/')
+            if root and (dest == root or dest.startswith(root + '/')):
+                if best is None or len(root) > len(best[0]):
+                    best = (root, volume.get('free'))
+        return best[1] if best and isinstance(best[1], (int, float)) else None
+
+    def _enqueue(self, job):
+        ident = job['id']
         with self.lock:
             self.jobs[ident] = job
             self.cancels[ident] = threading.Event()
@@ -743,7 +890,6 @@ class TransferManager:
             if self.worker is None or not self.worker.is_alive():
                 self.worker = threading.Thread(target=self._run, daemon=True, name='nas-transfer')
                 self.worker.start()
-        return self.snapshot_one(ident)
 
     def snapshot_one(self, ident):
         with self.lock:
@@ -792,6 +938,7 @@ class TransferManager:
 
     # -- worker --
     def _run(self):
+        _lower_priority()
         while True:
             with self.lock:
                 if not self.queue:
@@ -802,10 +949,15 @@ class TransferManager:
             if job is None or job['state'] != 'queued':
                 continue
             try:
-                self._execute(job, self.cancels[ident])
+                if job['kind'] == 'extract' and job.get('engine') == 'unrar':
+                    self._execute_unrar(job, self.cancels[ident])
+                elif job['kind'] == 'extract':
+                    self._execute_extract(job, self.cancels[ident])
+                else:
+                    self._execute(job, self.cancels[ident])
             except _Canceled:
                 self._set(job, state='canceled')
-            except (NasError, FileServiceError, ValueError, OSError) as exc:
+            except (NasError, FileServiceError, ValueError, OSError, archive.ArchiveError) as exc:
                 self._set(job, state='failed', error=str(exc)[:300])
             except Exception as exc:  # keep the queue alive whatever happens
                 logging.exception('NAS transfer failed')
@@ -847,7 +999,7 @@ class TransferManager:
             files = [item for item in plan if item[0] is not None]
             self._set(job, state='running', files_total=len(files),
                       bytes_total=sum(item[3] for item in files))
-            samples = collections.deque(maxlen=60)
+            samples = collections.deque(maxlen=80)
             existing = {}
             for source, directory, name, size in plan:
                 if cancel.is_set():
@@ -875,6 +1027,116 @@ class TransferManager:
                 client.close()
             except Exception:
                 pass
+
+    def _execute_extract(self, job, cancel):
+        config = self.store.get(job['nas_id'])
+        client = self.client_factory(config)
+        self._set(job, state='running', started=time.time())
+        samples = collections.deque(maxlen=80)
+        manager = self
+
+        class Hooks:
+            @staticmethod
+            def check():
+                if cancel.is_set():
+                    raise _Canceled()
+
+            @staticmethod
+            def read(count):
+                manager._progress(job, count, job['current_done'], samples)
+
+            @staticmethod
+            def current(name, size, done):
+                manager._set(job, current=name, current_size=size, current_done=done)
+
+            @staticmethod
+            def written():
+                with manager.lock:
+                    job['files_done'] += 1
+                    job['files_total'] = max(job['files_total'], job['files_done'])
+
+        try:
+            installer = archive.Installer(self.files, client, job['volumes'], job['dest'],
+                                          job['mode'], job['id'], Hooks)
+            result = installer.run(job['base'])
+            self._set(job, state='done', percent=100, current='', current_done=0, current_size=0,
+                      result_path=result['path'], title=result['title'] or job['title'],
+                      note=result['note'])
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    def _execute_unrar(self, job, cancel):
+        """Run the job in its own systemd unit and mirror its status file."""
+        self.work_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ident = job['id']
+        spec_path = self.work_dir / f'{ident}.json'
+        status_path = self.work_dir / f'{ident}.status.json'
+        files = self.files
+        spec = {'id': ident, 'nas_id': job['nas_id'], 'nas_store': str(self.store.path),
+                'nas_key': str(self.store.box.key_path) if self.store.box.key_path else None,
+                'folder': job['folder'], 'volumes': job['volumes'], 'base': job['base'],
+                'dest': job['dest'], 'mode': job['mode'], 'status': str(status_path),
+                'mount': f'/run/ps5-extract/{ident}',
+                'ps5': {'subnet': str(files.subnet), 'host': files.host, 'port': files.port,
+                        'ftp_port': files.ftp_port, 'space_port': files.space_port}}
+        descriptor = os.open(spec_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(spec, stream, ensure_ascii=False)
+        self._set(job, state='scanning', started=time.time())
+        samples = collections.deque(maxlen=80)
+        seen = 0
+        stopping = False
+        handle = self.runner.start(spec_path, f'ps5-extract-{ident}', job['memory'])
+        try:
+            while True:
+                status = _read_json(status_path)
+                if status:
+                    if status.get('state') == 'running' and job['state'] == 'scanning':
+                        self._set(job, state='running', bytes_total=status.get('bytes_total') or job['bytes_total'],
+                                  files_total=status.get('files_total') or job['files_total'])
+                    done = int(status.get('bytes_done') or 0)
+                    if done > seen:
+                        self._progress(job, done - seen, int(status.get('current_done') or 0), samples)
+                        seen = done
+                    self._set(job, current=status.get('current') or '',
+                              current_size=int(status.get('current_size') or 0),
+                              files_done=int(status.get('files_done') or 0))
+                    if status.get('final'):
+                        break
+                if cancel.is_set() and not stopping:
+                    handle.stop()
+                    stopping = True
+                if not handle.alive():
+                    status = _read_json(status_path)
+                    if not status or not status.get('final'):
+                        self._discard_staging(job)
+                        raise archive.ArchiveError(
+                            f'解压进程意外退出（可能内存不足），详见 journalctl -u ps5-extract-{ident}')
+                    break
+                time.sleep(0.5)
+        finally:
+            for path in (spec_path, status_path):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        if status['state'] == 'canceled' or (stopping and status['state'] != 'done'):
+            raise _Canceled()
+        if status['state'] != 'done':
+            raise archive.ArchiveError(status.get('error') or '解压失败')
+        self._set(job, state='done', percent=100, current='', current_done=0, current_size=0,
+                  result_path=status.get('result_path') or '', title=status.get('title') or job['title'],
+                  note=status.get('note') or '', bytes_done=job['bytes_total'])
+
+    def _discard_staging(self, job):
+        parent = job['dest'] if job['mode'] == 'install' else posixpath.dirname(job['dest'].rstrip('/'))
+        try:
+            self.files.delete(posixpath.join(parent, f'.extract-{job["id"]}'))
+        except Exception:
+            pass
 
     def _mkdir(self, directory):
         try:
@@ -934,7 +1196,10 @@ class TransferManager:
         with self.lock:
             job['bytes_done'] += delta
             job['current_done'] = current
-            samples.append((now, job['bytes_done']))
+            # One sample per 0.1 s: with many small reads a count-limited
+            # window covered only milliseconds and the speed rarely updated.
+            if not samples or now - samples[-1][0] >= 0.1:
+                samples.append((now, job['bytes_done']))
             while len(samples) > 2 and now - samples[0][0] > 5:
                 samples.popleft()
             first = samples[0]
@@ -945,6 +1210,73 @@ class TransferManager:
             job['eta'] = (round((total - job['bytes_done']) / job['speed'])
                           if job['speed'] > 0 and total >= job['bytes_done'] else None)
             job['elapsed'] = round(now - job['started'], 1)
+
+
+def unrar_engine_available():
+    """libunrar5 + rclone + FUSE + systemd-run: everything an unrar worker needs."""
+    return (unrar.available() and shutil.which('rclone') is not None
+            and (shutil.which('fusermount3') or shutil.which('fusermount')) is not None
+            and os.path.exists('/dev/fuse') and shutil.which('systemd-run') is not None)
+
+
+def _worker_memory():
+    """Memory an unrar worker may take: total minus room for everything else."""
+    try:
+        with open('/proc/meminfo', encoding='ascii') as stream:
+            for line in stream:
+                if line.startswith('MemTotal:'):
+                    return max(0, int(line.split()[1]) * 1024 - 768 * 1024 * 1024)
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def _read_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+
+
+class SystemdRunner:
+    """Starts extract_worker.py as a transient unit with its own memory limit."""
+
+    WORKER = Path(__file__).resolve().with_name('extract_worker.py')
+
+    def start(self, spec_path, unit, memory):
+        command = ['systemd-run', f'--unit={unit}', '--collect', '--quiet',
+                   '--description=PS5 archive extraction',
+                   '-p', f'MemoryMax={max(int(memory), 512 * 1024 * 1024)}',
+                   '-p', 'Nice=10', '-p', 'CPUWeight=50', '-p', 'IOWeight=50',
+                   # SIGTERM to the worker only: it removes the staging folder and
+                   # unmounts before rclone goes; the rest is killed at the timeout.
+                   '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=60',
+                   sys.executable, '-I', str(self.WORKER), str(spec_path)]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            raise NasError(f'无法启动解压进程：{(result.stderr or result.stdout).strip()[:200]}')
+        return _UnitHandle(unit)
+
+
+class _UnitHandle:
+    def __init__(self, unit):
+        self.unit = unit
+
+    def alive(self):
+        state = subprocess.run(['systemctl', 'is-active', self.unit], capture_output=True,
+                               text=True, timeout=30).stdout.strip()
+        return state in ('active', 'activating', 'deactivating', 'reloading')
+
+    def stop(self):
+        subprocess.run(['systemctl', 'stop', '--no-block', self.unit], capture_output=True, timeout=30)
+
+
+def _lower_priority():
+    """Transfers are background work: let DNS and the admin page go first."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+    except (AttributeError, OSError):
+        pass
 
 
 def check_connection(config):

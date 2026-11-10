@@ -82,6 +82,69 @@ PS5 的 `/data/tom-ps5-usbnet/log.txt`，没有链路时会写 `no Ethernet link
 2026-11-10 在 Debian 12 容器里对 Samba 4.23、rclone WebDAV、rclone FTP 做过端到端联调：
 中文与空格文件名、40 MB 文件字节一致、同名跳过、取消、错误密码提示均通过。
 
+## 分卷压缩包解压安装（RAR5）
+
+`server/archive.py`，由 `TransferManager` 作为 `kind: extract` 的任务执行，与普通 NAS 传输共用队列、进度与取消。
+
+PS5 上的 ShadowMount+ 只认两种形态：单文件镜像（`PPSAxxxxx.ffpfsc`）和解开的游戏文件夹（含 `eboot.bin`、
+`sce_sys/param.json`），扫描目录由 PS5 上 `/data/shadowmount/config.ini` 的 `[scan] path` 决定（真机为
+`/mnt/ext0/games`、`/data/homebrew`）。分卷 `*.partNN.rar` 原样传上去不会被识别，所以在服务器上解开：
+
+1. `GET /api/nas/archive?id=&path=`：从所在目录的列表里按名字找齐同一组分卷（按编号排序、检查缺号，
+   忽略 macOS 的 `._` 元数据文件），然后**预扫描全部包头**：NAS 客户端的 `read_at`（WebDAV `Range`、
+   SMB `seek`、FTP `REST`，FTP 每次读用新连接）按包头里的长度跳过数据区，每次读 64 KiB。返回分卷数、
+   压缩包大小、解压后大小、文件数、标题 ID 猜测，`checked: true`。25 卷 100 GB 的包约 375 次请求、1–2 秒。
+   服务器不支持按偏移读时退回只读第一卷开头 256 KiB（`checked: false`，解压后大小未知）。
+2. `POST /api/nas/extract {id, path, dest, mode}`：`mode` 为 `install`（在 `dest` 下新建游戏文件夹）或
+   `merge`（把内容覆盖进 `dest` 这个已有游戏文件夹）。`install` 时 `dest` 下已有同名游戏会拒绝并提示改用合并；
+   目标卷剩余空间小于解压后大小（预扫描不可用时用压缩包大小）会拒绝。
+3. 任务里各分卷依次 `client.open()`，拼成一条字节流交给 libarchive（`stream_reader`）；每解出一个文件就直接
+   `FileProxy.upload` 到 PS5 上的 `<父目录>/.extract-<任务 ID>/…`，不落服务器磁盘。进度按已读取的压缩包字节计。
+4. 全部写完后：顶层只有一个文件夹（通常是 `PPSA03671-app`）时取它为游戏根目录，按 `param.json` 的 `titleId`
+   改名到 `dest/PPSA03671`（没有 `param.json` 时用文件夹名或压缩包名里的标题 ID）；合并模式逐项改名覆盖。
+   同盘改名是瞬间完成的。任何失败或取消都删除整个 `.extract-*` 目录。
+
+**为什么要有自己的包头解析器（`Rar5Scanner`）**：Debian 12 的 libarchive 3.6.2 读固实（solid）多卷包时会
+静默少掉最后几个条目且不报错（2026-11-10 用 `archive_read_open_filenames` 复现，与拼接方式无关）。解析器与
+libarchive 读同一批字节，只解析块头、按长度跳过数据区，独立记下包里每个文件；结束时两边对不上就判失败。它也负责：
+分卷签名与卷号顺序、最后一卷的结束标记（缺后面的卷时报「可能缺少后面的分卷」）、非最后一卷末尾的 0 字节填充。
+
+**不支持（开始前就拒绝并说明）**：带密码的包（文件加密或文件名加密）、RAR4（包括 `.rar + .r00` 旧式分卷）、
+RAR 7 的 v7 算法（字典 >4 GB）。没有 unrar 引擎时，固实包和字典超过 64 MiB 的包也会被拒（libarchive 3.6.2 的上限，
+2026-11-10 实测 128 MiB 报 “Declared dictionary size is not supported”）；字典所需内存超过服务器内存时同样拒绝。这些请先在电脑或 NAS 上解压，再用「传到 PS5」
+传文件夹。符号链接 / 硬链接条目会跳过。
+
+**性能（2026-11-10 在 .35 实测）**：解压在 nas-transfer 线程里进行（该线程 nice 10），libarchive 的解码在 C 里
+释放 GIL。CUSA36464.rar（1.47 GB，32 MB 字典，压缩方法 1）从 WebDAV(HTTPS) NAS 解到 PS5 zftpd：23.4 s，
+约 64 MB/s，服务进程占满一个核（WebDAV TLS + 解码 + FTP 发送），内存约 95 MB。
+
+**两个解压引擎**：检查阶段扫完全部包头后选择引擎（`archive.choose_engine`）：
+
+| 引擎 | 何时使用 | 怎么读分卷 | 进度计量 |
+| --- | --- | --- | --- |
+| libarchive（`python3-libarchive-c`） | 非 solid 且字典 ≤64 MiB | 服务进程内，NAS 客户端直接给字节流 | 已读取的压缩包字节 |
+| unrar（`libunrar5`） | solid，或字典 >64 MiB（实测真实发布包常见 4 GB 字典） | 独立工作单元里用 rclone 只读挂载 NAS 目录 | 解压出的字节 |
+
+unrar 引擎为什么要单独的进程：`ps5-manager` 单元有 `CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE`、
+`NoNewPrivileges`、`MemoryMax=256M`，既不能挂 FUSE，也放不下几 GB 的解压窗口；C 库出问题也不能拖垮 DNS。
+所以服务用 `systemd-run --unit=ps5-extract-<任务> --collect -p MemoryMax=<字典+768 MiB> -p Nice=10 ...` 启动
+`server/extract_worker.py`，任务说明写在 `<data>/extract/<任务>.json`（不含账号，工作进程自己用 `nas.key` 解密），
+进度写在同目录的 `<任务>.status.json`，服务每 0.5 秒读一次。取消就是 `systemctl stop`（工作进程收到 SIGTERM 后清理暂存目录）。
+工作进程意外退出（例如内存不足被杀）且没写出最终状态时，服务判失败并删除暂存目录，日志见 `journalctl -u ps5-extract-<任务>`。
+
+工作进程：`rclone mount NAS:<NAS 路径>/<分卷所在目录> /run/ps5-extract/<任务> --read-only --vfs-cache-mode off`
+（rclone 配置只通过环境变量 `RCLONE_CONFIG_NAS_*` 传入，密码经 `rclone obscure -` 从标准输入编码，不出现在命令行），
+再用 `archive.prescan` 读一遍包头作为核对清单，然后 libunrar 以 `RAR_TEST` 模式解压、`UCM_PROCESSDATA` 回调把数据交给
+生产者线程 → 有界队列 → `FileProxy.upload`。libunrar 只认可随机读的真实文件（命名管道在打开时就失败，2026-11-10 实测），
+所以必须挂载。需要：`libunrar5`、`rclone`、`fuse3`、`/dev/fuse`（PVE 里给 LXC 勾选 FUSE 功能）。
+
+**实测（2026-11-10，.35，LXC 6 GB 内存）**：rclone 挂载 WebDAV(HTTPS) 顺序读 112 MB/s；
+CUSA36464.rar（32 MB 字典，libarchive）64 MB/s；CUSA20499（4 GB 字典，unrar）见 PROJECT.md 的记录。
+
+**测试**：`tests/test_archive.py` 用 `tests/fixtures/rar/` 里的真实 RAR5 小样本（`make.sh` 生成，需要 `rar`），
+无 libarchive 时解压类用例跳过。2026-11-10 在 Debian 12 容器（libarchive 3.6.2、python3-libarchive-c 2.9）里
+用 rclone WebDAV 作 NAS、rclone FTP 作 PS5 做过端到端：7 卷 32 MB 包解出 204 个文件，与源目录逐字节一致（含中文名、空目录）。
+
 ## 游戏名称（标题 ID → 游戏名）
 
 「PS5 文件」和 NAS 列表里，名称中带 PS4/PS5 标题 ID 的条目（`CUSA36464`、`PPSA03671`、
