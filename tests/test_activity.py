@@ -140,6 +140,29 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(dns[0]['verdict'], 'blocked')
         self.assertEqual(snapshot['hints']['dns_events'], 2)
 
+    def test_missing_conntrack_still_shows_dns_and_recovers(self):
+        rows = [{'seq': 1, 'time': '2026-01-01T00:00:00+08:00', 'client': CLIENT,
+                 'name': 'ps5.playstation.net', 'qtype': 'A', 'action': 'allowed', 'detail': ''}]
+        state = {'missing': True}
+
+        def conntrack():
+            if state['missing']:
+                raise FileNotFoundError(2, 'No such file or directory', 'conntrack')
+            return ''
+        observer = FlowObserver(
+            conntrack=conntrack, classifier=self.classifier, labels=self.store,
+            dns_lookup=lambda ip: (None, None), is_allowed=lambda ip: False,
+            lan=LAN, host_ip=HOST_IP, clock=lambda: self.now, dns_events=lambda: rows)
+        observer.poll_once()
+        snapshot = observer.snapshot()
+        self.assertEqual([e['domain'] for e in snapshot['events'] if e['kind'] == 'dns'],
+                         ['ps5.playstation.net'])
+        self.assertIsNotNone(snapshot['updated'])
+        self.assertIn('apt-get install -y conntrack', snapshot['last_error'])
+        state['missing'] = False
+        observer.poll_once()
+        self.assertIsNone(observer.snapshot()['last_error'], 'banner clears once conntrack works')
+
     def test_event_fields_and_verdict(self):
         events = self.observer.poll_once()
         allowed, denied = events[0], events[1]

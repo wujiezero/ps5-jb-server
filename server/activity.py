@@ -243,12 +243,21 @@ class FlowObserver:
         }
 
     def poll_once(self):
+        # A broken connection tracker must not hide DNS queries: they are
+        # collected below either way, and the error is shown next to them.
         try:
             flows = parse_conntrack(self.conntrack())
+            error = None
+        except FileNotFoundError:
+            flows = []
+            error = ('本机缺少 conntrack 命令，网关连接无法记录（DNS 查询不受影响）；'
+                     '安装：apt-get install -y conntrack')
         except Exception as exc:
-            self.last_error = str(exc)[:200]
-            logging.warning('conntrack poll failed: %s', exc)
-            return []
+            flows = []
+            error = '读取网关连接失败：' + str(exc)[:200]
+        if error and error != self.last_error:
+            logging.warning('conntrack poll failed: %s', error)
+        self.last_error = error
         now = self.clock()
         fresh = []
         with self.lock:
