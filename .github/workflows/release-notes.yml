@@ -1,0 +1,46 @@
+name: Release notes
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/release-notes/*.md'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publish-notes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve current release notes
+        id: notes
+        run: |
+          python3 - <<'PY'
+          import ast
+          import os
+          import pathlib
+          import re
+          tree = ast.parse(pathlib.Path('server/version.py').read_text())
+          values = [ast.literal_eval(node.value) for node in tree.body
+                    if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == 'VERSION' for target in node.targets)]
+          assert len(values) == 1 and re.fullmatch(r'\d+\.\d+\.\d+', values[0]), 'Invalid release version'
+          tag = 'v' + values[0]
+          notes = pathlib.Path('docs/release-notes') / (tag + '.md')
+          assert notes.is_file(), f'Missing release notes: {notes}'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'tag={tag}\npath={notes.as_posix()}\n')
+          PY
+      - name: Update published release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.notes.outputs.tag }}
+          NOTES_PATH: ${{ steps.notes.outputs.path }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --notes-file "$NOTES_PATH"
+          else
+            echo "Release is not published yet; the tag release workflow will attach these notes."
+          fi

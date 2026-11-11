@@ -43,4 +43,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 --verify-tag --generate-notes --title "$RELEASE_TAG"
+        run: |
+          notes="docs/release-notes/$RELEASE_TAG.md"
+          if [ -f "$notes" ]; then
+            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 --verify-tag --notes-file "$notes" --title "$RELEASE_TAG"
+          else
+            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 --verify-tag --generate-notes --title "$RELEASE_TAG"
+          fi
