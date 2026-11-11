@@ -44,6 +44,8 @@ class Settings:
     ps5_control: bool = True
     file_manager: bool = True
     max_upload: int = 64 << 20          # plugin repository uploads (held in memory)
+    # Upstream plugin index for "check for updates" (Payload Manager's official source).
+    plugin_upstream: str = 'https://itsplk.github.io/ps5-payloads-mirror/payloads_v2.json'
     max_file_upload: int = 0            # PS5 file manager uploads (streamed); 0 = no limit
     data_dir: Path = Path('/var/lib/ps5-jb-server')
     repo_dir: Path = Path('/srv/ps5-jb-server')
@@ -106,6 +108,8 @@ class Settings:
             ps5_control=flag('ps5', 'control', 'PS5JB_PS5_CONTROL', True),
             file_manager=flag('ps5', 'file_manager', 'PS5JB_FILE_MANAGER', True),
             max_upload=int(pick('limits', 'max_upload', 'PS5JB_MAX_UPLOAD', 64 << 20)),
+            plugin_upstream=str(pick('repo', 'upstream', 'PS5JB_PLUGIN_UPSTREAM',
+                                     'https://itsplk.github.io/ps5-payloads-mirror/payloads_v2.json')),
             max_file_upload=max(0, int(pick('limits', 'max_file_upload',
                                             'PS5JB_MAX_FILE_UPLOAD', 0))),
             data_dir=Path(pick('paths', 'data', 'PS5JB_DATA', DEFAULTS['paths']['data'])),

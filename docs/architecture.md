@@ -28,6 +28,8 @@
 
 ## 网络活动采集
 
+- 网关连接来自 `conntrack -L`（软件包 `conntrack`）。读取失败只影响网关连接，DNS 查询照常采集，错误显示在活动页并在恢复后清除。
+
 容器内没有 `/dev/kmsg`，nftables `log` 不可读，因此采集方式为**每 2 秒轮询 `conntrack -L`**：
 
 - 只保留源在本网段、目的在网段外的新连接，按五元组去重（默认 300 秒窗口）；
@@ -43,10 +45,16 @@
 
 - 发现：对本网段并发 TCP 探测三个端口（每次探测一个地址的三个端口，限制线程数）。
 - 接入：`POST /sources_add?url=<本机仓库>` + `repository_refresh`，幂等。
-- 安装：直接用 `POST /manage:upload?filename=<文件名>` 把 ELF 上传进 pldmgr（落到
-  `local/<slug>/`），再从 `/list_payloads` 取回真实路径；需要运行则 `loadpayload:<path>`。
+- 安装：先用只读 `GET /manage:check?filename=<文件名>` 取得 pldmgr 的本地槽位。槽位存在时使用
+  `POST /manage:upload?filename=<文件名>&mode=replace`，不存在时用 `mode=new`；不先删除旧文件。
+  pldmgr 会把版本/平台后缀归一，例如 `zftpd.elf` 与 `zftpd-ps5-v1.7.0.elf` 都落到 `local/zftpd`。
+  上传后从 `/list_payloads` 按本次目标槽位及精确新文件名核实路径，避免选中仓库槽位中的同名旧副本；需要运行则 `loadpayload:<path>`。
+  检查接口仅在明确返回 404 时按旧协议尝试新建；其它检查错误直接停止，不盲目覆盖。
   不依赖 pldmgr 自己去拉取自定义仓库（实测它的仓库缓存只包含默认源）。
-- pldmgr 不可用时回退 elfldr 的 `?uri=` 投递。
+- pldmgr 不可用且用户明确选择运行时可回退 elfldr 的 `?uri=` 投递；明确 HTTP 拒绝或上传后无法验证时不悄悄再次投递。
+- 替换只更新 pldmgr 保存的文件，不终止已运行的旧进程，也不重写自动加载配置。文件服务等常驻插件请先等传输结束，
+  使用「安装」保存新版后，再按插件要求停止旧进程/重启 PS5，避免同时运行两个版本。
+- 本地仓库上传表单会从文件名识别名称与版本；精确匹配仓库文件时可复用已知元数据，手动编辑优先，无法可靠识别的作者/分类留空。
 - `/list_payloads` 的真实响应是 `{self, items:[{slot,path,filename,kind,origin}]}`；
   同时兼容旧版 `{payloads:[路径]}` 结构。
 - 自动加载：`AUTOLOAD_LIST` 是有序序列，`local/<槽位>`（取自 `/list_payloads` 的 `slot`）表示加载插件，
@@ -70,6 +78,20 @@
 - 隔离：引擎绑定 0.0.0.0 并自行拒绝非回环请求；`ps5upload-engine.service` 以 DynamicUser 运行，
   启动前加载 nft 表 `inet ps5upload_guard` 丢弃非 `lo` 的 19113 连接。
 - pldmgr 的 `/shutdown` 只退出 pldmgr 自身，不是关机。
+
+## 插件仓库的上游更新与历史版本
+
+- 上游索引：`[repo] upstream`（默认 `https://itsplk.github.io/ps5-payloads-mirror/payloads_v2.json`，即 Payload Manager
+  内置的 Official Repository）。只在管理员点「检查更新」时抓取，结果缓存到 `<data>/plugin-upstream.json`；失败保留上次结果。
+  只接受 https 地址、文件名合法且带 64 位 SHA-256 的条目。
+- 匹配（`plugin_updates.match_upstream`）：条目里记过的 `upstream` 名 → 文件名或 SHA-256 完全相同 → 文件名形如
+  `<上游名>[_- ]<版本或 ps5>`（最长名字优先，`ftpsrv-drakmor` 不会被认成 `ftpsrv`）→ 名称或 id 相同。
+  状态：校验和相同为 `current`；本地版本号的数字序列更大为 `local_newer`（不提示）；其余为 `available`。
+- 更新：下载上限同上传上限（64 MiB），SHA-256 必须与索引一致才交给 `RepoManager.upgrade`；同一时间只允许一个更新。
+- 历史：`RepoManager` 在发布新字节（上游更新、手动「替换」、回退）前把当前文件复制到 `versions/<sha256>`，记录在
+  `versions/index.json`（按条目 `id` 分组，最近 3 个）。仓库服务只提供 `repo.json` 与 `payloads/` 里登记的文件，
+  `versions/` 不可达。回退前重新校验 SHA-256；不再被引用的旧文件随即删除。
+- 安装器重跑（`scripts/fetch_payloads.py`）合并已有 `repo.json`，不会撤销这些操作。
 
 ## 文件代理
 

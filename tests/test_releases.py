@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'server'))
+from version import VERSION  # noqa: E402
 
 
 class ReleaseTests(unittest.TestCase):
@@ -22,20 +23,20 @@ class ReleaseTests(unittest.TestCase):
     def test_release_matches_version_and_contains_only_runtime_files(self):
         module = self.builder()
         with tempfile.TemporaryDirectory() as directory:
-            artifact, checksum = module.build_release(ROOT, Path(directory), tag='v1.4.0')
-            self.assertEqual(artifact.name, 'ps5-jb-server-1.4.0.tar.gz')
+            artifact, checksum = module.build_release(ROOT, Path(directory), tag='v' + VERSION)
+            self.assertEqual(artifact.name, f'ps5-jb-server-{VERSION}.tar.gz')
             import hashlib
             self.assertEqual(checksum.read_text(), hashlib.sha256(artifact.read_bytes()).hexdigest() + '  ' + artifact.name + '\n')
             with tarfile.open(artifact) as archive:
                 names = archive.getnames()
-                prefix = 'ps5-jb-server-1.4.0/'
+                prefix = f'ps5-jb-server-{VERSION}/'
                 self.assertIn(prefix + 'server/version.py', names)
                 self.assertIn(prefix + 'server/update_worker.py', names)
-                self.assertEqual(archive.extractfile(prefix + 'VERSION').read(), b'1.4.0\n')
+                self.assertEqual(archive.extractfile(prefix + 'VERSION').read(), (VERSION + '\n').encode())
                 self.assertFalse(any('credentials' in name or '/.git' in name or '/tests/' in name for name in names))
                 self.assertTrue(all(item.isfile() for item in archive.getmembers()))
             first = artifact.read_bytes()
-            module.build_release(ROOT, Path(directory), tag='v1.4.0')
+            module.build_release(ROOT, Path(directory), tag='v' + VERSION)
             self.assertEqual(first, artifact.read_bytes())
 
     def test_wrong_tag_is_refused(self):

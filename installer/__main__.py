@@ -57,6 +57,7 @@ class Layout:
     no_manuals_host: bool = False
     power_engine: bool = False
     extract: bool = False
+    no_deps: bool = False
 
     # derived
     opt: Path = field(init=False)
@@ -143,6 +144,135 @@ class Runner:
         shutil.copytree(source, target)
 
 
+# ---------------------------------------------------------------- dependencies
+
+# What the installer and the services need from the system, and how to tell
+# whether each one is already there. Package names differ per distribution;
+# None means "this manager has no package for it" (the probe then reports it).
+DEPENDENCIES = (
+    # key, required, probe, packages per manager
+    ('openssl', True, ('bin', 'openssl'),
+     {'apt': 'openssl', 'dnf': 'openssl', 'yum': 'openssl', 'apk': 'openssl',
+      'pacman': 'openssl', 'zypper': 'openssl'}),
+    ('ca-certificates', True, ('file', '/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt',
+                               '/etc/ssl/ca-bundle.pem', '/etc/ssl/cert.pem'),
+     {'apt': 'ca-certificates', 'dnf': 'ca-certificates', 'yum': 'ca-certificates',
+      'apk': 'ca-certificates', 'pacman': 'ca-certificates', 'zypper': 'ca-certificates'}),
+    ('dnspython', True, ('py', 'import dns.message'),
+     {'apt': 'python3-dnspython', 'dnf': 'python3-dns', 'yum': 'python3-dns', 'apk': 'py3-dnspython',
+      'pacman': 'python-dnspython', 'zypper': 'python3-dnspython'}),
+    ('cryptography', True, ('py', 'from cryptography.hazmat.primitives.ciphers.aead import AESGCM'),
+     {'apt': 'python3-cryptography', 'dnf': 'python3-cryptography', 'yum': 'python3-cryptography',
+      'apk': 'py3-cryptography', 'pacman': 'python-cryptography', 'zypper': 'python3-cryptography'}),
+    ('nftables', 'firewall', ('bin', 'nft'),
+     {'apt': 'nftables', 'dnf': 'nftables', 'yum': 'nftables', 'apk': 'nftables',
+      'pacman': 'nftables', 'zypper': 'nftables'}),
+    # sysctl switches IPv4 forwarding; ip reads interfaces and routes. Minimal
+    # container images ship neither.
+    ('sysctl', True, ('bin', 'sysctl'),
+     {'apt': 'procps', 'dnf': 'procps-ng', 'yum': 'procps-ng', 'apk': 'procps',
+      'pacman': 'procps-ng', 'zypper': 'procps'}),
+    ('ip', True, ('bin', 'ip'),
+     {'apt': 'iproute2', 'dnf': 'iproute', 'yum': 'iproute', 'apk': 'iproute2',
+      'pacman': 'iproute2', 'zypper': 'iproute2'}),
+    # Gateway connections on the activity page come from `conntrack -L`.
+    ('conntrack', 'firewall', ('bin', 'conntrack'),
+     {'apt': 'conntrack', 'dnf': 'conntrack-tools', 'yum': 'conntrack-tools', 'apk': 'conntrack-tools',
+      'pacman': 'conntrack-tools', 'zypper': 'conntrack-tools'}),
+    # SMB for NAS storage: useful, not required. A failure here never stops the install.
+    ('smbc', False, ('py', 'import smbc'),
+     {'apt': 'python3-smbc', 'dnf': 'python3-pysmbc', 'yum': None, 'apk': None,
+      'pacman': None, 'zypper': 'python3-pysmbc'}),
+)
+
+PACKAGE_MANAGERS = (
+    # name, executable, install command, refresh command (run once if the first install fails)
+    ('apt', 'apt-get', ['apt-get', 'install', '-y', '--no-install-recommends'], ['apt-get', 'update']),
+    ('dnf', 'dnf', ['dnf', 'install', '-y'], None),
+    ('yum', 'yum', ['yum', 'install', '-y'], None),
+    ('apk', 'apk', ['apk', 'add', '--no-cache'], ['apk', 'update']),
+    ('pacman', 'pacman', ['pacman', '-S', '--noconfirm', '--needed'], ['pacman', '-Sy']),
+    ('zypper', 'zypper', ['zypper', '--non-interactive', 'install'], ['zypper', '--non-interactive', 'refresh']),
+)
+
+
+def package_manager(which=shutil.which):
+    for name, executable, install, refresh in PACKAGE_MANAGERS:
+        if which(executable):
+            return name, install, refresh
+    return None, None, None
+
+
+def dependency_present(probe, which=shutil.which, python=sys.executable):
+    kind, *values = probe
+    if kind == 'bin':
+        return which(values[0]) is not None
+    if kind == 'file':
+        return any(Path(value).is_file() for value in values)
+    return subprocess.run([python, '-c', values[0]], capture_output=True).returncode == 0
+
+
+def missing_dependencies(layout, present=dependency_present):
+    """(key, required, packages) for each dependency the system lacks."""
+    missing = []
+    for key, required, probe, packages in DEPENDENCIES:
+        if required == 'firewall':
+            if layout.no_firewall:
+                continue
+            required = True
+        if not present(probe):
+            missing.append((key, required, packages))
+    return missing
+
+
+def install_dependencies(layout, runner, present=dependency_present, which=shutil.which):
+    """Install whatever system packages are missing before the real checks run.
+
+    Only for a real install (prefix /) by root. --no-deps keeps the old
+    behaviour: report what is missing and let preflight stop.
+    """
+    print('\n[0/9] 系统依赖')
+    missing = missing_dependencies(layout, present)
+    if not missing:
+        runner.note('依赖齐全')
+        return
+    names = '、'.join(key for key, _, _ in missing)
+    if layout.no_deps or layout.prefix != Path('/'):
+        runner.note(f'缺少 {names}，按参数不自动安装')
+        return
+    manager, install, refresh = package_manager(which)
+    if manager is None:
+        runner.note(f'缺少 {names}，但没有识别到支持的包管理器（apt/dnf/yum/apk/pacman/zypper），请手动安装')
+        return
+    if os.geteuid() != 0 and not layout.dry_run:
+        runner.note(f'缺少 {names}，需要 root 才能自动安装')
+        return
+    required = [packages[manager] for _, need, packages in missing if need and packages.get(manager)]
+    optional = [packages[manager] for _, need, packages in missing if not need and packages.get(manager)]
+    unavailable = [key for key, need, packages in missing if need and not packages.get(manager)]
+    if unavailable:
+        runner.note('当前发行版没有对应软件包，请手动安装：' + '、'.join(unavailable))
+    if manager == 'apt':
+        os.environ.setdefault('DEBIAN_FRONTEND', 'noninteractive')
+
+    def attempt(packages):
+        if not packages:
+            return True
+        result = runner.run([*install, *packages], check=False, capture=False)
+        if result.returncode == 0:
+            return True
+        if refresh:
+            runner.note('安装失败，刷新软件源后重试')
+            runner.run(refresh, check=False, capture=False)
+            return runner.run([*install, *packages], check=False, capture=False).returncode == 0
+        return False
+
+    if not attempt(required):
+        runner.note('必需依赖安装失败，详见上方输出；下面的预检会指出缺少的项目')
+    if optional and not attempt(optional):
+        runner.note('可选依赖 ' + '、'.join(optional) + ' 安装失败（NAS 的 SMB 不可用），不影响其余功能')
+
+
 # ---------------------------------------------------------------- preflight
 
 def preflight(layout, runner):
@@ -150,6 +280,7 @@ def preflight(layout, runner):
         raise StepError('请用 root 运行（sudo ./install.sh）')
     if not (REPO / 'server/server.py').exists():
         raise StepError('安装包不完整：缺少 server/server.py')
+    install_dependencies(layout, runner)
     if not str(layout.host_ip or ''):
         layout.host_ip = detect_ip()
     layout.subnet = layout.subnet or subnet_of(layout.host_ip)
@@ -767,6 +898,7 @@ def build_layout(args):
         no_payloads=args.no_payloads, no_manuals_host=args.no_manuals_host,
         power_engine=getattr(args, 'with_power_engine', False),
         extract=getattr(args, 'with_extract', False),
+        no_deps=getattr(args, 'no_deps', False),
     )
     return layout
 
@@ -789,6 +921,8 @@ def main(argv=None):
     parser.add_argument('--no-services', action='store_true')
     parser.add_argument('--no-payloads', action='store_true')
     parser.add_argument('--no-manuals-host', action='store_true')
+    parser.add_argument('--no-deps', action='store_true',
+                        help='不自动安装缺少的系统依赖（openssl、python3-dnspython、nftables 等），只报告')
     parser.add_argument('--with-power-engine', action='store_true',
                         help='同时安装 PS5Upload 引擎，用于从待机唤醒并登录、进入待机（GPL-3.0，约 93MB）')
     parser.add_argument('--with-extract', action='store_true',

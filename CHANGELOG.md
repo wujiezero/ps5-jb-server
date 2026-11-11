@@ -1,8 +1,25 @@
 # 变更记录
 
-## 未发布
+## 1.5.0 — 2026-11-11
+
+**新功能**
+- 服务改名为「PS5 管家」，并配了新 logo；浏览器标签图标也换成 logo。图标内嵌在 `index.html` 里，不新增文件，
+  所以从 1.4.0 网页一键升级不受影响（1.4.0 的升级器只接受固定的文件清单）。
+- 一键脚本自动安装依赖：`bootstrap.sh` 补 `git`、`python3`、CA 证书；`install.sh` 补 `python3`；安装器在预检前补齐
+  `openssl`、`python3-dnspython`、`python3-cryptography`、`nftables`、`conntrack`、`procps`（sysctl）、`iproute2` 与可选的 `python3-smbc`。
+  支持 apt（主要）以及 dnf/yum/apk/pacman/zypper；软件源过期时自动刷新一次；`--no-deps` 关闭。
+- 插件仓库检查上游更新：以 Payload Manager 官方源（itsPLK/ps5-payloads-mirror 的 `payloads_v2.json`）为准，按名称与
+  `<名称>_<版本>` 文件名匹配本地插件；可单个或全部更新，下载后按上游 SHA-256 校验才写入。本地版本比上游新时不提示。
+- 插件历史版本：更新或「替换」前的文件按 SHA-256 存进仓库的 `versions/`（不对 PS5 提供），每个插件保留最近 3 个，
+  可一键回退、再切回来，或删除旧版本；`repo.json` 结构不变。
+- 上传新插件选文件后自动识别名称和版本，例如 `zftpd-ps5-v1.7.0.elf`；精确同名仓库元数据优先，手动修改不会被覆盖。
 
 **修复**
+- 网络活动：本机没有 `conntrack` 命令时整页无数据（连 DNS 查询也不显示），并一直显示「规则分类更新失败」。
+  现在读取网关连接失败只影响网关连接本身，DNS 查询照常显示，提示改为说明缺 `conntrack` 及安装命令，恢复后提示自动消失。
+- 重新运行安装脚本会用清单重写 `repo.json`，丢掉管理页上传的插件、编辑过的名称和更新后的版本。现在改为合并：
+  已有条目、管理页选定的版本与编辑都保留，只补下载缺失的清单插件。
+- 安装新版插件时先查询 pldmgr 的本地槽位，已有槽位明确使用 `mode=replace`，避免默认 `new` 引发 HTTP 500；上传后按槽位和新文件名确认，不误选仓库中同名旧副本。写盘拒绝或上传结果无法确认时不再悄悄改走 elfldr。
 - 安装脚本的插件下载：`payloads.json` 里记录的是裸文件名，下载器直接请求会失败，新装完成后仓库是空的，
   PS5 首次接入就报 `No valid payloads found in source JSON`。清单改为上游镜像的绝对直链，并按镜像更新
   `ftpsrv`（v0.22）与 `ps5upload`（v12.4.2）的文件名、版本和 SHA-256。

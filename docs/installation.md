@@ -12,6 +12,10 @@
 
 ## 安装做了什么
 
+0. 依赖：缺少的系统软件包自动安装（`bootstrap.sh` 负责 `git`/`python3`/CA 证书，`install.sh` 负责 `python3`，
+   安装器负责 `openssl`、`python3-dnspython`、`python3-cryptography`、`nftables`、`conntrack`、`procps`（sysctl）、`iproute2`，以及可选的
+   `python3-smbc`）。用 apt 时先直接安装，失败再 `apt-get update` 后重试一次；`--no-firewall` 时不装 nftables/conntrack；
+   `--no-deps` 只报告不安装；`--prefix` 测试安装从不安装软件包。
 1. 预检：root、`python3`/`openssl`/`nft`/`systemctl` 是否存在、`python3-dnspython` 是否可导入、
    端口是否被占用（被占用会指明是谁）。
 2. 建立目录：`/opt/ps5-jb-server`（程序）、`/etc/ps5-jb-server`（配置与证书）、
@@ -21,6 +25,7 @@
 4. 生成 12 位管理密码 → `credentials.json`（PBKDF2-SHA256、310k 轮）与
    `/root/ps5-jb-server-access.txt`（0600）。
 5. 下载第三方组件：用户手册宿主（GPL-3.0，校验 SHA-256）、插件（`payloads.json` 清单，逐个校验）。
+   重新运行会合并已有的 `repo.json`：管理页上传的插件、编辑过的信息、更新或回退后的版本都会保留。
    插件默认从上游镜像自动下载；某一条下载失败（网络、HTTP、校验和不符）只记录原因，不中断安装，
    结束时汇总成功/失败数量。仓库为空时会明确告警，之后可重跑
    `sudo python3 /opt/ps5-jb-server-src/scripts/fetch_payloads.py --repo-dir /srv/ps5-jb-server --base-url http://<本机>:8080/payloads/`
@@ -51,6 +56,7 @@
 --no-services         不安装 systemd 单元（只铺文件）
 --no-payloads         不下载插件，只建空仓库
 --no-manuals-host     不下载用户手册宿主
+--no-deps             不自动安装缺少的系统软件包，只报告
 --with-power-engine   同时安装 PS5Upload 引擎（唤醒 / 待机，可选）
 --with-extract        同时安装游戏压缩包解压引擎（可选）
 --dry-run             只打印动作

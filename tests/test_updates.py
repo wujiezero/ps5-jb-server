@@ -17,6 +17,11 @@ except ImportError:
 
 class UpdateTests(unittest.TestCase):
     def setUp(self):
+        # The scenarios model an installed 1.4.0 meeting a 1.5.0 release,
+        # independent of the version this checkout happens to carry.
+        installed = mock.patch('updates.VERSION', '1.4.0')
+        installed.start()
+        self.addCleanup(installed.stop)
         self.assertIsNotNone(UpdateManager, 'update manager is missing')
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

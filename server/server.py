@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import urllib.parse
 import signal
 import ssl
@@ -27,6 +28,7 @@ from settings import Settings
 from titles import TitleCatalog, proxy_reader
 from dns_service import DNSPolicy, LimitedThreads, diagnostic_error, start_dns
 from policy import ConfigStore, Firewall
+from plugin_updates import PluginUpdates, PluginUpdateError
 from version import VERSION, version_info
 from updates import UpdateManager, UpdateError, ACTIVE as UPDATE_ACTIVE
 
@@ -218,11 +220,19 @@ def initialize_engine(engine, forwarder=set_forwarding):
 
 
 class RepoManager:
-    """Owns /srv/ps5-repo: repo.json plus payload files, written atomically."""
+    """Owns /srv/ps5-repo: repo.json plus payload files, written atomically.
+
+    Earlier versions of a plugin live in versions/ (content addressed by
+    SHA-256, never served to the PS5) with their records in
+    versions/index.json, so an upgrade or a manual replacement can be rolled
+    back. repo.json itself stays exactly what Payload Manager expects.
+    """
 
     MAX_UPLOAD = 64 * 1024 * 1024
+    HISTORY_LIMIT = 3
     NAME = '家庭离线仓库（PS5 常用插件）'
     _FILENAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.(?:elf|bin)\Z', re.IGNORECASE)
+    _DIGEST = re.compile(r'[0-9a-f]{64}\Z')
     _SEED_FILE = 'ps5-payload-repository'
     _FIELDS = ('name', 'version', 'category', 'author', 'description', 'source')
 
@@ -232,6 +242,8 @@ class RepoManager:
         self.root = Path(root)
         self.base_url = base_url if base_url.endswith('/') else base_url + '/'
         self.payloads = self.root / 'payloads'
+        self.versions = self.root / 'versions'
+        self.history_path = self.versions / 'index.json'
         self.catalog_path = self.root / 'repo.json'
         self.lock = threading.RLock()
         self.payloads.mkdir(parents=True, exist_ok=True)
@@ -248,10 +260,22 @@ class RepoManager:
         if not isinstance(filename, str) or not RepoManager._FILENAME.match(filename):
             raise ValueError('文件名只能包含字母、数字、点、下划线和连字符，且以 .elf 或 .bin 结尾')
 
-    def _write_catalog(self, document):
-        temporary = self.catalog_path.with_name('.' + self.catalog_path.name + '.tmp')
+    @staticmethod
+    def entry_id(item):
+        """Stable key of a plugin across version (and so filename) changes."""
+        value = item.get('id')
+        if isinstance(value, str) and value:
+            return value
+        stem = str(item.get('filename') or '').rsplit('.', 1)[0].lower()
+        return re.sub(r'[^a-z0-9._-]+', '-', stem).strip('-') or 'payload'
+
+    def _write_json(self, path, document):
+        temporary = path.with_name('.' + path.name + '.tmp')
         temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-        os.replace(temporary, self.catalog_path)
+        os.replace(temporary, path)
+
+    def _write_catalog(self, document):
+        self._write_json(self.catalog_path, document)
 
     def catalog(self):
         with self.lock:
@@ -259,9 +283,28 @@ class RepoManager:
         document.setdefault('payloads', [])
         return document
 
+    def history(self):
+        """{entry id: [records, newest first]}; unreadable means none kept."""
+        with self.lock:
+            try:
+                document = json.loads(self.history_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                return {}
+        plugins = document.get('plugins') if isinstance(document, dict) else None
+        if not isinstance(plugins, dict):
+            return {}
+        return {key: [record for record in value if isinstance(record, dict)
+                      and isinstance(record.get('checksum'), str) and self._DIGEST.match(record['checksum'])]
+                for key, value in plugins.items() if isinstance(value, list)}
+
+    def _write_history(self, history):
+        self.versions.mkdir(parents=True, exist_ok=True)
+        self._write_json(self.history_path, {'schema': 1, 'plugins': {key: value for key, value in history.items() if value}})
+
     def summary(self):
         with self.lock:
             document = self.catalog()
+            history = self.history()
             items, total = [], 0
             for item in document['payloads']:
                 filename = item.get('filename')
@@ -272,7 +315,10 @@ class RepoManager:
                 present = path.is_file()
                 size = path.stat().st_size if present else 0
                 total += size
-                items.append({**item, 'size': size, 'missing': not present})
+                versions = [{key: record.get(key) for key in
+                             ('filename', 'version', 'checksum', 'size', 'last_update', 'archived_at')}
+                            for record in history.get(self.entry_id(item), [])]
+                items.append({**item, 'size': size, 'missing': not present, 'history': versions})
             return {'catalog': {'name': document.get('name', self.NAME), 'items': items},
                     'total_bytes': total}
 
@@ -284,13 +330,16 @@ class RepoManager:
     def limit_label(self):
         return f'{self.MAX_UPLOAD // (1024 * 1024)}MB'
 
-    def add(self, filename, data, name, version='', category='', author='', description='',
-            replace=False):
-        self._check_name(filename)
+    def _check_data(self, data):
         if not isinstance(data, (bytes, bytearray)) or not data:
             raise ValueError('文件内容为空')
         if len(data) > self.MAX_UPLOAD:
             raise ValueError(f'文件超过 {self.limit_label()} 上限')
+
+    def add(self, filename, data, name, version='', category='', author='', description='',
+            replace=False):
+        self._check_name(filename)
+        self._check_data(data)
         with self.lock:
             target = self.payloads / filename
             digest = hashlib.sha256(bytes(data)).hexdigest()
@@ -302,7 +351,7 @@ class RepoManager:
             if target.exists():
                 raise FileExistsError('同名文件已存在，可勾选「替换同名文件」或先删除原文件')
             entry = {
-                'id': re.sub(r'[^a-z0-9._-]+', '-', filename.rsplit('.', 1)[0].lower()).strip('-') or 'payload',
+                'id': self.entry_id({'filename': filename}),
                 'name': name.strip()[:120], 'filename': filename,
                 'url': self.base_url + filename,
                 'version': str(version)[:32], 'last_update': datetime.date.today().isoformat(),
@@ -319,24 +368,136 @@ class RepoManager:
             self._write_catalog(document)
             return entry
 
+    @staticmethod
+    def _find(document, filename):
+        for item in document['payloads']:
+            if item.get('filename') == filename:
+                return item
+        raise FileNotFoundError('仓库中没有这个文件')
+
+    def _archive(self, item, history):
+        """Keep the bytes currently published for item as a restorable version.
+
+        The published file stays in place (it is still what the PS5 downloads
+        until repo.json changes); only a copy goes to versions/.
+        """
+        source = self.payloads / item['filename']
+        if not source.is_file():
+            return None
+        digest = item.get('checksum')
+        if not (isinstance(digest, str) and self._DIGEST.match(digest)):
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        self.versions.mkdir(parents=True, exist_ok=True)
+        stored = self.versions / digest
+        if not stored.is_file():
+            temporary = self.versions / ('.' + digest + '.tmp')
+            shutil.copyfile(source, temporary)
+            os.replace(temporary, stored)
+        key = self.entry_id(item)
+        item.setdefault('id', key)
+        record = {'filename': item['filename'], 'version': str(item.get('version') or ''),
+                  'checksum': digest, 'size': source.stat().st_size,
+                  'last_update': str(item.get('last_update') or ''),
+                  'archived_at': datetime.datetime.now().isoformat(timespec='seconds')}
+        records = [record] + [old for old in history.get(key, []) if old.get('checksum') != digest]
+        history[key] = records[:self.HISTORY_LIMIT]
+        return record
+
+    def _prune_versions(self, history):
+        """Delete stored versions nothing refers to any more."""
+        keep = {record['checksum'] for records in history.values() for record in records}
+        if not self.versions.is_dir():
+            return
+        for path in self.versions.iterdir():
+            if self._DIGEST.match(path.name) and path.name not in keep:
+                path.unlink(missing_ok=True)
+
+    def _publish(self, item, filename, data, digest, history, document, fields=None, version=None):
+        """Point item at new bytes, archiving the current ones first."""
+        previous = item['filename']
+        if filename != previous:
+            self._check_name(filename)
+            if any(other is not item and other.get('filename') == filename
+                   for other in document['payloads']):
+                raise FileExistsError(f'仓库中另一个插件已使用文件名 {filename}')
+        if digest != item.get('checksum'):
+            self._archive(item, history)
+        self._save_payload(filename, bytes(data))
+        if version is not None:
+            item['version'] = version
+        for key, value in (fields or {}).items():
+            if isinstance(value, str) and value.strip():
+                item[key] = value.strip()[:400]
+        item.update({'filename': filename, 'url': self.base_url + filename, 'checksum': digest,
+                     'size': len(data), 'last_update': (fields or {}).get('last_update')
+                     or datetime.date.today().isoformat()})
+        item.setdefault('id', self.entry_id({'filename': previous}))
+        # A restored version is current again, not history.
+        key = self.entry_id(item)
+        history[key] = [record for record in history.get(key, []) if record.get('checksum') != digest]
+        self._write_catalog(document)
+        self._write_history(history)
+        if filename != previous:
+            (self.payloads / previous).unlink(missing_ok=True)
+        self._prune_versions(history)
+        return item
+
     def _replace(self, filename, data, digest, **fields):
         """Swap the bytes of an existing entry; blank metadata keeps the old value."""
         document = self.catalog()
-        for item in document['payloads']:
-            if item.get('filename') == filename:
-                break
-        else:
-            raise FileNotFoundError('仓库中没有这个文件，无法替换')
-        self._save_payload(filename, bytes(data))
-        for key in ('name', 'version', 'category', 'author', 'description'):
-            value = fields.get(key)
-            if isinstance(value, str) and value.strip():
-                item[key] = value.strip()[:400]
-        item['checksum'] = digest
-        item['last_update'] = datetime.date.today().isoformat()
-        item['url'] = self.base_url + filename
-        self._write_catalog(document)
-        return item
+        try:
+            item = self._find(document, filename)
+        except FileNotFoundError:
+            raise FileNotFoundError('仓库中没有这个文件，无法替换') from None
+        fields = {key: fields.get(key) for key in ('name', 'version', 'category', 'author', 'description')}
+        return self._publish(item, filename, data, digest, self.history(), document, fields)
+
+    def upgrade(self, filename, new_filename, data, version='', last_update='', upstream=''):
+        """Publish a newer build of an existing plugin, keeping the old one restorable."""
+        self._check_name(filename)
+        self._check_name(new_filename)
+        self._check_data(data)
+        with self.lock:
+            document = self.catalog()
+            item = self._find(document, filename)
+            if upstream:
+                item['upstream'] = str(upstream)[:120]
+            return self._publish(item, new_filename, data, hashlib.sha256(bytes(data)).hexdigest(),
+                                 self.history(), document,
+                                 {'version': str(version)[:32], 'last_update': str(last_update)[:32]})
+
+    def rollback(self, filename, checksum):
+        """Make an archived version current again; the current one is archived."""
+        self._check_name(filename)
+        with self.lock:
+            document = self.catalog()
+            item = self._find(document, filename)
+            history = self.history()
+            record = next((old for old in history.get(self.entry_id(item), [])
+                           if old.get('checksum') == checksum), None)
+            stored = self.versions / str(checksum)
+            if record is None or not self._DIGEST.match(str(checksum)) or not stored.is_file():
+                raise FileNotFoundError('没有找到这个历史版本')
+            data = stored.read_bytes()
+            if hashlib.sha256(data).hexdigest() != checksum:
+                raise ValueError('历史版本文件已损坏（校验和不符），无法回退')
+            return self._publish(item, record['filename'], data, checksum, history, document,
+                                 {'last_update': record.get('last_update') or ''},
+                                 version=record.get('version') or '')
+
+    def delete_version(self, filename, checksum):
+        self._check_name(filename)
+        with self.lock:
+            document = self.catalog()
+            item = self._find(document, filename)
+            history = self.history()
+            key = self.entry_id(item)
+            remaining = [old for old in history.get(key, []) if old.get('checksum') != checksum]
+            if len(remaining) == len(history.get(key, [])):
+                raise FileNotFoundError('没有找到这个历史版本')
+            history[key] = remaining
+            self._write_history(history)
+            self._prune_versions(history)
 
     def update(self, filename, **fields):
         self._check_name(filename)
@@ -357,14 +518,16 @@ class RepoManager:
         self._check_name(filename)
         with self.lock:
             document = self.catalog()
-            remaining = [p for p in document['payloads'] if p.get('filename') != filename]
-            if len(remaining) == len(document['payloads']):
-                raise FileNotFoundError('仓库中没有这个文件')
+            item = self._find(document, filename)
             target = self.payloads / filename
             if target.exists():
                 target.unlink()
-            document['payloads'] = remaining
+            document['payloads'] = [p for p in document['payloads'] if p is not item]
             self._write_catalog(document)
+            history = self.history()
+            if history.pop(self.entry_id(item), None) is not None:
+                self._write_history(history)
+                self._prune_versions(history)
 
 
 def change_password(auth, credentials_path, current, new):
@@ -629,8 +792,10 @@ class AdminHandler(BaseHTTPRequestHandler):
                 settings = getattr(self.server.app, 'settings', None)
                 host = getattr(settings, 'host_ip', None) or self.server.server_address[0]
                 port = getattr(settings, 'repo_port', None) or 8080
+                plugin_updates = getattr(self.server, 'plugin_updates', None)
                 self.send_body(200, {**summary, 'host': host, 'port': port,
-                                     'max_upload': self.server.repo.MAX_UPLOAD})
+                                     'max_upload': self.server.repo.MAX_UPLOAD,
+                                     'upstream': plugin_updates.status() if plugin_updates else None})
             except Exception:
                 logging.exception('Read repository failed')
                 self.send_body(500, {'error': '读取插件仓库失败，请检查服务日志'})
@@ -717,6 +882,42 @@ class AdminHandler(BaseHTTPRequestHandler):
                      entry['filename'], length)
         self.send_body(200, {'ok': True, 'filename': entry['filename'], 'replaced': replace})
 
+    def handle_repo_version(self, route, body):
+        """Upstream update, rollback and archived-version removal for one plugin."""
+        filename = body.get('filename')
+        if not isinstance(filename, str):
+            raise ValueError('请指定插件文件')
+        updater = getattr(self.server.app, 'updates', None)
+        if updater:
+            updater.begin_operation()
+        try:
+            if route == '/api/repo/upstream/apply':
+                plugin_updates = getattr(self.server, 'plugin_updates', None)
+                if plugin_updates is None:
+                    self.send_body(503, {'error': '插件更新检查未启用'})
+                    return
+                try:
+                    result = plugin_updates.apply(filename)
+                except PluginUpdateError as exc:
+                    self.send_body(409, {'error': str(exc)})
+                    return
+                self.send_body(200, result)
+                return
+            checksum = body.get('checksum')
+            if not isinstance(checksum, str):
+                raise ValueError('请指定历史版本')
+            if route == '/api/repo/rollback':
+                item = self.server.repo.rollback(filename, checksum)
+                logging.info('repository rollback: %s -> %s', filename, item['filename'])
+                self.send_body(200, {'ok': True, 'filename': item['filename'],
+                                     'version': item.get('version', '')})
+            else:
+                self.server.repo.delete_version(filename, checksum)
+                self.send_body(200, {'ok': True})
+        finally:
+            if updater:
+                updater.end_operation()
+
     def do_POST(self):
         if not self.guard():
             return
@@ -724,7 +925,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         updater = getattr(self.server.app, 'updates', None)
         if updater and (updater.status().get('job') or {}).get('state') in UPDATE_ACTIVE:
             if ((route.startswith(('/api/ps5', '/api/files', '/api/nas')) or
-                 route in ('/api/repo/upload', '/api/repo/update', '/api/repo/delete'))
+                 route in ('/api/repo/upload', '/api/repo/update', '/api/repo/delete') + REPO_VERSION_ROUTES)
                     and not route.endswith('/cancel')):
                 if self.require_session(write=True):
                     self.send_body(409, {'error': '服务正在升级，请完成后再开始新操作'})
@@ -780,7 +981,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             return
         if route not in ('/api/config', '/api/rollback', '/api/logout',
                          '/api/password', '/api/repo/update', '/api/repo/delete',
-                         '/api/labels', '/api/allow', '/api/updates/check', '/api/updates/apply'):
+                         '/api/labels', '/api/allow', '/api/updates/check', '/api/updates/apply',
+                         '/api/repo/upstream/check') + REPO_VERSION_ROUTES:
             self.send_body(404, {'error': '未知操作'})
             return
         if not self.require_session(write=True):
@@ -823,6 +1025,14 @@ class AdminHandler(BaseHTTPRequestHandler):
                     self.send_body(200, {'ok': True})
                 finally:
                     if updater: updater.end_operation()
+            elif route == '/api/repo/upstream/check':
+                plugin_updates = getattr(self.server, 'plugin_updates', None)
+                if plugin_updates is None:
+                    self.send_body(503, {'error': '插件更新检查未启用'})
+                else:
+                    self.send_body(200, plugin_updates.check())
+            elif route in REPO_VERSION_ROUTES:
+                self.handle_repo_version(route, body)
             elif route == '/api/repo/delete':
                 updater = getattr(self.server.app, 'updates', None)
                 if updater: updater.begin_operation()
@@ -843,6 +1053,9 @@ class AdminHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logging.exception('Policy apply failed')
             self.send_body(500, {'error': '应用失败：' + diagnostic_error(exc) + '。已尝试恢复上一份策略，请查看概览状态。'})
+
+
+REPO_VERSION_ROUTES = ('/api/repo/upstream/apply', '/api/repo/rollback', '/api/repo/version/delete')
 
 
 class AdminServer(LimitedThreads, HTTPServer):
@@ -956,6 +1169,8 @@ def main():
                              base_url=f'http://{host_ip}:{settings.repo_port}/payloads/',
                              max_upload=settings.max_upload)
     admin.app.repo = admin.repo
+    admin.plugin_updates = PluginUpdates(admin.repo, data / 'plugin-upstream.json',
+                                         url=settings.plugin_upstream)
     admin.app.updates = UpdateManager(data, busy=lambda: update_busy(admin.app.console))
     admin.credentials_path = data / 'credentials.json'
     admin.static_dir = settings.static_dir

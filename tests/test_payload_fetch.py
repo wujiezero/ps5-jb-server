@@ -109,6 +109,34 @@ class DownloadTests(unittest.TestCase):
         catalog_disk = json.loads((self.repo_dir / 'repo.json').read_text(encoding='utf-8'))
         self.assertEqual(len(catalog_disk['payloads']), 1)
 
+    def test_rerun_keeps_uploads_upgrades_and_edits(self):
+        """Re-running the installer merges into repo.json instead of resetting it."""
+        fetch = load(FETCH, 'payload_fetch_merge')
+        base = 'http://192.0.2.10:8080/payloads/'
+        ftp, eta, mine, newer = b'ftp 0.21', b'etahen', b'my plugin', b'ftp 0.22'
+        payloads = self.repo_dir / 'payloads'
+        payloads.mkdir()
+        for name, data in (('etaHEN.bin', eta), ('mine.elf', mine), ('ftpsrv_v0.22.elf', newer)):
+            (payloads / name).write_bytes(data)
+        (self.repo_dir / 'repo.json').write_text(json.dumps({'payloads': [
+            {'id': 'ftpsrv', 'filename': 'ftpsrv_v0.22.elf', 'name': 'FTP', 'version': 'v0.22',
+             'checksum': sha256(newer), 'url': 'http://old-ip/payloads/ftpsrv_v0.22.elf'},
+            {'id': 'etahen', 'filename': 'etaHEN.bin', 'name': '我改过的名字', 'checksum': sha256(eta)},
+            {'id': 'mine', 'filename': 'mine.elf', 'name': 'Mine', 'checksum': sha256(mine)},
+        ]}), encoding='utf-8')
+        manifest = self.manifest({**self.entry('ftpsrv_v0.21.elf', ftp), 'id': 'ftpsrv', 'name': 'FTP'},
+                                 {**self.entry('etaHEN.bin', eta), 'id': 'etahen', 'name': 'etaHEN'})
+        seen = []
+        with redirect_stdout(io.StringIO()):
+            catalog, failures = fetch.run(manifest, self.repo_dir, base, opener=opener_for({}, seen))
+        self.assertEqual(failures, [])
+        self.assertEqual(seen, [], 'nothing needed downloading')
+        by_name = {item['filename']: item for item in catalog}
+        self.assertEqual(set(by_name), {'ftpsrv_v0.22.elf', 'etaHEN.bin', 'mine.elf'})
+        self.assertEqual(by_name['ftpsrv_v0.22.elf']['url'], base + 'ftpsrv_v0.22.elf', 'URLs follow the new host')
+        self.assertEqual(by_name['etaHEN.bin']['name'], '我改过的名字')
+        self.assertFalse((payloads / 'ftpsrv_v0.21.elf').exists(), 'the older manifest build is not re-added')
+
     def test_all_failures_still_write_an_empty_catalog_and_warn(self):
         fetch = load(FETCH, 'payload_fetch_empty')
         manifest = self.manifest(self.entry('only.elf', b'only'))

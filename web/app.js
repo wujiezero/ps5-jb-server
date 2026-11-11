@@ -69,6 +69,8 @@
   let activityFilterValue = 'all';
   let activityKindValue = 'all';
   let uploadReplace = null;
+  const UPLOAD_METADATA_FIELDS = ['name', 'version', 'category', 'author', 'description'];
+  const uploadAutofill = { values: new Map(), edited: new Set() };
   let serviceInfo = null;
   let hasPrevious = true;
   let ps5FetchedAt = 0;
@@ -146,7 +148,9 @@
 
   const activitySelected = new Set();
   const activity = { loaded: false, events: [], counts: { allowed: 0, blocked: 0 }, tracked: 0, updated: '', lastError: '', categories: [] };
-  const repo = { loaded: false, items: [], totalBytes: 0, host: '', port: REPO_PORT, catalogName: '' };
+  const repo = { loaded: false, items: [], totalBytes: 0, host: '', port: REPO_PORT, catalogName: '', upstream: null };
+  let versionsTarget = null;
+  let upstreamProgress = '';
   const toastTimers = new Map();
 
   class ApiError extends Error {
@@ -206,9 +210,9 @@
 
   /* ── 网络请求（契约保持不变） ───────────────────────────────────────── */
 
-  async function api(path, body) {
+  async function api(path, body, timeoutMs = 15000) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const headers = { Accept: 'application/json' };
     const options = { credentials: 'same-origin', cache: 'no-store', headers, signal: controller.signal };
     if (body !== undefined) {
@@ -429,7 +433,7 @@
     const meta = SECTION_META[section];
     $('app-title').textContent = meta.title;
     $('app-subtitle').textContent = meta.subtitle;
-    document.title = `${meta.title} · PS5 网络访问控制`;
+    document.title = `${meta.title} · PS5 管家`;
     $('app-save').hidden = section !== 'policy';
     $('app-rollback').hidden = section !== 'policy';
     $('app-upload').hidden = section !== 'repository';
@@ -509,7 +513,7 @@
     if (location.hash) {
       try { history.replaceState(null, '', location.pathname); } catch { /* ignore */ }
     }
-    document.title = '登录 · PS5 网络访问控制';
+    document.title = '登录 · PS5 管家';
     if (clearDraft) {
       baseline = null;
       dirty = false;
@@ -570,6 +574,9 @@
     $('repo-upload-submit').disabled = locked || uploading;
     $('repo-upload-cancel').disabled = locked || uploading;
     for (const button of $$('#repo-body button.repo-action')) button.disabled = locked;
+    $('repo-upstream-check').disabled = locked || uploading || !repo.loaded;
+    $('repo-upstream-all').disabled = locked || uploading;
+    for (const button of $$('#repo-versions-list button')) button.disabled = locked;
   }
 
   function clearErrors() {
@@ -1263,7 +1270,13 @@
         author: str(entry.author),
         description: str(entry.description),
         size: Number.isFinite(size) && size >= 0 ? size : null,
-        missing: entry.missing === true
+        missing: entry.missing === true,
+        checksum: str(entry.checksum),
+        history: Array.isArray(entry.history) ? entry.history.filter((record) => record && /^[0-9a-f]{64}$/.test(str(record.checksum))).map((record) => ({
+          filename: str(record.filename), version: str(record.version), checksum: str(record.checksum),
+          size: Number.isFinite(Number(record.size)) ? Number(record.size) : null,
+          archivedAt: str(record.archived_at), lastUpdate: str(record.last_update)
+        })) : []
       });
     }
     const reportedTotal = Number(data && data.total_bytes);
@@ -1279,8 +1292,26 @@
       totalBytes,
       host: str(data && data.host),
       port: Number.isInteger(reportedPort) && reportedPort > 0 && reportedPort <= 65535 ? reportedPort : REPO_PORT,
-      catalogName: str(catalog.name)
+      catalogName: str(catalog.name),
+      upstream: normalizeUpstream(data && data.upstream)
     };
+  }
+
+  function normalizeUpstream(data) {
+    if (!data || typeof data !== 'object') return null;
+    const items = {};
+    if (data.items && typeof data.items === 'object') {
+      for (const [filename, entry] of Object.entries(data.items)) {
+        if (!entry || typeof entry !== 'object') continue;
+        items[filename] = { state: str(entry.state), version: str(entry.version), filename: str(entry.filename), name: str(entry.name) };
+      }
+    }
+    return { checkedAt: str(data.checked_at), attemptedAt: str(data.attempted_at), error: str(data.error),
+      available: Number(data.available) || 0, indexed: Number(data.indexed) || 0, items };
+  }
+
+  function upstreamOf(item) {
+    return (repo.upstream && repo.upstream.items[item.filename]) || null;
   }
 
   function applyRepo(data) {
@@ -1304,7 +1335,9 @@
   function resetRepoPanel() {
     repoReadError = '';
     $('repo-search').value = '';
-    Object.assign(repo, { loaded: false, items: [], totalBytes: 0, host: '', port: REPO_PORT, catalogName: '' });
+    Object.assign(repo, { loaded: false, items: [], totalBytes: 0, host: '', port: REPO_PORT, catalogName: '', upstream: null });
+    versionsTarget = null;
+    upstreamProgress = '';
     repoPending = null;
     repoRendered = '';
     editTarget = null;
@@ -1344,6 +1377,19 @@
 
     const versionCell = document.createElement('td');
     versionCell.textContent = asText(item.version);
+    const upstream = upstreamOf(item);
+    if (upstream && upstream.state === 'available') {
+      const hint = document.createElement('span');
+      hint.className = 'repo-update';
+      hint.textContent = `可更新 → ${upstream.version || upstream.filename}`;
+      hint.title = `上游文件 ${upstream.filename}`;
+      versionCell.append(hint);
+    } else if (upstream && upstream.state === 'local_newer') {
+      const hint = document.createElement('span');
+      hint.className = 'repo-update repo-update-muted';
+      hint.textContent = `比上游 ${upstream.version} 新`;
+      versionCell.append(hint);
+    }
     const categoryCell = document.createElement('td');
     categoryCell.textContent = asText(item.category);
     const sizeCell = document.createElement('td');
@@ -1384,6 +1430,26 @@
     remove.setAttribute('aria-label', `删除 ${item.filename}`);
     remove.addEventListener('click', () => openDeleteDialog(item));
 
+    if (upstream && upstream.state === 'available') {
+      const update = document.createElement('button');
+      update.className = 'repo-action';
+      update.type = 'button';
+      update.dataset.tone = 'primary';
+      update.textContent = '更新';
+      update.setAttribute('aria-label', `从上游下载 ${item.name} ${upstream.version}，当前版本保留可回退`);
+      update.addEventListener('click', () => applyUpstream(item));
+      actions.append(update);
+    }
+    const history = Array.isArray(item.history) ? item.history : [];
+    if (history.length) {
+      const versions = document.createElement('button');
+      versions.className = 'repo-action';
+      versions.type = 'button';
+      versions.textContent = `历史 ${history.length}`;
+      versions.setAttribute('aria-label', `查看 ${item.name} 的 ${history.length} 个历史版本并回退`);
+      versions.addEventListener('click', () => openVersionsDialog(item));
+      actions.append(versions);
+    }
     actions.append(download, edit, replace, remove);
     actionsCell.append(actions);
     row.append(nameCell, filenameCell, versionCell, categoryCell, sizeCell, actionsCell);
@@ -1433,7 +1499,8 @@
   function renderRepo() {
     const query = searchQuery('repo-search');
     const visible = repo.items.filter((item) => payloadMatchesSearch(item, query));
-    const current = JSON.stringify([repo.items, repo.totalBytes, repo.host, repo.port, repo.catalogName, query]);
+    const current = JSON.stringify([repo.items, repo.totalBytes, repo.host, repo.port, repo.catalogName, repo.upstream, query]);
+    renderUpstream();
     $('repo-search-summary').textContent = repo.loaded ? `显示 ${visible.length} / ${repo.items.length} 个插件`
       : repoReadError ? '插件仓库读取失败，请刷新重试。' : '正在读取插件仓库…';
     $('repo-summary').textContent = repo.loaded ? `共 ${repo.items.length} 个插件 · 合计 ${formatBytes(repo.totalBytes)}`
@@ -1633,6 +1700,210 @@
     }
   }
 
+  /* ── 插件上游更新与历史版本 ─────────────────────────────────────────── */
+
+  function renderUpstream() {
+    const status = repo.upstream;
+    const line = $('repo-upstream-line');
+    const all = $('repo-upstream-all');
+    const available = repo.items.filter((item) => upstreamOf(item)?.state === 'available');
+    if (upstreamProgress) {
+      line.textContent = upstreamProgress;
+    } else if (!status || !status.checkedAt) {
+      line.textContent = status && status.error
+        ? `检查失败：${status.error}`
+        : '尚未检查。对照 Payload Manager 官方源查找新版，更新后旧版会保留，可随时回退。';
+    } else {
+      const when = formatTime(status.checkedAt, true);
+      const parts = [available.length ? `${available.length} 个插件有新版本` : '仓库插件均为上游最新版本'];
+      parts.push(`上次检查 ${when}`);
+      if (status.error) parts.push(`最近一次检查失败：${status.error}`);
+      line.textContent = parts.join(' · ');
+    }
+    line.dataset.tone = available.length ? 'update' : status && status.error ? 'error' : '';
+    all.hidden = available.length < 2;
+    const label = all.querySelector('.button-label');
+    if (label && all.getAttribute('aria-busy') !== 'true') label.textContent = `全部更新（${available.length}）`;
+  }
+
+  async function checkUpstream() {
+    if (!authenticated || repoBusy || uploading) return;
+    repoBusy = true;
+    updateRepoControls();
+    buttonBusy('repo-upstream-check', true, '检查中…');
+    const requestEpoch = epoch;
+    try {
+      const status = await api('/api/repo/upstream/check', {}, 45000);
+      if (requestEpoch !== epoch) return;
+      repo.upstream = normalizeUpstream(status);
+      repoRendered = '';
+      if (repo.upstream?.error) toast(`检查上游更新失败：${repo.upstream.error}`, 'error');
+      else toast(repo.upstream?.available ? `发现 ${repo.upstream.available} 个可更新的插件。` : '仓库插件均为上游最新版本。', 'success');
+    } catch (error) {
+      if (requestEpoch !== epoch) return;
+      if (error.status === 401) { showLogin(error.message); return; }
+      toast(`检查上游更新失败：${error.message}`, 'error');
+    } finally {
+      repoBusy = false;
+      buttonBusy('repo-upstream-check', false, '检查更新');
+      renderRepo();
+    }
+  }
+
+  async function runUpstream(items) {
+    if (!authenticated || repoBusy || uploading || !items.length) return;
+    stopPolling();
+    repoBusy = true;
+    updateRepoControls();
+    if (items.length > 1) buttonBusy('repo-upstream-all', true, '更新中…');
+    const requestEpoch = epoch;
+    const done = [];
+    let failure = null;
+    try {
+      for (const [index, item] of items.entries()) {
+        const target = upstreamOf(item);
+        upstreamProgress = `正在下载 ${index + 1} / ${items.length}：${item.name} ${target?.version || ''}…`;
+        renderUpstream();
+        try {
+          const result = await api('/api/repo/upstream/apply', { filename: item.filename }, 180000);
+          if (requestEpoch !== epoch) return;
+          done.push(`${item.name} ${result.version || ''}`.trim());
+        } catch (error) {
+          if (requestEpoch !== epoch) return;
+          if (error.status === 401) { showLogin(error.message); return; }
+          failure = `${item.name}：${error.message}`;
+          break;
+        }
+      }
+    } finally {
+      upstreamProgress = '';
+      repoBusy = false;
+      buttonBusy('repo-upstream-all', false);
+      updateRepoControls();
+      schedulePoll();
+    }
+    if (done.length) toast(`已更新 ${done.join('、')}；旧版本已保留，可在「历史」里回退。`, 'success');
+    if (failure) toast(`更新失败 · ${failure}`, 'error');
+    await refreshRepo();
+  }
+
+  function applyUpstream(item) {
+    return runUpstream([item]);
+  }
+
+  function applyAllUpstream() {
+    return runUpstream(repo.items.filter((item) => upstreamOf(item)?.state === 'available'));
+  }
+
+  function openVersionsDialog(item) {
+    if (!authenticated || repoBusy || uploading) return;
+    versionsTarget = item;
+    $('repo-versions-name').textContent = `${item.name}（当前 ${item.version || item.filename}）`;
+    $('repo-versions-error').textContent = '';
+    $('repo-versions-error').hidden = true;
+    renderVersions();
+    $('repo-versions-dialog').showModal();
+    $('repo-versions-close').focus({ preventScroll: true });
+  }
+
+  function renderVersions() {
+    const list = $('repo-versions-list');
+    const fragment = document.createDocumentFragment();
+    const records = versionsTarget ? versionsTarget.history : [];
+    if (!records.length) {
+      const empty = document.createElement('li');
+      empty.className = 'version-empty';
+      empty.textContent = '没有保留的旧版本。';
+      fragment.append(empty);
+    }
+    for (const record of records) {
+      const row = document.createElement('li');
+      row.className = 'version-row';
+      const text = document.createElement('div');
+      text.className = 'version-text';
+      const title = document.createElement('strong');
+      title.textContent = record.version || '未标版本';
+      const meta = document.createElement('span');
+      meta.className = 'version-meta mono';
+      meta.textContent = [record.filename, record.size === null ? '' : formatBytes(record.size),
+        record.archivedAt ? `保留于 ${formatTime(record.archivedAt, true)}` : ''].filter(Boolean).join(' · ');
+      text.append(title, meta);
+      const actions = document.createElement('div');
+      actions.className = 'version-actions';
+      const restore = document.createElement('button');
+      restore.type = 'button';
+      restore.className = 'button button-secondary button-small';
+      restore.textContent = '回退到此版本';
+      restore.addEventListener('click', () => rollbackVersion(record));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'repo-action';
+      remove.dataset.tone = 'danger';
+      remove.textContent = '删除';
+      remove.setAttribute('aria-label', `永久删除保留的 ${record.filename}`);
+      remove.addEventListener('click', () => {
+        if (remove.dataset.confirm === 'true') { deleteVersion(record); return; }
+        remove.dataset.confirm = 'true';
+        remove.textContent = '确认删除';
+      });
+      actions.append(restore, remove);
+      row.append(text, actions);
+      fragment.append(row);
+    }
+    list.replaceChildren(fragment);
+    updateRepoControls();
+  }
+
+  async function versionRequest(path, record, busyLabel) {
+    if (!authenticated || repoBusy || !versionsTarget) return null;
+    stopPolling();
+    repoBusy = true;
+    updateRepoControls();
+    $('repo-versions-error').hidden = true;
+    upstreamProgress = busyLabel;
+    renderUpstream();
+    const requestEpoch = epoch;
+    try {
+      const result = await api(path, { filename: versionsTarget.filename, checksum: record.checksum }, 60000);
+      if (requestEpoch !== epoch) return null;
+      if (result.ok !== true) throw new ApiError('服务未确认操作成功，请刷新后检查。');
+      return result;
+    } catch (error) {
+      if (requestEpoch !== epoch) return null;
+      if (error.status === 401) {
+        $('repo-versions-dialog').close();
+        showLogin(error.message);
+        return null;
+      }
+      $('repo-versions-error').textContent = error.message;
+      $('repo-versions-error').hidden = false;
+      return null;
+    } finally {
+      upstreamProgress = '';
+      repoBusy = false;
+      updateRepoControls();
+      renderUpstream();
+      schedulePoll();
+    }
+  }
+
+  async function rollbackVersion(record) {
+    const result = await versionRequest('/api/repo/rollback', record, `正在回退到 ${record.version || record.filename}…`);
+    if (!result) return;
+    $('repo-versions-dialog').close();
+    toast(`已回退到 ${result.version || result.filename}；原来的版本保留在「历史」里。`, 'success');
+    await refreshRepo();
+  }
+
+  async function deleteVersion(record) {
+    const result = await versionRequest('/api/repo/version/delete', record, '正在删除保留的旧版本…');
+    if (!result || !versionsTarget) return;
+    versionsTarget.history = versionsTarget.history.filter((old) => old.checksum !== record.checksum);
+    renderVersions();
+    toast(`已删除保留的 ${record.filename}。`, 'success');
+    refreshRepo();
+  }
+
   function clearUploadErrors() {
     for (const [field, error] of [['repo-upload-file', 'repo-upload-file-error'], ['repo-upload-name', 'repo-upload-name-error'], ['repo-upload-version', 'repo-upload-version-error'], ['repo-upload-category', 'repo-upload-category-error'], ['repo-upload-author', 'repo-upload-author-error'], ['repo-upload-description', 'repo-upload-description-error']]) {
       $(field).removeAttribute('aria-invalid');
@@ -1643,8 +1914,61 @@
     $('repo-upload-error').hidden = true;
   }
 
+  function inferUploadMetadata(filename) {
+    const stem = String(filename).replace(/\.(?:elf|bin)$/i, '');
+    const metadata = { name: stem, version: '', category: '', author: '', description: '' };
+    // A dotted numeric version is evidence; a bare year or a software-name
+    // prefix such as ps5upload is not. Platform tokens are removed only when
+    // adjacent to a recognized version, never from an unversioned name.
+    const versioned = stem.replace(/[-_ ]+(?:ps4|ps5)$/i, '');
+    const match = /^(.+?)[-_ ]+(v?\d+(?:\.\d+)+(?:[a-z][a-z0-9]*)?(?:[-+][a-z0-9]+(?:[.-][a-z0-9]+)*)?)$/i.exec(versioned);
+    if (match) {
+      metadata.name = match[1].replace(/[-_ ]+(?:ps4|ps5)$/i, '');
+      metadata.version = match[2];
+    }
+    const known = repo.items.find((item) => item.filename === filename);
+    if (known) {
+      for (const field of UPLOAD_METADATA_FIELDS) {
+        if (str(known[field])) metadata[field] = str(known[field]);
+      }
+    }
+    return metadata;
+  }
+
+  function markUploadFieldEdited(field) {
+    uploadAutofill.edited.add(field);
+  }
+
+  function autofillUploadMetadata() {
+    const file = $('repo-upload-file').files?.[0];
+    // Replacement metadata intentionally uses blank-means-keep. Do not turn a
+    // different selected source filename into an accidental metadata change.
+    if (!file || uploadReplace || !/\.(?:elf|bin)$/i.test(file.name)) return;
+    const metadata = inferUploadMetadata(file.name);
+    for (const field of UPLOAD_METADATA_FIELDS) {
+      const input = $(`repo-upload-${field}`);
+      if (uploadAutofill.edited.has(field)) continue;
+      const previous = uploadAutofill.values.get(field);
+      if (input.value !== '' && input.value !== previous) {
+        markUploadFieldEdited(field);
+        continue;
+      }
+      input.value = metadata[field];
+      uploadAutofill.values.set(field, input.value);
+    }
+  }
+
+  function bindUploadAutofill() {
+    $('repo-upload-file').addEventListener('change', autofillUploadMetadata);
+    for (const field of UPLOAD_METADATA_FIELDS) {
+      $(`repo-upload-${field}`).addEventListener('input', () => markUploadFieldEdited(field));
+    }
+  }
+
   function resetUploadForm() {
     uploadReplace = null;
+    uploadAutofill.values.clear();
+    uploadAutofill.edited.clear();
     $('repo-upload-form').reset();
     clearUploadErrors();
     $('repo-upload-status').textContent = '';
@@ -2030,7 +2354,7 @@
     }
     const warning = $('activity-warning');
     if (activity.lastError) {
-      warning.textContent = `规则分类更新失败：${activity.lastError}`;
+      warning.textContent = activity.lastError;
       warning.hidden = false;
     } else {
       warning.textContent = '';
@@ -6746,6 +7070,7 @@
       });
     }
 
+    bindUploadAutofill();
     $('repo-upload-form').addEventListener('submit', submitUpload);
     $('repo-upload-cancel').addEventListener('click', closeUploadDialog);
     for (const [field, error] of [['repo-upload-file', 'repo-upload-file-error'], ['repo-upload-name', 'repo-upload-name-error'], ['repo-upload-version', 'repo-upload-version-error'], ['repo-upload-category', 'repo-upload-category-error'], ['repo-upload-author', 'repo-upload-author-error'], ['repo-upload-description', 'repo-upload-description-error']]) {
@@ -6772,6 +7097,11 @@
 
     $('repo-upload-dialog').addEventListener('cancel', (event) => { if (uploading) event.preventDefault(); });
     $('repo-upload-dialog').addEventListener('close', () => { flushRepoPending(); });
+    $('repo-upstream-check').addEventListener('click', checkUpstream);
+    $('repo-upstream-all').addEventListener('click', applyAllUpstream);
+    $('repo-versions-close').addEventListener('click', () => $('repo-versions-dialog').close());
+    $('repo-versions-dialog').addEventListener('cancel', (event) => { if (repoBusy) event.preventDefault(); });
+    $('repo-versions-dialog').addEventListener('close', () => { versionsTarget = null; flushRepoPending(); });
 
     for (const button of acts('allow')) button.addEventListener('click', openActivityAllowDialog);
     for (const button of acts('label')) button.addEventListener('click', openActivityLabelDialog);

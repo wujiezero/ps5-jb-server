@@ -1,4 +1,4 @@
-/* PS5 网络访问控制 · 管理控制台样式
+/* PS5 管家 · 管理控制台样式
    设计语言：tom-ps5-usbnet（扁平面板、细线边框、青绿主色、等宽文件名）
    结构：设计变量 → 基础 → 组件 → 布局骨架 → 页面 → 对话框 → 提示 → 响应式 → 偏好设置 */
 
@@ -602,11 +602,9 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: not-allowed; }
   width: 34px;
   height: 34px;
   flex: 0 0 auto;
-  border-radius: var(--radius-sm);
-  background: var(--ink);
-  color: var(--bg);
 }
-.brand-mark svg { width: 21px; height: 21px; }
+.brand-mark svg { width: 34px; height: 34px; filter: drop-shadow(0 2px 6px rgb(63 76 245 / 0.28)); }
+.login-logo { display: block; width: 52px; height: 52px; margin-bottom: 14px; filter: drop-shadow(0 6px 16px rgb(63 76 245 / 0.32)); }
 .brand-text { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
 .brand-text strong { font-size: 0.9375rem; font-weight: 680; letter-spacing: 0.01em; }
 .brand-text span { font-size: 0.75rem; color: var(--muted); letter-spacing: 0.02em; }
@@ -778,6 +776,33 @@ body[data-dock="on"] #main { padding-bottom: 72px; }
 .endpoint-row .endpoint-line .mono { color: var(--fg); font-weight: 600; }
 .endpoint-label { color: var(--muted); }
 .repo-missing { display: inline-block; margin-left: 6px; font-size: 0.75rem; font-weight: 600; color: var(--red); }
+.repo-upstream {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+}
+.repo-upstream-text { flex: 1 1 260px; min-width: 0; font-size: 0.8125rem; line-height: 1.6; }
+.repo-upstream-line { display: inline; margin: 0 0 0 8px; color: var(--mut); }
+.repo-upstream-line[data-tone="update"] { color: var(--accent); font-weight: 600; }
+.repo-upstream-line[data-tone="error"] { color: var(--amber); }
+.repo-upstream-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.repo-update { display: block; margin-top: 2px; font-size: 0.75rem; font-weight: 600; color: var(--accent); }
+.repo-update-muted { color: var(--muted); font-weight: 500; }
+.repo-action[data-tone="primary"] { background: var(--accent-soft); }
+.version-list { list-style: none; margin: 14px 0 12px; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.version-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 10px 12px; }
+.version-row + .version-row { border-top: 1px solid var(--line); }
+.version-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 220px; min-width: 0; }
+.version-text strong { font-size: 0.875rem; color: var(--ink); }
+.version-meta { font-size: 0.75rem; color: var(--muted); overflow-wrap: anywhere; }
+.version-actions { display: flex; align-items: center; gap: 4px; }
+.version-empty { padding: 14px 12px; color: var(--muted); font-size: 0.8125rem; }
 .activity-label-name { margin-left: 6px; }
 .footnote {
   margin-top: 4px;
@@ -2279,6 +2304,7 @@ tbody tr { transition: background var(--dur) var(--ease); }
   .repo-table td:nth-child(3)::before { content: "版本 "; }
   .repo-table td:nth-child(4)::before { content: "分类 "; }
   .repo-table td:nth-child(5)::before { content: "大小 "; }
+  .repo-table td:nth-child(3) .repo-update { display: inline; margin: 0 0 0 6px; }
   .repo-table td:nth-child(6) { order: 3; flex: 1 1 100%; margin-top: 4px; }
   .repo-actions { justify-content: flex-start; gap: 2px; margin-left: -8px; }
   .repo-action { min-height: 44px; padding: 8px 10px; }

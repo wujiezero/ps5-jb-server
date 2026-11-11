@@ -6,13 +6,15 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f2f5f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b111d" media="(prefers-color-scheme: dark)">
-  <title>PS5 网络访问控制</title>
-  <link rel="icon" href="data:,">
+  <title>PS5 管家</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232f6bff'/%3E%3Cstop offset='1' stop-color='%236b3cf5'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='15' fill='url%28%23g%29'/%3E%3Cpath d='M15 31.5 32 17l17 14.5V46a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3Z' fill='none' stroke='%23fff' stroke-width='5' stroke-linejoin='round'/%3E%3Ccircle cx='32' cy='37.5' r='5.5' fill='%23fff'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
   <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <defs><linearGradient id="logo-gradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2f6bff"/><stop offset="1" stop-color="#6b3cf5"/></linearGradient></defs>
+    <symbol id="i-logo" viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="url(#logo-gradient)"/><path d="M15 31.5 32 17l17 14.5V46a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3Z" fill="none" stroke="#fff" stroke-width="5" stroke-linejoin="round"/><circle cx="32" cy="37.5" r="5.5" fill="#fff"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.2 7.4a2.2 2.2 0 0 1 2.2-2.2h3.9l2 2.4h7.3a2.2 2.2 0 0 1 2.2 2.2v7.8a2.2 2.2 0 0 1-2.2 2.2H5.4a2.2 2.2 0 0 1-2.2-2.2Z"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.2 3.2h7.3l4.3 4.3v12.1a1.4 1.4 0 0 1-1.4 1.4H6.2a1.4 1.4 0 0 1-1.4-1.4V4.6a1.4 1.4 0 0 1 1.4-1.4Z"/><path d="M13.5 3.4v4.4h4.4"/></symbol>
     <symbol id="i-drive" viewBox="0 0 24 24"><rect x="3.2" y="4.6" width="17.6" height="14.8" rx="2.4"/><path d="M3.4 14.2h17.2M7.2 17.2h.01M10.8 17.2h.01"/></symbol>
@@ -45,9 +47,10 @@
   <div id="login-view" class="login-view" hidden>
     <main class="login-main">
       <section class="login-intro" aria-labelledby="login-heading">
-        <span class="eyebrow">设备管理</span>
-        <h1 id="login-heading">PS5 控制台</h1>
-        <p class="login-lead">管理主机、文件、插件与网络访问策略。</p>
+        <svg class="login-logo" viewBox="0 0 64 64" aria-hidden="true"><use href="#i-logo"></use></svg>
+        <span class="eyebrow">家庭 PS5 服务</span>
+        <h1 id="login-heading">PS5 管家</h1>
+        <p class="login-lead">一处管好 PS5 的主机、插件、文件、游戏与网络访问。</p>
         <ul class="login-facts">
           <li><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3.2 5 6.1v5.3c0 4 3.4 7.1 7 8.4 3.6-1.3 7-4.4 7-8.4V6.1L12 3.2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="m9.1 11.8 2.1 2.1 3.8-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>默认拒绝互联网访问 · 局域网保持可达</span></li>
           <li><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.4" stroke="currentColor" stroke-width="1.5"/><path d="M3.9 12h16.2M12 3.7c2.1 2.2 3.2 5.1 3.2 8.3s-1.1 6.1-3.2 8.3c-2.1-2.2-3.2-5.1-3.2-8.3S9.9 5.9 12 3.7Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span>仅约束经过本机网关的 IPv4 流量</span></li>
@@ -74,9 +77,9 @@
 
   <div id="app-shell" class="app-shell" hidden>
     <aside class="sidebar" aria-label="侧边栏">
-      <a class="brand" href="#/overview" aria-label="PS5 网络访问控制 · 概览">
-        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 3 4.5 6v6c0 4.2 4 7.5 7.5 9 3.5-1.5 7.5-4.8 7.5-9V6L12 3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="m8.5 12 2.3 2.3 4.7-4.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-        <span class="brand-text"><strong>PS5</strong><span>网络访问控制</span></span>
+      <a class="brand" href="#/overview" aria-label="PS5 管家 · 概览">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><use href="#i-logo"></use></svg></span>
+        <span class="brand-text"><strong>PS5 管家</strong><span>主机 · 插件 · 网络</span></span>
       </a>
       <nav class="nav" aria-label="功能导航">
         <a class="nav-item" href="#/overview" data-section="overview" aria-label="概览" title="概览">
@@ -707,6 +710,22 @@
               <button id="repo-copy-url" class="button button-secondary button-small" type="button">复制地址</button>
             </div>
             <p id="repo-error" class="banner banner-error" role="alert" hidden></p>
+            <div class="repo-upstream" aria-labelledby="repo-upstream-label">
+              <div class="repo-upstream-text">
+                <span id="repo-upstream-label" class="endpoint-label">上游更新</span>
+                <p id="repo-upstream-line" class="repo-upstream-line" aria-live="polite">尚未检查。对照 Payload Manager 官方源查找新版，更新后旧版会保留，可随时回退。</p>
+              </div>
+              <div class="repo-upstream-actions">
+                <button id="repo-upstream-check" class="button button-secondary button-small" type="button">
+                  <span class="spinner" aria-hidden="true" hidden></span>
+                  <span class="button-label">检查更新</span>
+                </button>
+                <button id="repo-upstream-all" class="button button-primary button-small" type="button" hidden>
+                  <span class="spinner" aria-hidden="true" hidden></span>
+                  <span class="button-label">全部更新</span>
+                </button>
+              </div>
+            </div>
             <div class="search-toolbar">
               <label class="search-field" for="repo-search">
                 <span class="visually-hidden">搜索插件仓库</span>
@@ -988,7 +1007,7 @@
             <div class="field-group field-full">
               <label for="repo-upload-file">插件文件</label>
               <input id="repo-upload-file" name="file" type="file" accept=".elf,.bin" aria-describedby="repo-upload-file-help repo-upload-file-error">
-              <p id="repo-upload-file-help" class="field-help">支持 .elf 与 .bin 文件。</p>
+              <p id="repo-upload-file-help" class="field-help">支持 .elf 与 .bin 文件。新上传会优先采用仓库中同名文件的信息，否则从文件名识别名称和版本；已手动修改的内容不会覆盖，上传前可继续调整。</p>
               <p id="repo-upload-file-error" class="field-error" hidden></p>
             </div>
             <div class="field-group">
@@ -1076,6 +1095,20 @@
         </button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="repo-versions-dialog" class="dialog dialog-wide" aria-labelledby="repo-versions-title" aria-describedby="repo-versions-subtitle">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="repo-versions-title">历史版本</h2>
+      <p id="repo-versions-subtitle" class="dialog-subtitle"><span id="repo-versions-name"></span>：每个插件保留最近 3 个旧版本，只存在本机、不提供给 PS5。回退后，当前版本也会留在这里，可以再切回来。</p>
+      <ul id="repo-versions-list" class="version-list"></ul>
+      <p id="repo-versions-error" class="field-error" role="alert" hidden></p>
+      <p class="field-help">回退只改变仓库里提供的文件；PS5 上已安装的插件需要在「PS5 主机」里重新安装才会换成这个版本。</p>
+    </div>
+    <div class="dialog-actions">
+      <button id="repo-versions-close" class="button button-secondary" type="button">关闭</button>
+    </div>
   </dialog>
 
   <dialog id="repo-delete-dialog" class="dialog" aria-labelledby="repo-delete-title" aria-describedby="repo-delete-description">

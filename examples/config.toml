@@ -30,6 +30,10 @@ file_manager = true    # enable the PS5 file page
 max_upload = 67108864  # 64 MiB, plugin repository uploads (held in memory)
 max_file_upload = 0     # PS5 file manager uploads are streamed; 0 = no limit
 
+[repo]
+# Upstream index for "check for plugin updates" (Payload Manager's official source).
+upstream = "https://itsplk.github.io/ps5-payloads-mirror/payloads_v2.json"
+
 [paths]
 data = "/var/lib/ps5-jb-server"
 repo = "/srv/ps5-jb-server"

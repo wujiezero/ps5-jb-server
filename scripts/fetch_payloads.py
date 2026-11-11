@@ -71,30 +71,71 @@ def write_catalog(repo_dir, catalog, name='家庭离线仓库'):
     os.replace(temporary, repo_dir / CATALOG)
 
 
+SEED_FILE = 'ps5-payload-repository'
+USER_FIELDS = ('name', 'category', 'description', 'author', 'source', 'upstream')
+
+
+def existing_catalog(repo_dir):
+    """Entries already published (uploads, upgrades, edits); [] when there is none."""
+    try:
+        document = json.loads((Path(repo_dir) / CATALOG).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return []
+    items = document.get('payloads') if isinstance(document, dict) else None
+    return [item for item in items or [] if isinstance(item, dict)
+            and isinstance(item.get('filename'), str) and item['filename'] != SEED_FILE]
+
+
 def run(manifest, repo_dir, base_url, only=(), download_base='', opener=None):
-    """Fetch every manifest item; per-item failures are collected, never raised."""
+    """Fetch every manifest item; per-item failures are collected, never raised.
+
+    An existing repo.json is merged, not replaced: re-running the installer
+    must not drop plugins uploaded in the admin page, undo an upgrade or a
+    rollback made there, or reset edited names and descriptions.
+    """
     repo_dir = Path(repo_dir)
     payload_dir = repo_dir / 'payloads'
     payload_dir.mkdir(parents=True, exist_ok=True)
     base = base_url.rstrip('/') + '/'
     items = manifest.get('payloads', []) if isinstance(manifest, dict) else manifest
-    catalog, failures = [], []
+    previous = existing_catalog(repo_dir)
+    claimed = set()
+    catalog, failures, ready = [], [], 0
     for item in items:
         if only and item['filename'] not in only:
             continue
+        known = next((old for old in previous if old['filename'] == item['filename']), None) \
+            or next((old for old in previous if item.get('id') and old.get('id') == item.get('id')), None)
+        if known is not None:
+            claimed.add(id(known))
+            if known['filename'] != item['filename'] and (payload_dir / known['filename']).is_file():
+                # Upgraded or rolled back in the admin page: that choice wins.
+                size = (payload_dir / known['filename']).stat().st_size
+                catalog.append({**known, 'url': base + known['filename'], 'size': size})
+                ready += 1
+                print(f'  保留 {known["filename"]}（管理页选定的版本）')
+                continue
         try:
             state, size = download_item(item, payload_dir, download_base, opener)
         except Exception as exc:  # noqa: BLE001 - one bad payload must not stop the rest
             reason = str(exc) or type(exc).__name__
             failures.append((item['filename'], reason))
             print(f'  ! {item["filename"]}: {reason}', file=sys.stderr)
+            if known is not None:      # keep the entry; a later run may fix the file
+                catalog.append({**known, 'url': base + known['filename']})
             continue
-        catalog.append({**item, 'url': base + item['filename'], 'size': size})
+        edited = {key: known[key] for key in USER_FIELDS if known and known.get(key)}
+        catalog.append({**item, **edited, 'url': base + item['filename'], 'size': size})
+        ready += 1
         print(f'  {state:4} {item["filename"]} ({size} bytes)')
+    kept = [old for old in previous if id(old) not in claimed]
+    for old in kept:
+        catalog.append({**old, 'url': base + old['filename']})
+    if kept:
+        print(f'  保留 {len(kept)} 个在管理页上传的插件')
 
     write_catalog(repo_dir, catalog)
-    total = len(catalog) + len(failures)
-    print(f'插件：成功 {len(catalog)} / 共 {total}，失败 {len(failures)}')
+    print(f'插件：成功 {ready} / 共 {ready + len(failures)}，失败 {len(failures)}')
     if failures:
         print('  失败原因见上方日志；稍后重跑本脚本即可补齐。')
     if not catalog:

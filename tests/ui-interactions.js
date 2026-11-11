@@ -24,8 +24,15 @@ class Element {
   replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
   setAttribute(name, value) { this.attributes[name] = value; }
   removeAttribute(name) { delete this.attributes[name]; }
-  addEventListener() {}
+  addEventListener(type, listener) {
+    if (!this.listeners) this.listeners = new Map();
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(listener);
+  }
+  dispatch(type) { for (const listener of this.listeners?.get(type) || []) listener({ target: this }); }
   focus() {}
+  showModal() { this.open = true; }
+  close() { this.open = false; this.dispatch('close'); }
   reset() {}
   querySelector() { return null; }
   querySelectorAll() { return []; }
@@ -60,6 +67,9 @@ function fixture(extra = {}) {
       nas, nasArchiveSelection, extractTask,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
+      normalizeRepo, renderUpstream,
+      inferUploadMetadata, autofillUploadMetadata, markUploadFieldEdited, bindUploadAutofill,
+      resetUploadForm, openUploadDialog, closeUploadDialog,
       advanceEpoch() { epoch += 1; },
       setAuthenticated(value) { authenticated = value; csrf = value ? 'test-csrf' : ''; } };
   })();`;
@@ -241,6 +251,174 @@ test('extract install is offered for one RAR volume and its job reads as an inst
   assert.equal(done.cancel, null);
   assert.match(ui.extractTask({ ...base, state: 'queued', mode: 'merge' }).sub, /（合并）/);
   assert.match(ui.extractTask({ ...base, state: 'running', files_total: 308 }).line, /已解出 3 \/ 308 个文件/);
+});
+
+function uploadFixture() {
+  const ui = fixture();
+  ui.setAuthenticated(true);
+  ui.node('repo-upload-form').reset = () => {
+    for (const field of ['name', 'version', 'category', 'author', 'description']) ui.node(`repo-upload-${field}`).value = '';
+    ui.node('repo-upload-file').files = [];
+  };
+  ui.bindUploadAutofill();
+  return ui;
+}
+function chooseUpload(ui, filename) {
+  ui.node('repo-upload-file').files = filename ? [{ name: filename }] : [];
+  ui.node('repo-upload-file').dispatch('change');
+}
+function editUpload(ui, field, value) {
+  ui.node(`repo-upload-${field}`).value = value;
+  ui.node(`repo-upload-${field}`).dispatch('input');
+}
+
+test('upload filenames infer names and real versions without removing software prefixes', () => {
+  const ui = uploadFixture();
+  for (const [filename, name, version] of [
+    ['zftpd-ps5-v1.7.0.elf', 'zftpd', 'v1.7.0'],
+    ['etaHEN_2.5B.bin', 'etaHEN', '2.5B'],
+    ['ps5upload-12.4.2.elf', 'ps5upload', '12.4.2'],
+    ['zftpd-v1.7.0-ps5.ELF', 'zftpd', 'v1.7.0'],
+    ['zftpd_ps5_v1.7.0.bin', 'zftpd', 'v1.7.0'],
+    ['payload-v2.1.0-rc.1.elf', 'payload', 'v2.1.0-rc.1'],
+    ['ps5upload.elf', 'ps5upload', ''],
+    ['custom-tool-ps5.bin', 'custom-tool-ps5', ''],
+    ['payload-2024.elf', 'payload-2024', '']
+  ]) {
+    const metadata = ui.inferUploadMetadata(filename);
+    assert.equal(metadata.name, name, filename);
+    assert.equal(metadata.version, version, filename);
+    for (const field of ['author', 'category', 'description']) assert.equal(metadata[field], '', 'unknown metadata stays empty');
+  }
+});
+
+test('selecting another upload replaces only automatically filled values and clears stale version', () => {
+  const ui = uploadFixture();
+  chooseUpload(ui, 'zftpd-ps5-v1.7.0.elf');
+  assert.equal(ui.node('repo-upload-name').value, 'zftpd');
+  assert.equal(ui.node('repo-upload-version').value, 'v1.7.0');
+  chooseUpload(ui, 'etaHEN_2.5B.bin');
+  assert.equal(ui.node('repo-upload-name').value, 'etaHEN');
+  assert.equal(ui.node('repo-upload-version').value, '2.5B');
+  chooseUpload(ui, 'ps5upload.elf');
+  assert.equal(ui.node('repo-upload-name').value, 'ps5upload');
+  assert.equal(ui.node('repo-upload-version').value, '');
+});
+
+test('upload filename inference preserves manual edits including intentionally emptied fields', () => {
+  const ui = uploadFixture();
+  chooseUpload(ui, 'zftpd-ps5-v1.7.0.elf');
+  editUpload(ui, 'name', '我的文件服务');
+  editUpload(ui, 'version', '');
+  editUpload(ui, 'author', 'Maintainer');
+  chooseUpload(ui, 'etaHEN_2.5B.bin');
+  assert.equal(ui.node('repo-upload-name').value, '我的文件服务');
+  assert.equal(ui.node('repo-upload-version').value, '');
+  assert.equal(ui.node('repo-upload-author').value, 'Maintainer');
+  const fresh = uploadFixture();
+  fresh.node('repo-upload-name').value = '预先填写的名称';
+  chooseUpload(fresh, 'ps5upload-12.4.2.elf');
+  assert.equal(fresh.node('repo-upload-name').value, '预先填写的名称');
+  assert.equal(fresh.node('repo-upload-version').value, '12.4.2');
+});
+
+test('upload metadata uses exact repository filename matches only and clears automatic rich metadata on switch', () => {
+  const ui = uploadFixture();
+  ui.repo.items = [{ filename: 'etaHEN_2.5B.bin', name: 'etaHEN 工具箱', version: '2.5 Beta',
+    category: '系统工具', author: 'Official author', description: '已有仓库描述' }];
+  chooseUpload(ui, 'etaHEN_2.5B.bin');
+  for (const [field, expected] of Object.entries({ name: 'etaHEN 工具箱', version: '2.5 Beta',
+    category: '系统工具', author: 'Official author', description: '已有仓库描述' })) {
+    assert.equal(ui.node(`repo-upload-${field}`).value, expected);
+  }
+  editUpload(ui, 'author', '我的作者信息');
+  chooseUpload(ui, 'etaHEN_2.5C.bin');
+  assert.equal(ui.node('repo-upload-name').value, 'etaHEN');
+  assert.equal(ui.node('repo-upload-version').value, '2.5C');
+  assert.equal(ui.node('repo-upload-category').value, '');
+  assert.equal(ui.node('repo-upload-description').value, '');
+  assert.equal(ui.node('repo-upload-author').value, '我的作者信息');
+  chooseUpload(ui, 'ETAHEN_2.5B.bin');
+  assert.equal(ui.node('repo-upload-name').value, 'ETAHEN', 'metadata matching is case-sensitive and exact');
+  assert.equal(ui.node('repo-upload-category').value, '');
+});
+
+test('manual rich metadata and values restored to the automatic text retain ownership', () => {
+  const ui = uploadFixture();
+  chooseUpload(ui, 'etaHEN_2.5B.bin');
+  editUpload(ui, 'name', 'etaHEN');
+  editUpload(ui, 'category', '我的分类');
+  editUpload(ui, 'description', '我的描述');
+  ui.repo.items = [{ filename: 'zftpd-ps5-v1.7.0.elf', name: 'zftpd', category: '网络', description: '仓库描述' }];
+  chooseUpload(ui, 'zftpd-ps5-v1.7.0.elf');
+  assert.equal(ui.node('repo-upload-name').value, 'etaHEN', 'input marks manual ownership even if text matches old automatic value');
+  assert.equal(ui.node('repo-upload-category').value, '我的分类');
+  assert.equal(ui.node('repo-upload-description').value, '我的描述');
+  assert.equal(ui.node('repo-upload-version').value, 'v1.7.0', 'untouched fields still update');
+});
+
+test('cancelled file selection and unsupported extensions leave upload fields intact', () => {
+  const ui = uploadFixture();
+  chooseUpload(ui, 'ps5upload-12.4.2.elf');
+  chooseUpload(ui, null);
+  assert.equal(ui.node('repo-upload-name').value, 'ps5upload');
+  assert.equal(ui.node('repo-upload-version').value, '12.4.2');
+  chooseUpload(ui, 'notes.txt');
+  assert.equal(ui.node('repo-upload-name').value, 'ps5upload');
+});
+
+test('upload reset and close/reopen clear automatic and manual ownership', () => {
+  const ui = uploadFixture();
+  chooseUpload(ui, 'etaHEN_2.5B.bin');
+  editUpload(ui, 'name', 'Custom');
+  ui.resetUploadForm();
+  chooseUpload(ui, 'ps5upload-12.4.2.elf');
+  assert.equal(ui.node('repo-upload-name').value, 'ps5upload');
+  editUpload(ui, 'name', 'Custom again');
+  ui.closeUploadDialog();
+  ui.openUploadDialog();
+  chooseUpload(ui, 'zftpd-ps5-v1.7.0.elf');
+  assert.equal(ui.node('repo-upload-name').value, 'zftpd');
+  assert.equal(ui.node('repo-upload-version').value, 'v1.7.0');
+});
+
+test('replacement uploads retain existing blank-means-keep metadata semantics', () => {
+  const ui = uploadFixture();
+  ui.openUploadDialog({ filename: 'zftpd.elf', name: '我的文件服务', version: '1.0', author: 'Existing author' });
+  chooseUpload(ui, 'zftpd-ps5-v1.7.0.elf');
+  assert.equal(ui.node('repo-upload-name').value, '');
+  assert.equal(ui.node('repo-upload-version').value, '');
+  assert.equal(ui.node('repo-upload-author').value, '');
+  assert.equal(ui.node('repo-upload-name').placeholder, '我的文件服务');
+  editUpload(ui, 'version', 'v1.7.0');
+  chooseUpload(ui, 'other-v2.0.0.elf');
+  assert.equal(ui.node('repo-upload-version').value, 'v1.7.0');
+});
+
+test('repository upstream status marks updatable plugins and keeps history for rollback', () => {
+  const ui = fixture();
+  ui.setAuthenticated(true);
+  const sum = (c) => c.repeat(64);
+  const data = ui.normalizeRepo({
+    catalog: { items: [
+      { filename: 'ftpsrv_v0.21.elf', name: 'FTP', version: 'v0.21', checksum: sum('a'),
+        history: [{ filename: 'ftpsrv_v0.20.elf', version: 'v0.20', checksum: sum('b'), size: 10 }, { checksum: 'bad' }] },
+      { filename: 'zftpd_v1.8.0.elf', name: 'zftpd', version: 'v1.8.0' },
+      { filename: 'mine.elf', name: 'Mine' }
+    ] },
+    upstream: { checked_at: '2026-11-11T10:00:00', available: 1, items: {
+      'ftpsrv_v0.21.elf': { state: 'available', version: 'v0.22', filename: 'ftpsrv_v0.22.elf' },
+      'zftpd_v1.8.0.elf': { state: 'local_newer', version: 'v1.7.0' } } }
+  });
+  assert.equal(data.items[0].history.map((record) => record.version).join(), 'v0.20', 'malformed records dropped');
+  assert.equal(data.items[2].history.length, 0);
+  Object.assign(ui.repo, data);
+  ui.renderRepo();
+  assert.match(ui.node('repo-upstream-line').textContent, /1 个插件有新版本/);
+  assert.equal(ui.node('repo-upstream-all').hidden, true, 'batch button only for two or more');
+  ui.repo.upstream = null;
+  ui.renderUpstream();
+  assert.match(ui.node('repo-upstream-line').textContent, /尚未检查/);
 });
 
 const updateStatus = (overrides = {}) => ({

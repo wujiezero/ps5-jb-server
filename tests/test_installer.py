@@ -131,3 +131,46 @@ class InstallerDryRunTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DependencyInstallTests(unittest.TestCase):
+    """install.sh brings missing system packages in instead of stopping."""
+
+    def plan(self, missing_probes, manager='apt-get', **layout_args):
+        import io
+        from contextlib import redirect_stdout
+        installer = load_installer()
+        layout = installer.Layout(prefix=Path('/'), dry_run=True, **layout_args)
+        runner = installer.Runner(layout)
+        present = lambda probe: probe[1] not in missing_probes  # noqa: E731
+        which = lambda name: '/usr/bin/' + name if name == manager else None  # noqa: E731
+        output = io.StringIO()
+        with redirect_stdout(output):
+            installer.install_dependencies(layout, runner, present=present, which=which)
+        return runner.actions, output.getvalue()
+
+    def test_missing_required_packages_are_installed_with_apt(self):
+        actions, _ = self.plan({'import dns.message', 'nft', 'conntrack'})
+        self.assertEqual(actions, [['apt-get', 'install', '-y', '--no-install-recommends',
+                                    'python3-dnspython', 'nftables', 'conntrack']])
+
+    def test_optional_smb_is_a_separate_best_effort_install(self):
+        actions, _ = self.plan({'openssl', 'import smbc'})
+        self.assertEqual(actions[0][-1], 'openssl')
+        self.assertEqual(actions[1][-1], 'python3-smbc')
+
+    def test_package_names_follow_the_distribution(self):
+        actions, _ = self.plan({'import dns.message', 'conntrack'}, manager='dnf')
+        self.assertEqual(actions, [['dnf', 'install', '-y', 'python3-dns', 'conntrack-tools']])
+
+    def test_no_firewall_skips_gateway_tools_and_no_deps_installs_nothing(self):
+        actions, _ = self.plan({'nft', 'conntrack'}, no_firewall=True)
+        self.assertEqual(actions, [])
+        actions, text = self.plan({'openssl'}, no_deps=True)
+        self.assertEqual(actions, [])
+        self.assertIn('openssl', text)
+
+    def test_nothing_missing_runs_nothing(self):
+        actions, text = self.plan(set())
+        self.assertEqual(actions, [])
+        self.assertIn('依赖齐全', text)
