@@ -30,3 +30,7 @@ __pycache__/
 # Secrets that must never be committed
 *.key
 nas.json
+
+# Generated release packages and browser artifacts
+dist/
+.playwright-mcp/

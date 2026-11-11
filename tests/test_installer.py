@@ -108,6 +108,22 @@ class InstallerDryRunTests(unittest.TestCase):
             installer.install_extract(layout, runner)
             self.assertEqual(runner.actions, [], 'nothing without --with-extract')
 
+    def test_uninstall_removes_recovery_units(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = installer.Layout(prefix=Path(tmp).resolve(), dry_run=True)
+            for name in ('ps5-jb-server-update-recovery.service',
+                         'ps5-jb-server.service.d/update-recovery.conf',
+                         'ps5-jb-repo.service.d/update-recovery.conf'):
+                path = layout.systemd_dir / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('stale')
+            runner = installer.Runner(layout)
+            installer.cmd_uninstall(layout, runner=runner)
+            self.assertTrue(any(action and action[0:2] == ['rm', '-f']
+                                and action[-1].endswith('ps5-jb-server-update-recovery.service')
+                                for action in runner.actions))
+
     def test_unknown_flag_fails(self):
         result = self.run_installer('--nope')
         self.assertNotEqual(result.returncode, 0)

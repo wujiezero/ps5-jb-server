@@ -154,7 +154,7 @@ def wait(manager, ident, timeout=10):
     end = time.time() + timeout
     while time.time() < end:
         job = manager.snapshot_one(ident)
-        if job['state'] in ('done', 'failed', 'canceled'):
+        if job['state'] in ('done', 'done_with_warnings', 'failed', 'canceled'):
             return job
         time.sleep(0.02)
     raise AssertionError('transfer did not finish')
@@ -335,6 +335,41 @@ class TransferTests(unittest.TestCase):
             manager.start(self.ident, ['/x'], '/data', 'merge')
         with self.assertRaises(NasError):
             manager.start('missing', ['/x'], '/data')
+
+    def test_transfer_registration_is_optional_and_runs_after_folder_transfer(self):
+        class Services:
+            def __init__(self):
+                self.calls = []
+
+            def register(self, host, game):
+                self.calls.append((host, game))
+                return {'state': 'done', 'title': game['title']}
+
+        services = Services()
+        manager = TransferManager(self.store, self.ps5,
+                                   client_factory=lambda config: FakeClient(TREE),
+                                   game_services=services)
+        ident = manager.start(self.ident, ['/movies'], '/data',
+                              auto_register=True, host='192.0.2.5', title='CUSA12345')['id']
+        job = wait(manager, ident)
+        self.assertEqual(job['state'], 'done')
+        self.assertEqual(services.calls, [('192.0.2.5', {
+            'title': 'CUSA12345', 'path': '/data/movies', 'name': 'CUSA12345'} )])
+
+    def test_registration_failure_keeps_extracted_game_as_warning(self):
+        class Services:
+            def register(self, host, game):
+                raise RuntimeError('engine offline')
+
+        manager = TransferManager(self.store, self.ps5,
+                                   client_factory=lambda config: FakeClient(TREE),
+                                   game_services=Services())
+        ident = manager.start(self.ident, ['/movies'], '/data',
+                              auto_register=True, host='192.0.2.5', title='CUSA12345')['id']
+        job = wait(manager, ident)
+        self.assertEqual(job['state'], 'done_with_warnings')
+        self.assertIn('engine offline', job['registration_error'])
+        self.assertIn('/data/movies/a b.mkv', self.ps5.files)
 
     def test_auth_failures_are_not_401_for_the_page(self):
         settings = Settings.from_mapping({'network': {'host_ip': '127.0.0.1', 'subnet': '127.0.0.0/8'},

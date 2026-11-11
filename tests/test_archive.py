@@ -423,6 +423,159 @@ class InstallTests(ManagerTestCase):
         self.assertEqual(archive._clean_relative('a\\b/./c'), 'a/b/c')
 
 
+class SyntheticInstallTests(unittest.TestCase):
+    """Exercise the real upload/finish flow without a native archive decoder."""
+
+    def setUp(self):
+        self.ps5 = FakePs5()
+
+    def install(self, contents, base='Friendly release', mode='install', engine='libarchive'):
+        class Entry:
+            isdir, isreg = False, True
+
+            def __init__(self, data):
+                self.data, self.size = data, len(data)
+
+            def get_blocks(self, size):
+                for offset in range(0, len(self.data), 17):
+                    yield self.data[offset:offset + 17]
+
+        class SyntheticInstaller(archive.Installer):
+            def _extract(installer):
+                written, skipped = set(), set()
+                for name, data in contents.items():
+                    installer._place(Entry(data), name, written, skipped)
+                return written
+
+        dest = '/data/games' if mode == 'install' else '/data/games/PPSA12345'
+        self.installer = SyntheticInstaller(self.ps5, None, [], dest, mode, 'synthetic',
+                                            mock.Mock(), engine=engine)
+        return self.installer.run(base)
+
+    def game_contents(self, root='release/deep/actual'):
+        prefix = root + '/' if root else ''
+        return {prefix + 'eboot.bin': b'game',
+                prefix + 'sce_sys/param.json':
+                    b'{"titleId":"PPSA12345","contentVersion":"01.002.000",'
+                    b'"localizedParameters":{"defaultLanguage":"en-US",'
+                    b'"en-US":{"titleName":"Real Game"}}}'}
+
+    def test_deep_game_root_is_renamed_without_wrapper_or_readme(self):
+        for engine in ('libarchive', 'unrar'):
+            with self.subTest(engine=engine):
+                self.ps5 = FakePs5()
+                result = self.install(self.game_contents() | {'release/README.txt': b'notes'},
+                                      engine=engine)
+                self.assertEqual(result['path'], '/data/games/PPSA12345')
+                self.assertEqual(self.ps5.files[result['path'] + '/eboot.bin'], b'game')
+                self.assertEqual(result['game'], {'title': 'PPSA12345', 'platform': 'ps5',
+                                                 'version': '01.002.000', 'name': 'Real Game',
+                                                 'path': result['path']})
+                self.assertEqual(set(self.ps5.files), {result['path'] + '/eboot.bin',
+                                                      result['path'] + '/sce_sys/param.json'})
+                self.assertEqual(self.ps5.staging_left(), [])
+                self.assertEqual(self.ps5.renames[0],
+                                 ('/data/games/.extract-synthetic/release/deep/actual', result['path']))
+
+    def test_sfo_game_is_named_using_its_real_title_id(self):
+        from test_game_layout import sfo_bytes
+        result = self.install({'a/b/eboot.bin': b'ps4', 'a/b/sce_sys/param.sfo':
+                               sfo_bytes(TITLE_ID='CUSA12345', APP_VER='01.03', TITLE='PS4 Game')})
+        self.assertEqual(result['path'], '/data/games/CUSA12345')
+        self.assertEqual(result['game']['platform'], 'ps4')
+        self.assertEqual(result['game']['version'], '01.03')
+        self.assertEqual(result['game']['name'], 'PS4 Game')
+
+    def test_mixed_package_and_zip_are_retained_outside_the_game(self):
+        contents = self.game_contents() | {'release/unknown.pkg': b'package',
+                                           'release/Cheats.zip': b'zip',
+                                           'release/README.txt': b'notes'}
+        result = self.install(contents)
+        for key, data in (('packages', b'package'), ('sidecars', b'zip')):
+            self.assertIn(key, result)
+            self.assertEqual(len(result[key]), 1)
+            path = result[key][0]
+            self.assertTrue(path.startswith('/data/games/'))
+            self.assertFalse(path.startswith(result['path'] + '/'))
+            self.assertEqual(self.ps5.files[path], data)
+        self.assertFalse(any(path.endswith('README.txt') for path in self.ps5.files))
+        self.assertEqual(self.ps5.staging_left(), [])
+
+    def test_sidecars_inside_game_are_returned_at_their_final_paths(self):
+        contents = self.game_contents('') | {'cheats/local.zip': b'zip', 'dlc.pkg': b'pkg'}
+        result = self.install(contents)
+        self.assertIn('sidecars', result)
+        self.assertEqual(result['sidecars'], [result['path'] + '/cheats/local.zip'])
+        self.assertEqual(result['packages'], [result['path'] + '/dlc.pkg'])
+
+    def test_pkg_only_archive_is_extracted_without_claiming_a_game(self):
+        result = self.install({'release/base.pkg': b'pkg', 'release/README': b'notes'})
+        self.assertIn('game', result)
+        self.assertIsNone(result['game'])
+        self.assertEqual(result['packages'], [result['path'] + '/base.pkg'])
+        self.assertEqual(self.ps5.files[result['packages'][0]], b'pkg')
+        self.assertIn('.pkg', result['note'])
+        self.assertEqual(self.ps5.staging_left(), [])
+
+    def test_plain_archive_with_params_but_no_eboot_is_not_registered(self):
+        result = self.install({'docs/sce_sys/param.json': b'{"titleId":"PPSA12345"}'})
+        self.assertIn('game', result)
+        self.assertIsNone(result['game'])
+        self.assertIn('eboot.bin', result['note'])
+
+    def test_hint_conflict_and_multiple_roots_fail_before_any_publish(self):
+        for contents, base in ((self.game_contents(), 'CUSA99999 release'),
+                               (self.game_contents('one') | self.game_contents('two'), 'Game')):
+            with self.subTest(base=base):
+                self.ps5 = FakePs5()
+                with self.assertRaises(archive.ArchiveError):
+                    self.install(contents, base=base)
+                self.assertEqual(self.ps5.files, {})
+                self.assertEqual(self.ps5.staging_left(), [])
+                self.assertEqual(self.ps5.renames, [])
+
+    def test_metadata_capture_has_a_total_budget(self):
+        contents = {f'wrapper/{index}/sce_sys/param.json': b' ' * (900 * 1024)
+                    for index in range(5)}
+        with self.assertRaisesRegex(archive.ArchiveError, '元数据.*限制'):
+            self.install(contents)
+        self.assertEqual(self.ps5.staging_left(), [])
+
+    def test_merge_patch_without_eboot_keeps_existing_game_and_other_files(self):
+        root = '/data/games/PPSA12345'
+        self.ps5.dirs |= {root, root + '/data'}
+        self.ps5.files.update({root + '/eboot.bin': b'original', root + '/data/save': b'save'})
+        result = self.install({'patch/data/updated': b'update'}, mode='merge')
+        self.assertEqual(self.ps5.files[root + '/data/updated'], b'update')
+        self.assertEqual(self.ps5.files[root + '/data/save'], b'save')
+        self.assertEqual(self.ps5.files[root + '/eboot.bin'], b'original')
+        self.assertEqual(result['path'], root)
+        self.assertIn('game', result)
+        self.assertIsNone(result['game'])
+        self.assertEqual(self.ps5.staging_left(), [])
+
+    def test_merge_param_only_patch_keeps_the_legacy_title_result(self):
+        root = '/data/games/PPSA12345'
+        self.ps5.dirs.add(root)
+        result = self.install({'patch/sce_sys/param.json': b'{"titleId":"PPSA12345"}'},
+                              mode='merge')
+        self.assertEqual(result['title'], 'PPSA12345')
+        self.assertIn('game', result)
+        self.assertIsNone(result['game'])
+        self.assertIn(root + '/sce_sys/param.json', self.ps5.files)
+
+    def test_full_game_merge_also_uses_the_resolved_root(self):
+        root = '/data/games/PPSA12345'
+        self.ps5.dirs.add(root)
+        self.ps5.files[root + '/keep'] = b'keep'
+        result = self.install(self.game_contents() | {'README': b'notes'}, mode='merge')
+        self.assertIn(root + '/eboot.bin', self.ps5.files)
+        self.assertEqual(self.ps5.files[root + '/eboot.bin'], b'game')
+        self.assertEqual(self.ps5.files[root + '/keep'], b'keep')
+        self.assertEqual(result['game']['path'], root)
+        self.assertEqual(self.ps5.staging_left(), [])
+
+
 class EngineChoiceTests(unittest.TestCase):
     def scanner(self, solid=False, dictionary=32 << 20):
         scanner = archive.Rar5Scanner(strict=False)

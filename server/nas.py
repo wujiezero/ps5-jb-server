@@ -753,7 +753,7 @@ class TransferManager:
     KEEP = 30
 
     def __init__(self, store, files, client_factory=client_for, work_dir=None, runner=None,
-                 engines=None):
+                 engines=None, game_services=None, host=None):
         """work_dir: where unrar jobs keep their spec and status files; runner
         starts the worker unit (SystemdRunner by default); engines overrides
         engine detection (tests)."""
@@ -763,6 +763,10 @@ class TransferManager:
         self.work_dir = Path(work_dir) if work_dir else None
         self.runner = runner or SystemdRunner()
         self._engines = engines
+        # Optional ps5upload adapter.  Keeping this None preserves the legacy
+        # transfer-only behavior and keeps fake engines out of old tests.
+        self.game_services = game_services
+        self.host = host
         self.lock = threading.RLock()
         self.jobs = collections.OrderedDict()
         self.queue = collections.deque()
@@ -770,7 +774,8 @@ class TransferManager:
         self.worker = None
 
     # -- public --
-    def start(self, nas_id, paths, dest, overwrite='skip'):
+    def start(self, nas_id, paths, dest, overwrite='skip', auto_register=False,
+              host=None, title=''):
         config = self.store.get(nas_id)
         if not isinstance(paths, list) or not paths or len(paths) > 200:
             raise ValueError('请选择 1–200 个要传输的文件或文件夹')
@@ -788,7 +793,9 @@ class TransferManager:
                'files_total': 0, 'files_done': 0, 'files_skipped': 0, 'files_failed': 0,
                'bytes_total': 0, 'bytes_done': 0, 'current': '', 'current_size': 0,
                'current_done': 0, 'created': time.time(), 'started': None, 'finished': None,
-               'elapsed': 0, 'speed': 0, 'eta': None, 'percent': 0, 'error': '', 'errors': []}
+               'elapsed': 0, 'speed': 0, 'eta': None, 'percent': 0, 'error': '', 'errors': [],
+                'auto_register': bool(auto_register), 'registration_error': '',
+                'registration': None, 'host': host or self.host, 'title': str(title or '')}
         self._enqueue(job)
         return self.snapshot_one(ident)
 
@@ -829,7 +836,8 @@ class TransferManager:
                 'solid': info['solid'], 'engine': info['engine'], 'folder': folder or '/',
                 'memory': archive.unrar_memory(info['dictionary']) if info['engine'] == 'unrar' else 0}
 
-    def start_extract(self, nas_id, path, dest, mode='install'):
+    def start_extract(self, nas_id, path, dest, mode='install', auto_register=False,
+                      host=None, title=''):
         if mode not in ('install', 'merge'):
             raise ValueError('安装方式只能是新建游戏文件夹或合并到已有文件夹')
         if not isinstance(dest, str) or not dest.startswith('/'):
@@ -862,8 +870,10 @@ class TransferManager:
                else info['bytes'], 'bytes_done': 0, 'current': '',
                'current_size': 0, 'current_done': 0, 'created': time.time(), 'started': None,
                'finished': None, 'elapsed': 0, 'speed': 0, 'eta': None, 'percent': 0,
-               'error': '', 'errors': [], 'result_path': '', 'title': info['title'], 'note': '',
-               'engine': info['engine'], 'memory': info['memory'], 'folder': info['folder']}
+               'error': '', 'errors': [], 'result_path': '', 'title': title or info['title'], 'note': '',
+               'engine': info['engine'], 'memory': info['memory'], 'folder': info['folder'],
+                'auto_register': bool(auto_register), 'registration_error': '',
+                'registration': None, 'host': host or self.host}
         self._enqueue(job)
         return self.snapshot_one(ident)
 
@@ -1021,12 +1031,32 @@ class TransferManager:
                     continue
                 self._copy_file(job, client, source, directory, name, size, cancel, samples)
                 existing[directory].add(name)
-            self._set(job, state='done', percent=100, current='', current_done=0, current_size=0)
+            if job.get('auto_register') and self.game_services and job.get('title'):
+                result = {'path': posixpath.join(job['dest'], job['paths'][0].rstrip('/').rsplit('/', 1)[-1]),
+                          'title': job['title'], 'name': job['title']}
+                self._finish_registration(job, {'game': result, **result})
+            self._set(job, state='done_with_warnings' if job.get('state') == 'done_with_warnings' else 'done', percent=100, current='', current_done=0, current_size=0)
         finally:
             try:
                 client.close()
             except Exception:
                 pass
+
+    def _finish_registration(self, job, result):
+        """Register a successfully placed runnable game, without hiding transfer success."""
+        if not job.get('auto_register') or not self.game_services:
+            return
+        game = result.get('game')
+        if not game:
+            title = job.get('title') or result.get('title')
+            if not title:
+                return
+            game = {'title': title, 'path': result.get('path'), 'name': title}
+        try:
+            registration = self.game_services.register(job.get('host') or self.files.host, game)
+            self._set(job, registration=registration)
+        except Exception as exc:
+            self._set(job, state='done_with_warnings', registration_error=str(exc)[:300])
 
     def _execute_extract(self, job, cancel):
         config = self.store.get(job['nas_id'])
@@ -1059,9 +1089,11 @@ class TransferManager:
             installer = archive.Installer(self.files, client, job['volumes'], job['dest'],
                                           job['mode'], job['id'], Hooks)
             result = installer.run(job['base'])
-            self._set(job, state='done', percent=100, current='', current_done=0, current_size=0,
+            self._finish_registration(job, result)
+            self._set(job, state=job.get('state') or 'done', percent=100, current='', current_done=0, current_size=0,
                       result_path=result['path'], title=result['title'] or job['title'],
-                      note=result['note'])
+                      note=result['note'], game=result.get('game'), packages=result.get('packages', []),
+                      sidecars=result.get('sidecars', []))
         finally:
             try:
                 client.close()
@@ -1127,9 +1159,14 @@ class TransferManager:
             raise _Canceled()
         if status['state'] != 'done':
             raise archive.ArchiveError(status.get('error') or '解压失败')
-        self._set(job, state='done', percent=100, current='', current_done=0, current_size=0,
-                  result_path=status.get('result_path') or '', title=status.get('title') or job['title'],
-                  note=status.get('note') or '', bytes_done=job['bytes_total'])
+        result = {'path': status.get('result_path') or '', 'title': status.get('title') or job['title'],
+                  'note': status.get('note') or '', 'game': status.get('game'),
+                  'packages': status.get('packages') or [], 'sidecars': status.get('sidecars') or []}
+        self._finish_registration(job, result)
+        self._set(job, state=job.get('state') or 'done', percent=100, current='', current_done=0, current_size=0,
+                  result_path=result['path'], title=result['title'], note=result['note'],
+                  game=result['game'], packages=result['packages'], sidecars=result['sidecars'],
+                  bytes_done=job['bytes_total'])
 
     def _discard_staging(self, job):
         parent = job['dest'] if job['mode'] == 'install' else posixpath.dirname(job['dest'].rstrip('/'))

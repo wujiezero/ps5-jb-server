@@ -27,6 +27,8 @@ from settings import Settings
 from titles import TitleCatalog, proxy_reader
 from dns_service import DNSPolicy, LimitedThreads, diagnostic_error, start_dns
 from policy import ConfigStore, Firewall
+from version import VERSION, version_info
+from updates import UpdateManager, UpdateError, ACTIVE as UPDATE_ACTIVE
 
 
 class AuthManager:
@@ -515,7 +517,7 @@ class Application(_ConsoleMixin):
 
 
 class AdminHandler(BaseHTTPRequestHandler):
-    server_version = 'PS5LocalManager/1.0'
+    server_version = 'PS5LocalManager/' + VERSION
     protocol_version = 'HTTP/1.0'
 
     def setup(self):
@@ -582,6 +584,18 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if not self.guard():
+            return
+        if self.path == '/api/version':
+            engine = getattr(self.server.app, 'engine', None)
+            self.send_body(200, {**version_info(), 'ready': not bool(getattr(engine, 'gateway_error', None))})
+            return
+        if self.path == '/api/updates':
+            if self.require_session():
+                updater = getattr(self.server.app, 'updates', None)
+                if updater is None:
+                    self.send_body(503, {'error': '更新服务未启用'})
+                else:
+                    self.send_body(200, updater.status())
             return
         if self.path == '/api/state':
             session = self.require_session()
@@ -707,11 +721,41 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not self.guard():
             return
         route = self.path.split('?', 1)[0]
+        updater = getattr(self.server.app, 'updates', None)
+        if updater and (updater.status().get('job') or {}).get('state') in UPDATE_ACTIVE:
+            if ((route.startswith(('/api/ps5', '/api/files', '/api/nas')) or
+                 route in ('/api/repo/upload', '/api/repo/update', '/api/repo/delete'))
+                    and not route.endswith('/cancel')):
+                if self.require_session(write=True):
+                    self.send_body(409, {'error': '服务正在升级，请完成后再开始新操作'})
+                return
         if route.startswith(('/api/ps5', '/api/files', '/api/nas', '/api/transfers')):
-            self.server.app.console_post(self, route)
+            tracked = updater is not None and hasattr(updater, 'begin_operation') and not route.endswith('/cancel')
+            if tracked:
+                try:
+                    updater.begin_operation()
+                except UpdateError as exc:
+                    self.send_body(409, {'error': str(exc)})
+                    return
+            try:
+                self.server.app.console_post(self, route)
+            finally:
+                if tracked:
+                    updater.end_operation()
             return
         if route == '/api/repo/upload':
-            self.handle_upload()
+            tracked = updater is not None and hasattr(updater, 'begin_operation')
+            if tracked:
+                try:
+                    updater.begin_operation()
+                except UpdateError as exc:
+                    self.send_body(409, {'error': str(exc)})
+                    return
+            try:
+                self.handle_upload()
+            finally:
+                if tracked:
+                    updater.end_operation()
             return
         try:
             if self.headers.get('Transfer-Encoding'):
@@ -736,13 +780,22 @@ class AdminHandler(BaseHTTPRequestHandler):
             return
         if route not in ('/api/config', '/api/rollback', '/api/logout',
                          '/api/password', '/api/repo/update', '/api/repo/delete',
-                         '/api/labels', '/api/allow'):
+                         '/api/labels', '/api/allow', '/api/updates/check', '/api/updates/apply'):
             self.send_body(404, {'error': '未知操作'})
             return
         if not self.require_session(write=True):
             return
         try:
-            if route == '/api/logout':
+            if route in ('/api/updates/check', '/api/updates/apply'):
+                if updater is None:
+                    self.send_body(503, {'error': '更新服务未启用'})
+                elif route.endswith('/check'):
+                    self.send_body(200, updater.check())
+                else:
+                    if set(body) != {'version'} or not isinstance(body.get('version'), str):
+                        raise UpdateError('请指定检查结果中的目标版本')
+                    self.send_body(200, updater.apply(body['version']))
+            elif route == '/api/logout':
                 self.server.auth.logout(self.token())
                 self.send_body(200, {'ok': True}, cookie='ps5_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax')
             elif route == '/api/password':
@@ -762,12 +815,22 @@ class AdminHandler(BaseHTTPRequestHandler):
                     raise ValueError('一次最多放行 200 项')
                 self.send_body(200, {'ok': True, 'config': self.server.app.allow(targets)})
             elif route == '/api/repo/update':
-                self.server.repo.update(body.get('filename'),
-                                        **{key: body[key] for key in RepoManager._FIELDS if key in body})
-                self.send_body(200, {'ok': True})
+                updater = getattr(self.server.app, 'updates', None)
+                if updater: updater.begin_operation()
+                try:
+                    self.server.repo.update(body.get('filename'),
+                                            **{key: body[key] for key in RepoManager._FIELDS if key in body})
+                    self.send_body(200, {'ok': True})
+                finally:
+                    if updater: updater.end_operation()
             elif route == '/api/repo/delete':
-                self.server.repo.delete(body.get('filename'))
-                self.send_body(200, {'ok': True})
+                updater = getattr(self.server.app, 'updates', None)
+                if updater: updater.begin_operation()
+                try:
+                    self.server.repo.delete(body.get('filename'))
+                    self.send_body(200, {'ok': True})
+                finally:
+                    if updater: updater.end_operation()
             else:
                 self.server.app.change(body, rollback=route == '/api/rollback')
                 self.send_body(200, {'ok': True})
@@ -813,6 +876,27 @@ def _catalog_reader(path):
             return {'items': []}
         return {'items': catalog.get('payloads', [])}
     return read
+
+
+def update_busy(console):
+    """An update restarts the service; do not interrupt in-flight console writes."""
+    terminal = {'done', 'done_with_warnings', 'failed', 'fail', 'canceled', 'cancelled', 'idle'}
+    if any(job.get('state') not in terminal for job in console.transfers.snapshot()):
+        return True
+    try:
+        job = console.files.job()
+        if isinstance(job, dict):
+            state = job.get('state') or (job.get('job') or {}).get('state')
+            if state and state not in terminal:
+                return True
+        transfers = console.files.transfers()
+        for job in transfers.get('transfers', []) if isinstance(transfers, dict) else []:
+            if job.get('state') not in terminal:
+                return True
+    except Exception:
+        # A disconnected console with no server transfer is not an active job.
+        pass
+    return False
 
 
 def main():
@@ -872,6 +956,7 @@ def main():
                              base_url=f'http://{host_ip}:{settings.repo_port}/payloads/',
                              max_upload=settings.max_upload)
     admin.app.repo = admin.repo
+    admin.app.updates = UpdateManager(data, busy=lambda: update_busy(admin.app.console))
     admin.credentials_path = data / 'credentials.json'
     admin.static_dir = settings.static_dir
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

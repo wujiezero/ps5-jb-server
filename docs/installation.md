@@ -54,6 +54,10 @@
 
 ## 升级
 
+已启用网页升级的部署可在「设置 → 服务更新」查看当前/最新版本、检查 GitHub 正式发布并一键升级。升级前校验 SHA-256，保留配置与 NAS 密钥，重启失败自动恢复旧程序。首次启用旧布局和发布新版本的方法见 [版本与发版](releases.md)。
+
+源码安装也可以继续使用：
+
 ```sh
 cd /path/to/ps5-jb-server && git pull && sudo ./install.sh upgrade
 ```

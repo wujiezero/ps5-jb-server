@@ -95,14 +95,16 @@ PS5 上的 ShadowMount+ 只认两种形态：单文件镜像（`PPSAxxxxx.ffpfsc
    SMB `seek`、FTP `REST`，FTP 每次读用新连接）按包头里的长度跳过数据区，每次读 64 KiB。返回分卷数、
    压缩包大小、解压后大小、文件数、标题 ID 猜测，`checked: true`。25 卷 100 GB 的包约 375 次请求、1–2 秒。
    服务器不支持按偏移读时退回只读第一卷开头 256 KiB（`checked: false`，解压后大小未知）。
-2. `POST /api/nas/extract {id, path, dest, mode}`：`mode` 为 `install`（在 `dest` 下新建游戏文件夹）或
-   `merge`（把内容覆盖进 `dest` 这个已有游戏文件夹）。`install` 时 `dest` 下已有同名游戏会拒绝并提示改用合并；
-   目标卷剩余空间小于解压后大小（预扫描不可用时用压缩包大小）会拒绝。
+2. `POST /api/nas/extract {id, path|paths, dest, mode, auto_register, host, title}`：`mode` 为 `install`（在 `dest` 下新建游戏文件夹）或
+   `merge`（把内容覆盖进 `dest` 这个已有游戏文件夹）。服务会先只读规划选中的源，补齐同组分卷；`install` 时按归档内
+   `eboot.bin + sce_sys/param.json|param.sfo` 的真实元数据定位游戏根，无论外面有几层 wrapper，最终固定为
+   `dest/<title ID>/`。`auto_register` 默认开启，解压成功后调用本机 ps5upload engine 的 `/api/ps5/app/register`
+   添加主屏幕图标；注册失败不会撤销已完成的文件安装，而是以 `done_with_warnings` 返回。
 3. 任务里各分卷依次 `client.open()`，拼成一条字节流交给 libarchive（`stream_reader`）；每解出一个文件就直接
    `FileProxy.upload` 到 PS5 上的 `<父目录>/.extract-<任务 ID>/…`，不落服务器磁盘。进度按已读取的压缩包字节计。
-4. 全部写完后：顶层只有一个文件夹（通常是 `PPSA03671-app`）时取它为游戏根目录，按 `param.json` 的 `titleId`
-   改名到 `dest/PPSA03671`（没有 `param.json` 时用文件夹名或压缩包名里的标题 ID）；合并模式逐项改名覆盖。
-   同盘改名是瞬间完成的。任何失败或取消都删除整个 `.extract-*` 目录。
+4. 全部写完后：按真实游戏根目录执行一次同盘改名到 `dest/<title ID>`；旁边的 `.pkg`/金手指 ZIP 作为独立 sidecar 保留，README 等无关 wrapper 文件丢弃；合并模式逐项覆盖。
+   同盘改名是瞬间完成的。任何失败或取消都删除整个 `.extract-*` 目录。PKG-only 归档不会被伪装成可运行 dump，应走 ps5upload 的
+   `/api/pkg/install` 并等待 `phase=done, verdict=installed`；金手指 ZIP 只会被安全解析并给出 etaHEN 文件布局计划，SHN/MC4 不会被错误当 JSON 导入。
 
 **为什么要有自己的包头解析器（`Rar5Scanner`）**：Debian 12 的 libarchive 3.6.2 读固实（solid）多卷包时会
 静默少掉最后几个条目且不报错（2026-11-10 用 `archive_read_open_filenames` 复现，与拼接方式无关）。解析器与

@@ -7,6 +7,14 @@
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
   const POLL_MS = 8000;
+  const UPDATE_POLL_MS = 2000;
+  const UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
+  const UPDATE_ACTIVE_STATES = new Set(['queued', 'downloading', 'validating', 'backing_up', 'installing', 'restarting', 'verifying']);
+  const UPDATE_STATE_LABELS = { queued: '等待更新', downloading: '正在下载更新', validating: '正在验证更新',
+    backing_up: '正在备份', installing: '正在安装', restarting: '正在重启服务', verifying: '正在确认服务状态',
+    done: '更新完成', rolled_back: '更新未完成，已回滚到原版本', failed: '更新失败' };
+  const updates = { current: '', data: null, loading: false, action: '', error: '', reconnect: false,
+    awaiting: false, deadline: 0, timedOut: false, timer: null, generation: 0 };
   const PASSWORD_MIN = 10;
   const PASSWORD_SUCCESS = '密码已更新，其它设备上的登录已失效';
   const UPLOAD_MAX = 64 * 1024 * 1024;
@@ -434,6 +442,10 @@
     }
     if (section === 'activity' && !activity.loaded) refreshActivity();
     if (section === 'repository' && !repo.loaded) refreshRepo();
+    if (section === 'settings') {
+      if (!updates.current) loadVersion();
+      refreshUpdates();
+    }
     if (section === 'ps5') {
       if (!repo.loaded) refreshRepo();
       if (!ps5.loaded) refreshPs5();
@@ -474,6 +486,11 @@
     authenticated = false;
     csrf = '';
     stopPolling();
+    stopUpdatePolling();
+    updates.generation += 1;
+    Object.assign(updates, { data: null, loading: false, action: '', error: '', reconnect: false,
+      awaiting: false, deadline: 0, timedOut: false });
+    renderUpdates();
     $$('dialog[open]').forEach((dialog) => dialog.close());
     $('boot-loading').hidden = true;
     $('app-shell').hidden = true;
@@ -513,6 +530,7 @@
     $('app-shell').hidden = false;
     if (entering) {
       ensureRoute();
+      refreshUpdates();
       refreshNasJobs();
     }
   }
@@ -542,6 +560,7 @@
     updateActivityControls();
     updatePs5Controls();
     updateFilesControls();
+    renderUpdates();
   }
 
   function updateRepoControls() {
@@ -967,6 +986,160 @@
     if (busy || !authenticated) return;
     if (dirty && !window.confirm('有未保存的修改。退出登录将丢弃这些修改，是否继续？')) return;
     mutate('/api/logout', {}, 'logout', '正在退出…', '', () => showLogin('已退出登录。', true));
+  }
+
+  /* ── 服务版本与显式更新 ─────────────────────────────────────────────── */
+
+  function updateActive() {
+    return updates.awaiting || UPDATE_ACTIVE_STATES.has(updates.data?.job?.state);
+  }
+
+  function renderUpdates() {
+    const data = updates.data;
+    const job = data?.job;
+    const active = updateActive();
+    const version = str(data?.current) || updates.current;
+    const current = version ? `v${version.replace(/^v/, '')}` : '版本读取中';
+    $('update-current').textContent = current;
+    $('sidebar-version').textContent = current;
+    const latest = data?.latest ? `v${String(data.latest).replace(/^v/, '')}` : '';
+    const latestText = data?.check_error ? `检查失败${latest ? ` · 上次结果 ${latest}` : ' · 无法确认最新版本'}`
+      : data?.available && latest ? `有更新 · ${latest}`
+        : latest ? `${latest} · 已是最新` : data?.checked_at ? '暂无发布' : '未检查';
+    $('update-latest').textContent = latestText;
+    $('update-checked').textContent = data?.checked_at ? formatTime(data.checked_at, true) : '尚未检查';
+    const chip = $('update-state');
+    chip.textContent = active ? (updates.timedOut ? '等待确认' : '更新中') : latestText;
+    chip.dataset.tone = data?.check_error || job?.state === 'failed' || job?.state === 'rolled_back' ? 'error'
+      : job?.state === 'done' ? 'good' : 'neutral';
+    $('update-check').textContent = updates.action === 'check' ? '正在检查…' : '检查更新';
+    $('update-check').disabled = !authenticated || busy || updates.loading || active;
+    $('update-check').setAttribute('aria-busy', String(updates.action === 'check'));
+    $('update-apply').textContent = updates.action === 'apply' ? '正在提交…' : latest ? `更新到 ${latest}` : '更新服务';
+    $('update-apply').hidden = !data?.available;
+    $('update-apply').disabled = !authenticated || busy || updates.loading || active || !data?.supported || !data?.available || !latest;
+    $('update-apply').setAttribute('aria-busy', String(updates.action === 'apply'));
+    $('update-unsupported').textContent = data?.supported === false ? str(data.unsupported_reason) || '当前安装方式不支持在线更新。' : '';
+    $('update-unsupported').hidden = data?.supported !== false;
+    $('update-notes').textContent = str(data?.notes);
+    $('update-notes-wrap').hidden = !str(data?.notes);
+    const release = $('update-release');
+    const releaseUrl = str(data?.release_url);
+    // Only navigate to the project's HTTPS GitHub release pages.
+    const safeRelease = /^https:\/\/github\.com\/wujiezero\/ps5-jb-server\/releases(?:[/?#]|$)/.test(releaseUrl);
+    release.hidden = !safeRelease;
+    if (safeRelease) release.setAttribute('href', releaseUrl);
+    else release.removeAttribute('href');
+    const error = updates.error || str(data?.check_error);
+    $('update-error').textContent = error;
+    $('update-error').hidden = !error;
+    const progress = $('update-progress');
+    let progressText = job ? UPDATE_STATE_LABELS[job.state] || '更新状态未知，请重新读取状态。' : '';
+    if (job?.version && progressText) progressText += ` · v${String(job.version).replace(/^v/, '')}`;
+    if (job?.error) progressText += `：${job.error}`;
+    if (job?.rollback_error) progressText += `；回滚失败：${job.rollback_error}`;
+    if (updates.reconnect) progressText = '服务连接已中断，正在重新连接以确认更新结果…';
+    if (updates.timedOut) progressText = '已等待 5 分钟，尚未确认更新结果。请重试连接或重新加载页面查看状态。';
+    progress.textContent = progressText;
+    progress.hidden = !progressText;
+    progress.dataset.tone = updates.timedOut ? 'error' : chip.dataset.tone;
+    $('update-retry').hidden = !updates.timedOut && !updates.error;
+    $('update-retry').disabled = updates.loading || !authenticated;
+    $('update-reload').hidden = !updates.timedOut;
+  }
+
+  async function loadVersion() {
+    try {
+      const data = await api('/api/version');
+      if (str(data.version)) updates.current = str(data.version);
+    } catch {
+      // Authenticated status is a second source for the installed version.
+    }
+    renderUpdates();
+  }
+
+  function stopUpdatePolling() {
+    clearTimeout(updates.timer);
+    updates.timer = null;
+  }
+
+  function scheduleUpdatePoll() {
+    stopUpdatePolling();
+    if (!authenticated || !updateActive()) {
+      updates.deadline = 0;
+      return;
+    }
+    if (!updates.deadline) updates.deadline = Date.now() + UPDATE_TIMEOUT_MS;
+    const remaining = updates.deadline - Date.now();
+    if (remaining <= 0 || updates.timedOut) {
+      updates.timedOut = true;
+      renderUpdates();
+      return;
+    }
+    updates.timer = setTimeout(() => {
+      if (Date.now() >= updates.deadline) {
+        updates.timedOut = true;
+        stopUpdatePolling();
+        renderUpdates();
+      } else refreshUpdates();
+    }, Math.min(UPDATE_POLL_MS, remaining));
+  }
+
+  async function requestUpdates(action = '') {
+    if (!authenticated || updates.loading) return;
+    if (action && (busy || updateActive())) return;
+    if (action === 'apply' && (!updates.data?.supported || !updates.data.available || !updates.data.latest)) return;
+    stopUpdatePolling();
+    updates.loading = true;
+    updates.action = action;
+    updates.error = '';
+    const generation = updates.generation;
+    renderUpdates();
+    try {
+      const path = action ? `/api/updates/${action}` : '/api/updates';
+      const body = action === 'apply' ? { version: updates.data.latest } : action === 'check' ? {} : undefined;
+      const data = await api(path, body);
+      if (generation !== updates.generation) return;
+      updates.data = data;
+      if (str(data.current)) updates.current = str(data.current);
+      updates.awaiting = false;
+      updates.reconnect = false;
+      if (!updateActive()) {
+        updates.deadline = 0;
+        updates.timedOut = false;
+      }
+    } catch (error) {
+      if (generation !== updates.generation) return;
+      if (error.status === 401) {
+        showLogin(error.message);
+        return;
+      }
+      // An interrupted POST may already have queued an update. Read status;
+      // never repeat the install request automatically.
+      if (!error.status && (action === 'apply' || updateActive())) {
+        updates.awaiting = true;
+        updates.reconnect = true;
+      } else updates.error = error.message;
+    } finally {
+      if (generation === updates.generation) {
+        updates.loading = false;
+        updates.action = '';
+        renderUpdates();
+        scheduleUpdatePoll();
+      }
+    }
+  }
+
+  function refreshUpdates() { return requestUpdates(); }
+  function checkUpdates() { return requestUpdates('check'); }
+  function applyUpdate() { return requestUpdates('apply'); }
+
+  function retryUpdateConnection() {
+    if (updates.loading || !authenticated) return;
+    updates.timedOut = false;
+    updates.deadline = 0;
+    if (!updates.current) loadVersion();
+    refreshUpdates();
   }
 
   /* ── 修改密码 ───────────────────────────────────────────────────────── */
@@ -6090,7 +6263,7 @@
   }
 
   function extractTask(job) {
-    const done = job.state === 'done';
+    const done = job.state === 'done' || job.state === 'done_with_warnings';
     let line = '';
     if (job.files_done) line = job.files_total > job.files_done ? `已解出 ${job.files_done} / ${job.files_total} 个文件` : `已解出 ${job.files_done} 个文件`;
     if (job.state === 'running' && job.current) line += `${line ? ' · ' : ''}当前 ${job.current}`;
@@ -6117,7 +6290,8 @@
     try {
       const result = await api('/api/nas/transfer', {
         id: target.nasId, paths: target.paths, dest: files.destPath,
-        overwrite: $('files-dest-overwrite').value === 'overwrite' ? 'overwrite' : 'skip'
+        overwrite: $('files-dest-overwrite').value === 'overwrite' ? 'overwrite' : 'skip',
+        auto_register: Boolean(target.hasFolders && titleIdOf(target.name || '')), title: titleIdOf(target.name || '') || ''
       });
       if (result.job && result.job.id) nasJobs = [result.job, ...nasJobs.filter((job) => job.id !== result.job.id)];
       $('files-dest-dialog').close();
@@ -6549,6 +6723,10 @@
     for (const button of acts('upload')) button.addEventListener('click', () => openUploadDialog());
     $('repo-copy-url').addEventListener('click', copyRepoUrl);
 
+    $('update-check').addEventListener('click', checkUpdates);
+    $('update-apply').addEventListener('click', applyUpdate);
+    $('update-retry').addEventListener('click', retryUpdateConnection);
+    $('update-reload').addEventListener('click', () => location.reload());
     $('password-form').addEventListener('submit', submitPassword);
     for (const [field, error] of [['current-password', 'current-password-error'], ['new-password', 'new-password-error'], ['confirm-password', 'confirm-password-error']]) {
       $(field).addEventListener('input', () => {
@@ -6836,6 +7014,7 @@
   /* ── 启动 ───────────────────────────────────────────────────────────── */
 
   bindEvents();
+  loadVersion();
   renderRepo();
   updateRepoControls();
   renderActivity();

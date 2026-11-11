@@ -14,6 +14,7 @@ class Element {
     this.children = [];
     this.dataset = {};
     this.attributes = {};
+    this.style = {};
     this.value = '';
     this.textContent = '';
     this.hidden = false;
@@ -24,6 +25,8 @@ class Element {
   setAttribute(name, value) { this.attributes[name] = value; }
   removeAttribute(name) { delete this.attributes[name]; }
   addEventListener() {}
+  focus() {}
+  reset() {}
   querySelector() { return null; }
   querySelectorAll() { return []; }
   get classList() {
@@ -55,9 +58,12 @@ function fixture(extra = {}) {
       setActivityFilter, renderRepo, renderPs5Catalog,
       files, filesRow, nasRow, filesVisibleEntries, titleIdOf, titleNames, flushTitleNames, normalizeFilesEntries,
       nas, nasArchiveSelection, extractTask,
-      setAuthenticated(value) { authenticated = value; } };
+      updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
+      scheduleUpdatePoll, stopUpdatePolling,
+      advanceEpoch() { epoch += 1; },
+      setAuthenticated(value) { authenticated = value; csrf = value ? 'test-csrf' : ''; } };
   })();`;
-  const context = { document, console, location: { hostname: '192.168.1.2' }, setTimeout, clearTimeout,
+  const context = { document, console, location: { hostname: '192.168.1.2' }, setTimeout, clearTimeout, clearInterval,
     AbortController, ...extra };
   vm.runInNewContext(exposed, context);
   return { ...context.subject, labels, node: (id) => document.getElementById(id) };
@@ -235,6 +241,194 @@ test('extract install is offered for one RAR volume and its job reads as an inst
   assert.equal(done.cancel, null);
   assert.match(ui.extractTask({ ...base, state: 'queued', mode: 'merge' }).sub, /（合并）/);
   assert.match(ui.extractTask({ ...base, state: 'running', files_total: 308 }).line, /已解出 3 \/ 308 个文件/);
+});
+
+const updateStatus = (overrides = {}) => ({
+  current: '1.4.0', latest: null, available: false, checked_at: null,
+  release_url: 'https://github.com/wujiezero/ps5-jb-server/releases', notes: '',
+  check_error: '', supported: true, unsupported_reason: '', job: null, ...overrides
+});
+const jsonResponse = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
+function updateFixture(fetch) {
+  const timers = new Map();
+  let sequence = 0;
+  const ui = fixture({ fetch, setTimeout(callback, delay) { const id = ++sequence; timers.set(id, { callback, delay }); return id; },
+    clearTimeout(id) { timers.delete(id); } });
+  ui.setAuthenticated(true);
+  return { ...ui, timers };
+}
+
+test('public version appears in settings and sidebar before release checks', async () => {
+  const requests = [];
+  const ui = updateFixture(async (url) => { requests.push(url); return jsonResponse({ version: '1.4.0', repository: 'wujiezero/ps5-jb-server' }); });
+  await ui.loadVersion();
+  assert.equal(ui.node('update-current').textContent, 'v1.4.0');
+  assert.equal(ui.node('sidebar-version').textContent, 'v1.4.0');
+  assert.equal(ui.node('update-latest').textContent, '未检查');
+  assert.deepEqual(requests, ['/api/version']);
+  assert.equal(ui.timers.size, 0, 'version lookup never starts update checks or polling');
+});
+
+test('update latest status distinguishes unchecked, no release, latest and available', () => {
+  const ui = updateFixture();
+  for (const [data, expected] of [
+    [updateStatus(), '未检查'],
+    [updateStatus({ checked_at: '2026-11-10T12:00:00Z' }), '暂无发布'],
+    [updateStatus({ latest: '1.4.0', checked_at: '2026-11-10T12:00:00Z' }), 'v1.4.0 · 已是最新'],
+    [updateStatus({ latest: '1.5.0', available: true }), '有更新 · v1.5.0']
+  ]) {
+    ui.updates.data = data;
+    ui.renderUpdates();
+    assert.equal(ui.node('update-latest').textContent, expected);
+    assert.equal(ui.node('update-current').textContent, 'v1.4.0');
+  }
+});
+
+test('update notes are text and unsupported installs still allow explicit checks', () => {
+  const ui = updateFixture();
+  ui.updates.data = updateStatus({ latest: '1.5.0', available: true, notes: '<img src=x onerror=alert(1)>',
+    supported: false, unsupported_reason: '当前安装方式不支持在线更新', release_url: 'javascript:alert(1)' });
+  ui.renderUpdates();
+  assert.equal(ui.node('update-notes').textContent, '<img src=x onerror=alert(1)>');
+  assert.equal(ui.node('update-notes').children.length, 0);
+  assert.equal(ui.node('update-check').disabled, false);
+  assert.equal(ui.node('update-apply').disabled, true);
+  assert.match(ui.node('update-unsupported').textContent, /不支持在线更新/);
+  assert.equal(ui.node('update-release').hidden, true, 'unsafe release links are never shown');
+});
+
+test('every active update phase disables actions and terminal failures stop polling', () => {
+  const ui = updateFixture();
+  for (const state of ['queued', 'downloading', 'validating', 'backing_up', 'installing', 'restarting', 'verifying']) {
+    ui.updates.data = updateStatus({ latest: '1.5.0', available: true, job: { id: 'j1', state, version: '1.5.0' } });
+    ui.renderUpdates();
+    assert.equal(ui.node('update-check').disabled, true, state);
+    assert.equal(ui.node('update-apply').disabled, true, state);
+    assert.equal(ui.node('update-progress').hidden, false, state);
+  }
+  for (const [state, text] of [['failed', /更新失败/], ['rolled_back', /已回滚/], ['done', /更新完成/]]) {
+    ui.updates.data.job = { id: 'j1', state, error: state === 'done' ? '' : '下载或验证失败' };
+    ui.renderUpdates();
+    ui.scheduleUpdatePoll();
+    assert.match(ui.node('update-progress').textContent, text);
+    if (state !== 'done') assert.match(ui.node('update-progress').textContent, /下载或验证失败/);
+    assert.equal(ui.node('update-check').disabled, false);
+    assert.equal(ui.timers.size, 0, state);
+  }
+});
+
+test('explicit check reports download metadata errors without hiding current version', async () => {
+  const requests = [];
+  const ui = updateFixture(async (url, options) => {
+    requests.push([url, options]);
+    return jsonResponse(updateStatus({ check_error: '无法连接 GitHub', checked_at: '2026-11-10T12:00:00Z' }));
+  });
+  await ui.checkUpdates();
+  assert.equal(requests[0][0], '/api/updates/check');
+  assert.equal(requests[0][1].method, 'POST');
+  assert.equal(requests[0][1].headers['X-CSRF-Token'], 'test-csrf');
+  assert.equal(requests[0][1].body, '{}');
+  assert.match(ui.node('update-error').textContent, /无法连接 GitHub/);
+  assert.match(ui.node('update-latest').textContent, /检查失败/);
+  assert.doesNotMatch(ui.node('update-latest').textContent, /暂无发布/);
+  assert.equal(ui.node('update-state').dataset.tone, 'error');
+  assert.equal(ui.node('update-current').textContent, 'v1.4.0');
+  assert.equal(ui.timers.size, 0);
+});
+
+test('one click applies latest version once and polls only while a job is active', async () => {
+  const requests = [];
+  const ui = updateFixture(async (url, options) => {
+    requests.push([url, options]);
+    return jsonResponse(updateStatus({ latest: '1.5.0', available: true,
+      job: { id: 'j1', state: requests.length === 1 ? 'queued' : 'done', version: '1.5.0' } }));
+  });
+  ui.updates.data = updateStatus({ latest: '1.5.0', available: true });
+  await ui.applyUpdate();
+  assert.equal(requests[0][0], '/api/updates/apply');
+  assert.equal(requests[0][1].body, '{"version":"1.5.0"}');
+  await ui.applyUpdate();
+  assert.equal(requests.length, 1, 'busy update cannot be submitted twice');
+  assert.equal([...ui.timers.values()][0].delay, 2000);
+  await ui.refreshUpdates();
+  assert.equal(requests[1][0], '/api/updates');
+  assert.equal(ui.timers.size, 0, 'finished jobs have no update polling');
+});
+
+test('restart network errors show reconnect and stop after five minutes with manual recovery', async () => {
+  const ui = updateFixture(async () => { throw new TypeError('offline'); });
+  ui.updates.data = updateStatus({ job: { id: 'j1', state: 'restarting', version: '1.5.0' } });
+  await ui.refreshUpdates();
+  assert.match(ui.node('update-progress').textContent, /重新连接/);
+  assert.equal([...ui.timers.values()][0].delay, 2000);
+  ui.updates.deadline = Date.now() - 1;
+  ui.scheduleUpdatePoll();
+  assert.equal(ui.timers.size, 0);
+  assert.match(ui.node('update-progress').textContent, /5 分钟/);
+  assert.equal(ui.node('update-retry').hidden, false);
+  assert.equal(ui.node('update-reload').hidden, false);
+  assert.equal(ui.node('update-apply').disabled, true, 'unknown result must not permit another install');
+});
+
+test('uncertain apply response reconnects without submitting another update', async () => {
+  const requests = [];
+  const ui = updateFixture(async (url) => { requests.push(url); throw new TypeError('offline'); });
+  ui.updates.data = updateStatus({ latest: '1.5.0', available: true });
+  await ui.applyUpdate();
+  assert.match(ui.node('update-progress').textContent, /重新连接/);
+  assert.equal(ui.node('update-apply').disabled, true);
+  assert.equal([...ui.timers.values()][0].delay, 2000);
+  await ui.applyUpdate();
+  assert.deepEqual(requests, ['/api/updates/apply']);
+});
+
+test('an unrelated configuration change cannot strand an in-flight update status request', async () => {
+  let respond;
+  const ui = updateFixture(() => new Promise((resolve) => { respond = resolve; }));
+  const pending = ui.refreshUpdates();
+  ui.advanceEpoch();
+  respond(jsonResponse(updateStatus({ current: '1.5.0' })));
+  await pending;
+  assert.equal(ui.updates.loading, false);
+  assert.equal(ui.node('update-current').textContent, 'v1.5.0');
+});
+
+test('an explicit apply rejection shows server error without pretending to reconnect', async () => {
+  const ui = updateFixture(async () => jsonResponse({ error: '更新包下载失败，请重试' }, 502));
+  ui.updates.data = updateStatus({ latest: '1.5.0', available: true });
+  await ui.applyUpdate();
+  assert.match(ui.node('update-error').textContent, /更新包下载失败/);
+  assert.equal(ui.node('update-progress').hidden, true);
+  assert.equal(ui.node('update-apply').disabled, false);
+  assert.equal(ui.timers.size, 0);
+});
+
+test('failed rollback reports both install and recovery errors', () => {
+  const ui = updateFixture();
+  ui.updates.data = updateStatus({ job: { id: 'j1', state: 'failed', version: '1.5.0',
+    error: '服务验证失败', rollback_error: '无法恢复备份，请手动恢复' } });
+  ui.renderUpdates();
+  assert.match(ui.node('update-progress').textContent, /服务验证失败/);
+  assert.match(ui.node('update-progress').textContent, /回滚失败：无法恢复备份，请手动恢复/);
+  assert.doesNotMatch(ui.node('update-progress').textContent, /已回滚/);
+});
+
+test('plain status reads do not trigger release checks or idle polling', async () => {
+  const requests = [];
+  const ui = updateFixture(async (url) => { requests.push(url); return jsonResponse(updateStatus()); });
+  await ui.refreshUpdates();
+  assert.deepEqual(requests, ['/api/updates']);
+  assert.equal(ui.timers.size, 0);
+});
+
+test('expired update session returns to login and stops polling', async () => {
+  const ui = updateFixture(async () => jsonResponse({ error: '登录已失效' }, 401));
+  ui.updates.data = updateStatus({ job: { id: 'j1', state: 'downloading' } });
+  await ui.refreshUpdates();
+  assert.equal(ui.node('app-shell').hidden, true);
+  assert.equal(ui.node('login-view').hidden, false);
+  assert.match(ui.node('login-message').textContent, /登录已失效/);
+  assert.equal(ui.timers.size, 0);
 });
 
 test('macOS ._ metadata files never show in the file list', () => {

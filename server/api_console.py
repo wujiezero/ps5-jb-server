@@ -14,6 +14,8 @@ from files import FileServiceError, FileProxy
 from nas import NasError, NasStore, SecretBox, TransferManager, check_connection, client_for, \
     clean_path, smb_available, unrar_engine_available
 from power import EngineClient, PowerError, PowerManager
+from game_services import GameServices
+from game_sources import plan_sources
 from ps5 import ConsoleError, HostManager
 
 MAX_JSON = 32 * 1024
@@ -33,9 +35,11 @@ class ConsoleAPI:
         self.file_manager = settings.file_manager
         self.nas = NasStore(settings.data_dir / 'nas.json',
                             getattr(settings, 'secret_key_path', None))
-        self.transfers = TransferManager(self.nas, self.files, work_dir=settings.data_dir / 'extract')
-        self.power = PowerManager(EngineClient(getattr(settings, 'engine_url', 'http://127.0.0.1:19113')),
-                                  self.ps5.validate_ip)
+        self.engine = EngineClient(getattr(settings, 'engine_url', 'http://127.0.0.1:19113'))
+        self.game_services = GameServices(self.engine)
+        self.transfers = TransferManager(self.nas, self.files, work_dir=settings.data_dir / 'extract',
+                                         game_services=self.game_services, host=self.files.host)
+        self.power = PowerManager(self.engine, self.ps5.validate_ip)
         if autoscan and self.enabled:
             # The discovery cache is in memory; without this the host list is
             # empty after every restart until someone presses "rescan".
@@ -283,13 +287,36 @@ class ConsoleAPI:
                 config = self.nas.validate(body, existing)
                 handler.send_body(200, check_connection(config))
             elif path == '/api/nas/transfer':
+                host = body.get('host') or self.files.host
+                auto_register = bool(body.get('auto_register', False))
+                if auto_register:
+                    self.game_services.preflight(host)
                 handler.send_body(200, {'ok': True, 'job': self.transfers.start(
                     body.get('id'), body.get('paths'), body.get('dest'),
-                    body.get('overwrite') or 'skip')})
+                    body.get('overwrite') or 'skip', auto_register=auto_register,
+                    host=host, title=body.get('title') or '')})
             elif path == '/api/nas/extract':
+                auto_register = bool(body.get('auto_register', True))
+                host = body.get('host') or self.files.host
+                selected = body.get('paths') or ([body.get('path')] if body.get('path') else [])
+                try:
+                    config = self.nas.get(body.get('id'))
+                except NasError:
+                    config = None
+                source_client = client_for(config) if config else None
+                try:
+                    plan = plan_sources(source_client, selected)
+                finally:
+                    if source_client is not None:
+                        source_client.close()
+                if plan.get('kind') != 'archive':
+                    raise ValueError('所选源不是可流式解压的 RAR 分卷；PKG 请使用安装包流程')
+                if auto_register:
+                    self.game_services.preflight(host)
                 handler.send_body(200, {'ok': True, 'job': self.transfers.start_extract(
-                    body.get('id'), body.get('path'), body.get('dest'),
-                    body.get('mode') or 'install')})
+                    body.get('id'), plan['path'], body.get('dest'), body.get('mode') or 'install',
+                    auto_register=auto_register, host=host,
+                    title=body.get('title') or plan.get('title_hint') or '')})
             elif path == '/api/transfers/cancel':
                 handler.send_body(200, self.transfers.cancel(body.get('id')))
             elif path == '/api/transfers/clear':

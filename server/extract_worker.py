@@ -200,7 +200,8 @@ def main(spec_path):
         files.configure(ps5['host'])
         result = run(spec, status, cancel, files, RcloneMount(config, spec['folder'], spec['mount']))
         status.update(state='done', result_path=result['path'], title=result['title'],
-                      note=result['note'], current='')
+                      note=result['note'], game=result.get('game'), packages=result.get('packages', []),
+                      sidecars=result.get('sidecars', []), current='')
     except Canceled:
         status.update(state='canceled', current='')
     except (archive.ArchiveError, FileServiceError, NasError, ValueError, OSError) as exc:

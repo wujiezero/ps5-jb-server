@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 import urllib.parse
+from unittest import mock
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
@@ -167,6 +168,31 @@ class ConsoleAPITests(unittest.TestCase):
         self.assertEqual(handler.status, 502)
         self.assertIn('无法连接', handler.payload['error'])
         self.api.files.host = '127.0.0.1'
+
+    def test_extract_plans_selected_paths_and_preflights_before_queueing(self):
+        calls = []
+
+        class Services:
+            def preflight(self, host):
+                calls.append(('preflight', host))
+
+        self.api.game_services = Services()
+        self.api.files.host = '192.0.2.5'
+        plan = {'kind': 'archive', 'path': '/games/CUSA12345.rar', 'title_hint': 'CUSA12345'}
+        with (mock.patch('api_console.plan_sources', return_value=plan) as planner,
+              mock.patch.object(self.api.transfers, 'start_extract', return_value={'id': 'job'}) as start):
+            body, headers = json_body({'id': 'nas-id', 'paths': ['/games/CUSA12345.rar'],
+                                       'dest': '/data', 'auto_register': True})
+            handler = StubHandler('/api/nas/extract', body, headers)
+            self.api.handle_post(handler, '/api/nas/extract')
+        self.assertEqual(handler.status, 200)
+        planner.assert_called_once()
+        self.assertEqual(calls, [('preflight', '192.0.2.5')])
+        self.assertEqual(start.call_args.kwargs['auto_register'], True)
+        self.assertEqual(start.call_args.kwargs['host'], '192.0.2.5')
+        self.assertEqual(start.call_args.kwargs['title'], 'CUSA12345')
+        self.api.files.host = '127.0.0.1'
+        self.api.game_services = None
 
 
 if __name__ == '__main__':

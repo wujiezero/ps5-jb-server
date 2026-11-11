@@ -12,12 +12,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import urllib.parse
+from version import VERSION
 
 CATALOG = 'repo.json'
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'PS5PayloadRepo/1.0'
+    server_version = 'PS5PayloadRepo/' + VERSION
     protocol_version = 'HTTP/1.0'
 
     def log_message(self, fmt, *args):

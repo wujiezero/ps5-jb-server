@@ -668,6 +668,8 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: not-allowed; }
   font-size: 0.75rem;
   color: var(--muted);
 }
+.sidebar-version { color: var(--faint); font-size: 0.6875rem; }
+.sidebar-version .mono { font-size: inherit; }
 .host-label { white-space: nowrap; }
 .sidebar-logout { width: 100%; justify-content: flex-start; }
 
@@ -1057,6 +1059,18 @@ body[data-dock="on"] #main { padding-bottom: 72px; }
 #view-policy .metric-list + .secondary-note,
 #view-settings .info-list + .secondary-note,
 #view-settings .steps + .secondary-note { margin-top: 16px; }
+
+/* ── 服务更新 ─────────────────────────────────────────────────────────── */
+
+.update-notice { line-height: 1.7; }
+.update-notes { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.update-notes summary { cursor: pointer; color: var(--mut); font-size: 0.8125rem; }
+.update-notes pre { margin: 12px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 0.8125rem; line-height: 1.7; max-height: 320px; overflow-y: auto; }
+#update-progress, #update-error, #update-unsupported { margin-top: 16px; overflow-wrap: anywhere; }
+#update-progress[data-tone="error"] { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-line); }
+#update-progress[data-tone="good"] { color: var(--ok); background: var(--ok-soft); border-color: var(--ok-line); }
+.update-actions { flex-wrap: wrap; gap: 10px; }
+.update-actions > a { margin-right: auto; font-size: 0.8125rem; }
 
 /* ── 表格（桌面） ─────────────────────────────────────────────────────── */
 

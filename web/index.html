@@ -121,6 +121,7 @@
       </nav>
       <div class="sidebar-footer">
         <p class="host-line"><span class="host-label">管理主机</span><span class="mono" data-host-ip>—</span></p>
+        <p class="sidebar-version" aria-label="当前服务版本"><span id="sidebar-version" class="mono">读取版本…</span></p>
         <button class="button button-secondary sidebar-logout" type="button" data-act="logout" data-label="退出登录">
           <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.4 4.6h2.9A1.7 1.7 0 0 1 19 6.3v11.4a1.7 1.7 0 0 1-1.7 1.7h-2.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="m10.6 8.2-3.9 3.8 3.9 3.8M6.9 12H15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span class="spinner" aria-hidden="true" hidden></span>
@@ -734,6 +735,33 @@
         </section>
 
         <section id="view-settings" class="view" data-section="settings" hidden>
+          <section id="update-card" class="card" aria-labelledby="update-title">
+            <header class="card-head">
+              <div><h2 id="update-title">服务更新</h2><p class="card-sub">检查 GitHub 正式发布，并一键更新管理服务。</p></div>
+              <span id="update-state" class="state-chip" data-tone="neutral">未检查</span>
+            </header>
+            <dl class="info-list">
+              <div><dt>当前版本</dt><dd id="update-current" class="mono">读取版本…</dd></div>
+              <div><dt>最新版本</dt><dd id="update-latest">未检查</dd></div>
+              <div><dt>上次检查</dt><dd id="update-checked">尚未检查</dd></div>
+            </dl>
+            <p class="secondary-note update-notice">更新会保留配置、插件和数据，并自动重启服务；重启期间此页面会暂时断开连接。</p>
+            <p id="update-unsupported" class="secondary-note" hidden></p>
+            <details id="update-notes-wrap" class="update-notes" hidden>
+              <summary>发布说明</summary>
+              <pre id="update-notes"></pre>
+            </details>
+            <p id="update-progress" class="banner" role="status" aria-live="polite" hidden></p>
+            <p id="update-error" class="field-error" role="alert" hidden></p>
+            <div class="form-actions update-actions">
+              <a id="update-release" target="_blank" rel="noopener noreferrer" hidden>查看发布页面 ↗</a>
+              <button id="update-retry" class="button button-secondary" type="button" hidden>重试连接</button>
+              <button id="update-reload" class="button button-secondary" type="button" hidden>重新加载页面</button>
+              <button id="update-check" class="button button-secondary" type="button">检查更新</button>
+              <button id="update-apply" class="button button-primary" type="button" disabled hidden>更新服务</button>
+            </div>
+          </section>
+
           <form id="password-form" class="card" novalidate aria-labelledby="password-title">
             <header class="card-head">
               <div><h2 id="password-title">修改管理密码</h2><p class="card-sub">修改后，其它设备上的登录会立即失效，需要用新密码重新登录。</p></div>

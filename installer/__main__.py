@@ -325,6 +325,22 @@ titles = "{layout.opt / 'titledb/titles.json'}"
 ''', 0o644)
 
 
+def write_update_descriptor(layout, runner):
+    """Record real runtime paths; upgrades never rewrite the existing config."""
+    sys.path.insert(0, str(REPO / 'scripts'))
+    from enable_web_updates import deployment_descriptor
+    if layout.config.exists():
+        descriptor = deployment_descriptor(layout.opt.resolve(), layout.config.resolve(),
+                                           'ps5-jb-server.service', 'ps5-jb-repo.service')
+    else:
+        descriptor = {'schema': 1, 'program_dir': str(layout.opt.resolve()),
+                      'static_dir': str((layout.opt / 'web').resolve()),
+                      'data_dir': str(layout.data.resolve()), 'config_path': str(layout.config.resolve()),
+                      'admin_unit': 'ps5-jb-server.service', 'repo_unit': 'ps5-jb-repo.service',
+                      'health_url': f'https://{layout.host_ip}:{layout.ports["admin"]}/api/version'}
+    runner.write(layout.opt / 'update-install.json', json.dumps(descriptor, indent=2), 0o644)
+
+
 def make_certificates(layout, runner):
     print('\n[3/9] 自签证书')
     targets = (('admin', 'ps5-jb-server',
@@ -540,6 +556,16 @@ def install_units(layout, runner):
         for key, value in render.items():
             text = text.replace(key, value)
         runner.write(layout.systemd_dir / unit, text, 0o644)
+    sys.path.insert(0, str(REPO / 'scripts'))
+    from enable_web_updates import recovery_units
+    descriptor_path = layout.opt / 'update-install.json'
+    if descriptor_path.exists():
+        descriptor = json.loads(descriptor_path.read_text())
+    else:
+        descriptor = {'program_dir': str(layout.opt), 'admin_unit': 'ps5-jb-server.service',
+                      'repo_unit': 'ps5-jb-repo.service'}
+    for name, text in recovery_units(descriptor).items():
+        runner.write(layout.systemd_dir / name, text, 0o644)
     runner.run(['systemctl', 'daemon-reload'], check=False)
     runner.run(['systemctl', 'enable', '--now', 'ps5-jb-server.service'], check=False)
     runner.run(['systemctl', 'enable', '--now', 'ps5-jb-host.service'], check=False)
@@ -603,7 +629,7 @@ def summary(layout):
 def cmd_install(layout):
     runner = Runner(layout)
     preflight(layout, runner)
-    steps = [install_files, write_config, make_certificates, make_credentials, make_nas_key,
+    steps = [install_files, write_config, write_update_descriptor, make_certificates, make_credentials, make_nas_key,
              fetch_components, write_firewall, install_units, install_power_engine, install_extract]
     for step in steps:
         step(layout, runner)
@@ -611,13 +637,20 @@ def cmd_install(layout):
     summary(layout)
 
 
-def cmd_uninstall(layout, purge=False):
-    runner = Runner(layout)
+def cmd_uninstall(layout, purge=False, runner=None):
+    runner = runner or Runner(layout)
     print('停止并禁用服务')
     for unit in UNIT_FILES:
         runner.run(['systemctl', 'disable', '--now', unit], check=False)
+    recovery_names = ('ps5-jb-server-update-recovery.service',
+                      'ps5-jb-server.service.d/update-recovery.conf',
+                      'ps5-jb-repo.service.d/update-recovery.conf')
     for unit in UNIT_FILES:
         path = layout.systemd_dir / unit
+        if path.exists():
+            runner.run(['rm', '-f', str(path)], check=False)
+    for name in recovery_names:
+        path = layout.systemd_dir / name
         if path.exists():
             runner.run(['rm', '-f', str(path)], check=False)
     runner.run(['systemctl', 'daemon-reload'], check=False)

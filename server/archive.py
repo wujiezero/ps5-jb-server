@@ -21,6 +21,7 @@ import re
 import zlib
 
 from files import FileServiceError
+from game_layout import GameLayoutError, NoGameError, resolve_game
 
 CHUNK = 256 * 1024
 HEAD_BYTES = 256 * 1024
@@ -29,6 +30,8 @@ MAX_HEADER = 2 * 1024 * 1024
 # ("Declared dictionary size is not supported"); checked 2026-11-10.
 MAX_DICTIONARY = 64 * 1024 * 1024
 MAX_VOLUMES = 999
+MAX_METADATA_FILE = 1024 * 1024
+MAX_METADATA_TOTAL = 2 * 1024 * 1024
 INCOMPLETE = '压缩包不完整：最后一个分卷没有结束标记，可能缺少后面的分卷'
 SOLID = ('这是固实（solid）压缩包，服务器上的 libarchive 处理它会漏文件；'
          '需要 unrar 解压引擎（libunrar5、rclone、FUSE），或先在电脑或 NAS 上解压后再传文件夹')
@@ -508,9 +511,15 @@ class Installer:
         parent = self.dest if mode == 'install' else posixpath.dirname(self.dest)
         self.staging = posixpath.join(parent, f'.extract-{ident}')
         self.made = set()
-        self.param = None
-        self.sfo = False            # PS4 games carry sce_sys/param.sfo instead of param.json
-        self.packages = 0           # .pkg installers rather than an unpacked game
+        # These are all normalized regular files uploaded from the archive.  Keep
+        # metadata and sidecars separately so layout resolution never has to
+        # inspect the remote file service again.
+        self.paths = set()
+        self.metadata = {}
+        self.metadata_bytes = 0
+        self.packages = []
+        self.sidecars = []
+        self._sidecar_final = {}
 
     def run(self, base):
         try:
@@ -592,14 +601,22 @@ class Installer:
             raise ArchiveError(f'{relative} 的大小未知，无法写入 PS5')
         directory, name = posixpath.split(posixpath.join(self.staging, relative))
         self._mkdirs(directory)
-        self.hooks.current(relative, size, 0)
-        keep = relative.endswith('sce_sys/param.json') and relative.count('/') <= 2 and size < 1024 * 1024
-        if relative.endswith('sce_sys/param.sfo') and relative.count('/') <= 2:
-            self.sfo = True
-        if relative.lower().endswith('.pkg'):
-            self.packages += 1
+        self.paths.add(relative)
+        lower = relative.lower()
+        is_metadata = (lower.endswith('sce_sys/param.json')
+                       or lower.endswith('sce_sys/param.sfo'))
+        keep_metadata = is_metadata and size < MAX_METADATA_FILE
+        if keep_metadata and relative not in self.metadata:
+            if self.metadata_bytes + size > MAX_METADATA_TOTAL:
+                raise ArchiveError('压缩包中的元数据超过总限制')
+            self.metadata_bytes += size
+        if lower.endswith('.pkg') and relative not in self.packages:
+            self.packages.append(relative)
+        elif lower.endswith('.zip') and relative not in self.sidecars:
+            self.sidecars.append(relative)
         captured = []
         done = [0]
+        self.hooks.current(relative, size, 0)
 
         def chunks():
             for block in entry.get_blocks(CHUNK):
@@ -608,7 +625,7 @@ class Installer:
                 self.hooks.current(relative, size, done[0])
                 if self.engine == 'unrar':
                     self.hooks.read(len(block))     # progress in unpacked bytes
-                if keep:
+                if keep_metadata:
                     captured.append(block)
                 yield block
             if done[0] != size:
@@ -620,30 +637,50 @@ class Installer:
 
         self.files.upload(directory, name, chunks(), size, overwrite=True)
         self.hooks.written()
-        if keep:
-            try:
-                self.param = (relative, json.loads(b''.join(captured).decode('utf-8-sig')))
-            except (ValueError, UnicodeDecodeError):
-                pass
+        if keep_metadata:
+            self.metadata[relative] = b''.join(captured)
 
     # -- placing the result --
     def _finish(self, base, written):
         self.hooks.current('', 0, 0)
+        try:
+            resolved = resolve_game(self.paths, self.metadata, hint=base)
+        except NoGameError:
+            resolved = None
+        except GameLayoutError as exc:
+            # Layout ambiguity, malformed metadata, and title conflicts are
+            # unsafe to publish as an ordinary legacy extraction.
+            raise ArchiveError(str(exc)) from None
+
         entries = self.files.list(self.staging)['entries']
-        root = self.staging
-        top = ''
-        if len(entries) == 1 and entries[0].get('dir'):
-            top = entries[0]['name']
-            root = posixpath.join(self.staging, top)
-        title = ''
-        if self.param and isinstance(self.param[1], dict):
-            title = title_guess(str(self.param[1].get('titleId') or ''))
-        note = install_note(bool(self.param) or self.sfo, self.packages)
+        top = entries[0]['name'] if len(entries) == 1 and entries[0].get('dir') else ''
+        if resolved is not None:
+            root_relative = resolved['root']
+            title = resolved['title']
+            playable = True
+            note = install_note(True, self.packages, playable=True)
+        else:
+            # Preserve the historical extraction behavior for patches, PKGs,
+            # and ordinary folders which do not form a runnable game.
+            root_relative = top
+            title = self._metadata_title()
+            playable = False
+            note = install_note(bool(self.metadata), self.packages, playable=False)
+
+        root = (posixpath.join(self.staging, root_relative)
+                if root_relative else self.staging)
         if self.mode == 'merge':
-            self._merge(root, self.dest)
+            target = self.dest
+            self._merge(root, target)
+            self._move_external_sidecars(root_relative, target, merge=True)
             self._remove(self.staging)
-            return {'path': self.dest, 'title': title, 'note': note}
-        name = title or title_guess(top) or title_guess(base) or top or base
+            game = ({key: value for key, value in resolved.items() if key != 'root'} | {'path': target}) if resolved is not None else None
+            packages, sidecars = self._final_sidecar_paths(root_relative, target, merge=True)
+            return {'path': target, 'title': title, 'note': note, 'game': game,
+                    'packages': packages, 'sidecars': sidecars}
+
+        name = (title or title_guess(top) or title_guess(base)
+                or top or base)
         name = re.sub(r'[\\/\x00]', '_', name)[:200] or f'archive-{self.ident}'
         target = posixpath.join(self.dest, name)
         existing = {entry['name'] for entry in self.files.list(self.dest)['entries']}
@@ -651,10 +688,90 @@ class Installer:
             name = f'{name}-{self.ident[:6]}'
             target = posixpath.join(self.dest, name)
             note = (note + '；' if note else '') + f'目标已存在同名文件夹，已改名为 {name}'
+
+        # A single server-side rename publishes the game/legacy root.  Anything
+        # outside a resolved game root is moved first-class to a sibling path,
+        # while README and all other non-game entries are discarded with staging.
         self.files.rename(root, target)
-        if root != self.staging:
-            self._remove(self.staging)
-        return {'path': target, 'title': title, 'note': note}
+        self._move_external_sidecars(root_relative, target, merge=False)
+        self._remove(self.staging)
+        game = ({key: value for key, value in resolved.items() if key != 'root'} | {'path': target}) if resolved is not None else None
+        packages, sidecars = self._final_sidecar_paths(root_relative, target, merge=False)
+        return {'path': target, 'title': title, 'note': note, 'game': game,
+                'packages': packages, 'sidecars': sidecars}
+
+    def _metadata_title(self):
+        """Best-effort legacy title without weakening game resolution."""
+        for raw in self.metadata.values():
+            try:
+                document = json.loads(raw.decode('utf-8-sig'))
+                if isinstance(document, dict):
+                    title = title_guess(str(document.get('titleId') or ''))
+                    if title:
+                        return title
+            except (ValueError, UnicodeDecodeError, TypeError):
+                pass
+            try:
+                title = title_guess(raw.decode('latin1'))
+            except UnicodeDecodeError:
+                title = ''
+            if title:
+                return title
+        return ''
+
+    def _sidecar_inside_root(self, relative, root_relative):
+        return not root_relative or relative == root_relative or relative.startswith(root_relative + '/')
+
+    def _external_sidecar_path(self, relative, target, merge, reserved):
+        parent = posixpath.dirname(target) if merge else self.dest
+        basename = posixpath.basename(relative)
+        stem, suffix = posixpath.splitext(basename)
+        candidate = posixpath.join(parent, basename)
+        index = 0
+        while posixpath.basename(candidate) in reserved:
+            index += 1
+            candidate = posixpath.join(parent, f'{stem}-{self.ident[:6]}-{index}{suffix}')
+        reserved.add(posixpath.basename(candidate))
+        return candidate
+
+    def _move_external_sidecars(self, root_relative, target, merge):
+        """Move retained sidecars which were outside a resolved game root."""
+        if not root_relative:
+            return
+        retained = self.packages + self.sidecars
+        if not retained:
+            return
+        parent = posixpath.dirname(target) if merge else self.dest
+        try:
+            reserved = {entry['name'] for entry in self.files.list(parent)['entries']}
+        except FileServiceError:
+            reserved = set()
+        for relative in retained:
+            if self._sidecar_inside_root(relative, root_relative):
+                continue
+            destination = self._external_sidecar_path(relative, target, merge, reserved)
+            self.files.rename(posixpath.join(self.staging, relative), destination)
+            self._sidecar_final[relative] = destination
+
+    def _final_sidecar_paths(self, root_relative, target, merge):
+        packages, sidecars = [], []
+        retained = self.packages + self.sidecars
+        parent = posixpath.dirname(target) if merge else self.dest
+        reserved = set()
+        try:
+            entries = self.files.list(parent)['entries']
+            reserved.update(entry['name'] for entry in entries)
+        except FileServiceError:
+            pass
+        for relative in retained:
+            if self._sidecar_inside_root(relative, root_relative):
+                path = (posixpath.join(target, relative[len(root_relative) + 1:])
+                        if root_relative else posixpath.join(target, relative))
+            else:
+                path = self._sidecar_final.get(
+                    relative, posixpath.join(parent, posixpath.basename(relative)))
+            (packages if relative in self.packages else sidecars).append(path)
+        return packages, sidecars
 
     def _merge(self, source, target):
         """Move source's content over target; same disk, so every move is a rename."""
@@ -703,13 +820,22 @@ class Installer:
             pass
 
 
-def install_note(has_params, packages):
-    """What the page should say about the result beyond its path."""
-    if has_params:
+def install_note(has_params, packages, playable=None):
+    """What the page should say about the result beyond its path.
+
+    ``packages`` historically accepted a count; the installer now passes the
+    retained package paths so callers can link to them.  Keep the old helper
+    contract for existing callers while allowing an explicit non-playable game
+    result to explain that its eboot is missing.
+    """
+    count = packages if isinstance(packages, int) else len(packages)
+    if playable is True or (playable is None and has_params):
         return ''
-    if packages:
-        return (f'压缩包里是 {packages} 个 .pkg 安装包，不是解开的游戏文件夹；'
+    if count:
+        return (f'压缩包里是 {count} 个 .pkg 安装包，不是解开的游戏文件夹；'
                 '需要用 PS5 上的 pkg 安装工具安装')
+    if playable is False and has_params:
+        return '找到了 sce_sys/param.json 或 param.sfo，但没有找到同一游戏根目录下的 eboot.bin，可能不是游戏文件夹'
     return '没有找到 sce_sys/param.json 或 param.sfo，可能不是游戏文件夹'
 
 
