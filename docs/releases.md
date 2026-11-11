@@ -2,7 +2,7 @@
 
 ## 版本源
 
-`server/version.py` 的 `VERSION` 是唯一应用版本源，采用 `X.Y.Z` 正式版本（当前 `1.7.0`）。管理服务、插件仓库 HTTP 标识、`GET /api/version` 和页面均使用这个版本。页面侧栏和「设置 → 服务更新」显示当前版本，不需要连接 GitHub。
+`server/version.py` 的 `VERSION` 是唯一应用版本源，采用 `X.Y.Z` 正式版本（当前 `1.8.0`）。管理服务、插件仓库 HTTP 标识、`GET /api/version` 和页面均使用这个版本。页面侧栏和「设置 → 服务更新」显示当前版本，不需要连接 GitHub。
 
 「检查更新」由服务器读取 `wujiezero/ps5-jb-server` 的 GitHub Releases latest API，只接受正式发布，跳过草稿和预发布。不在启动时自动访问 GitHub。未检查、暂无正式发布、检查失败和发现新版会分别显示；检查失败时不能点击更新。
 
