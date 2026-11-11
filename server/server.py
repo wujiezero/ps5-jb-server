@@ -29,7 +29,7 @@ import netproxy
 from settings import Settings
 from titles import TitleCatalog, proxy_reader
 from dns_service import DNSPolicy, LimitedThreads, diagnostic_error, start_dns
-from policy import ConfigStore, Firewall
+from policy import ConfigStore, Firewall, LOCAL_DOMAINS
 from plugin_updates import PluginUpdates, PluginUpdateError
 from version import VERSION, version_info
 from updates import UpdateManager, UpdateError, ACTIVE as UPDATE_ACTIVE
@@ -667,6 +667,9 @@ class Application(_ConsoleMixin):
             has_previous = self.engine.store.previous is not None
         return {
             'config': config,
+            # Builtin names answered by this host; the UI explains them instead of
+            # duplicating the list, so policy.py stays the single source of truth.
+            'local_domains': list(LOCAL_DOMAINS),
             'status': {'host_ip': self.engine.host_ip, 'dns': 'running', 'gateway': gateway,
                        'host': service['units']['host']['state'],
                        'host_unit': service['units']['host']['name'],

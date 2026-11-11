@@ -14,7 +14,7 @@ from dns_service import DNSPolicy  # noqa: E402
 from files import FileProxy, FileServiceError, _check_path  # noqa: E402
 from policy import ConfigStore  # noqa: E402
 from ps5 import autoload_view, parse_autoload, serialize_autoload  # noqa: E402
-from server import AuthManager, RepoManager, change_password, create_engine  # noqa: E402
+from server import Application, AuthManager, RepoManager, change_password, create_engine  # noqa: E402
 from settings import Settings  # noqa: E402
 
 RULESETS = Path(__file__).resolve().parents[1] / 'rulesets' / 'compiled.json'
@@ -255,6 +255,28 @@ class PowerTests(unittest.TestCase):
             manager.pair('192.0.2.5', pin='1234', account_id='x')
         with self.assertRaises(ValueError):
             manager.pair('192.0.2.5', pin='12345678')
+
+
+class BuiltinDomainExposureTests(unittest.TestCase):
+    """The UI explains LOCAL_DOMAINS from the API, not from a duplicated list."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = ConfigStore(Path(self.tmp.name) / 'config.json',
+                                 {'domains': [], 'networks': [], 'upstream_dns': '192.0.2.1'})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_state_exposes_builtin_domains(self):
+        engine = create_engine(self.store, '192.0.2.20', '192.0.2.0/24', firewall=NullFirewall())
+        app = Application(engine)
+        app.service_info = lambda: {'units': {'host': {'name': 'ps5-jb-host', 'state': 'unknown'}},
+                                    'ports': {}, 'paths': {}}
+        state = app.state()
+        self.assertEqual(state['local_domains'],
+                         ['manuals.playstation.net', 'ena.net.playstation.net',
+                          'www.msftconnecttest.com'])
 
 
 if __name__ == '__main__':
