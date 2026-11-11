@@ -47,9 +47,17 @@ class FakePldmgr(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == '/version':
             return self.reply('0.6.3-test', raw=True)
+        if path == '/manage:check':
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            name = (query.get('filename') or [''])[0]
+            key = name.rsplit('.', 1)[0].lower()
+            exists = any(item.endswith('/' + name) for item in self.installed)
+            return self.reply({'status': 'ok', 'key': key, 'folder_exists': exists,
+                               'existing': {'slot': 'local/' + key} if exists else None})
         if path == '/list_payloads':
             return self.reply({'self': {'id': 'pldmgr'},
-                               'items': [{'slot': 'local/x', 'path': item,
+                               'items': [{'slot': ('local/' + item.split('/payloads/local/', 1)[1].split('/')[0].lower()
+                                                   if '/payloads/local/' in item else 'local/x'), 'path': item,
                                           'filename': item.rsplit('/', 1)[-1],
                                           'kind': 'local'} for item in self.installed]})
         if path == '/get_config':

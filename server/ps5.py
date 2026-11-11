@@ -7,6 +7,7 @@ in place of an auth token.
 import concurrent.futures
 import ipaddress
 import json
+import re
 import socket
 import threading
 import time
@@ -207,6 +208,10 @@ def _now():
 class ConsoleError(RuntimeError):
     """The console answered, but not acceptably."""
 
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
 
 # pldmgr autoload sequence (/data/pldmgr/autoload.txt, AUTOLOAD_LIST over HTTP):
 # comma separated entries, run in order. "local/<slot>" launches a payload,
@@ -326,7 +331,8 @@ class PldmgrClient:
                 code = response.status
         except urllib.error.HTTPError as exc:
             detail = exc.read(200).decode('utf-8', 'replace')
-            raise ConsoleError(f'HTTP {exc.code}: {detail[:160]}') from exc
+            exc.close()
+            raise ConsoleError(f'HTTP {exc.code}: {detail[:160]}', status=exc.code) from exc
         except (urllib.error.URLError, socket.timeout, OSError) as exc:
             raise ConsoleError(str(exc)) from exc
         if code >= 400:
@@ -387,14 +393,53 @@ class PldmgrClient:
         return self._request('/repository_install', query={'filename': filename}, mutating=True)
 
     def upload_payload(self, filename, data):
-        return self._request('/manage:upload', query={'filename': filename},
-                             mutating=True, raw=data)
+        # pldmgr strips version/platform suffixes when choosing a local slot:
+        # zftpd.elf and zftpd-ps5-v1.7.0.elf both target local/zftpd. Its default
+        # mode=new refuses an occupied slot with a generic HTTP 500. Ask its own
+        # read-only resolver rather than duplicating version/name heuristics.
+        mode = 'new'
+        target_slot = None
+        try:
+            existing = self._request('/manage:check', query={'filename': filename})
+        except ConsoleError as exc:
+            if exc.status != 404:
+                raise ConsoleError(f'无法检查主机上的插件槽位，未上传：{exc}', status=exc.status) from exc
+            # Legacy servers may not implement the check endpoint. Never guess
+            # replacement after a timeout, malformed reply or storage error.
+        else:
+            if (not isinstance(existing, dict) or existing.get('status') != 'ok'
+                    or type(existing.get('folder_exists')) is not bool):
+                raise ConsoleError('pldmgr 插件槽位检查失败或返回格式不正确，未上传')
+            key = existing.get('key')
+            if not isinstance(key, str) or not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,126}', key) or '..' in key:
+                raise ConsoleError('pldmgr 未返回有效的本地插件槽位，未上传')
+            target_slot = 'local/' + key
+            if existing['folder_exists']:
+                mode = 'replace'
+        result = self._request('/manage:upload', query={'filename': filename, 'mode': mode},
+                               mutating=True, raw=data)
+        return {'response': result, 'slot': target_slot, 'replaced': mode == 'replace'}
 
-    def payload_path(self, filename):
+    def payload_path(self, filename, slot=None, local_only=False):
+        matches = []
         for item in self.payloads():
-            if item.get('filename') == filename and item.get('path'):
-                return item['path']
-        return None
+            if not isinstance(item, dict) or item.get('filename') != filename or not item.get('path'):
+                continue
+            if slot is not None and item.get('slot') != slot:
+                continue
+            if local_only:
+                # An older manager may lack /manage:check. Still never confirm
+                # or run a repository copy as the result of a local upload.
+                listed_slot = item.get('slot')
+                if listed_slot:
+                    if not str(listed_slot).startswith('local/'):
+                        continue
+                elif not str(item['path']).startswith('/data/pldmgr/payloads/local/'):
+                    continue
+            matches.append(item['path'])
+        if local_only:
+            return matches[0] if len(matches) == 1 else None
+        return matches[0] if matches else None
 
     def run(self, path):
         return self._request('/loadpayload:' + urllib.parse.quote(path, safe='/'), mutating=True)
@@ -625,19 +670,23 @@ class HostManager:
         if filename not in self.manifest:
             raise ValueError('插件不在本服务仓库中')
         data = self._fetch_bytes(filename) if self._fetch_bytes else self._payload_bytes(filename)
+        uploaded = False
         try:
             client = self._client(ip)
-            client.upload_payload(filename, data)
-            path = client.payload_path(filename)
+            upload = client.upload_payload(filename, data)
+            uploaded = True
+            path = client.payload_path(filename, slot=upload['slot'], local_only=True)
+            if not path:
+                raise ConsoleError('上传后未能确认新插件文件已保存，请刷新主机详情检查后重试')
             if run:
-                client.run(path or filename)
+                client.run(path)
             return {'ok': True, 'installed': True, 'ran': bool(run), 'mode': 'pldmgr',
                     'path': path, 'host': self.host(ip)}
         except ConsoleError as exc:
             # elfldr cannot store a payload, it only runs it. Falling back is
             # only honest when the user asked to run.
-            if not run:
-                raise ConsoleError(f'pldmgr 安装失败：{exc}') from exc
+            if not run or uploaded or exc.status is not None:
+                raise ConsoleError(f'pldmgr 安装或运行确认失败：{exc}') from exc
             if not _tcp_open(ip, self.elf_port, 0.5):
                 raise ConsoleError(f'pldmgr 上传失败且 elfldr 不可用：{exc}') from exc
             ElfldrClient(ip, self.elf_port).run_url(self.manifest[filename])
