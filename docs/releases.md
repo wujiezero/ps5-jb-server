@@ -56,21 +56,20 @@ python3 scripts/build_release.py --tag v1.4.0 --output /tmp/ps5-release
 
 ## 没有更新入口的旧版本：首次升级
 
-旧版本本身没有更新 API 和升级执行器，不能通过旧页面升级自己。需要通过 SSH 手动升级一次，装好版本号、更新模块和恢复服务；之后才可以在页面检查正式 Release 并一键更新。GitHub `main` 尚未包含本功能时，不能只运行 `git pull main`。
+旧版本本身没有更新 API 和升级执行器，不能通过旧页面升级自己。需要通过 SSH 手动升级一次，装好版本号、更新模块和恢复服务；之后才可以在页面检查正式 Release 并一键更新。此机制从 `v1.4.0` 开始提供。
 
 首次升级前，等 NAS 传输、解压和文件复制全部完成。保留原配置、管理员密码、NAS 密钥、证书和数据；不要卸载、使用 `--purge` 或重新初始化 NAS key。
 
 ### 先获取包含更新功能的代码
 
-当前可从 `auto-game-install` 分支取得已验证的运行代码和首次升级修复。请在一个新的工作目录执行，避免覆盖原有源码修改：
+推荐使用正式发布的 `v1.4.0` 标签，确保首次升级代码和发布包一致。请在一个新的工作目录执行，避免覆盖原有源码修改：
 
 ```sh
-git clone --branch auto-game-install https://github.com/wujiezero/ps5-jb-server.git ps5-jb-server-upgrade
+git clone --branch v1.4.0 --depth 1 https://github.com/wujiezero/ps5-jb-server.git ps5-jb-server-upgrade
 cd ps5-jb-server-upgrade
-git switch --detach origin/auto-game-install
 ```
 
-正式版本发布后，推荐改用对应 `vX.Y.Z` 标签。源码提交或分支推送不等于 GitHub Release；没有正式 Release 时，新页面显示“暂无发布”是正常的。
+后续版本将标签替换为对应的 `vX.Y.Z`。源码提交或分支推送不等于 GitHub Release；网页检查只读取正式发布。
 
 ### 标准安装器部署
 
