@@ -331,13 +331,13 @@ def write_update_descriptor(layout, runner):
     from enable_web_updates import deployment_descriptor
     if layout.config.exists():
         descriptor = deployment_descriptor(layout.opt.resolve(), layout.config.resolve(),
-                                           'ps5-jb-server.service', 'ps5-jb-repo.service')
+                                           'ps5-jb-server.service', 'ps5-jb-repo.service', 'ps5-jb-host.service')
     else:
         descriptor = {'schema': 1, 'program_dir': str(layout.opt.resolve()),
                       'static_dir': str((layout.opt / 'web').resolve()),
                       'data_dir': str(layout.data.resolve()), 'config_path': str(layout.config.resolve()),
                       'admin_unit': 'ps5-jb-server.service', 'repo_unit': 'ps5-jb-repo.service',
-                      'health_url': f'https://{layout.host_ip}:{layout.ports["admin"]}/api/version'}
+                      'host_unit': 'ps5-jb-host.service', 'health_url': f'https://{layout.host_ip}:{layout.ports["admin"]}/api/version'}
     runner.write(layout.opt / 'update-install.json', json.dumps(descriptor, indent=2), 0o644)
 
 
@@ -563,7 +563,7 @@ def install_units(layout, runner):
         descriptor = json.loads(descriptor_path.read_text())
     else:
         descriptor = {'program_dir': str(layout.opt), 'admin_unit': 'ps5-jb-server.service',
-                      'repo_unit': 'ps5-jb-repo.service'}
+                      'repo_unit': 'ps5-jb-repo.service', 'host_unit': 'ps5-jb-host.service'}
     for name, text in recovery_units(descriptor).items():
         runner.write(layout.systemd_dir / name, text, 0o644)
     runner.run(['systemctl', 'daemon-reload'], check=False)

@@ -56,11 +56,17 @@
 
 已启用网页升级的部署可在「设置 → 服务更新」查看当前/最新版本、检查 GitHub 正式发布并一键升级。升级前校验 SHA-256，保留配置与 NAS 密钥，重启失败自动恢复旧程序。首次启用旧布局和发布新版本的方法见 [版本与发版](releases.md)。
 
-源码安装也可以继续使用：
+没有网页升级入口的旧版本需要先通过 SSH 手动升级一次。标准安装先备份程序、配置、密钥和数据，再获取包含新功能的源码、停止原服务、运行升级、重新启动；详见 [旧版首次升级](releases.md#没有更新入口的旧版本首次升级)。当前功能尚在 `auto-game-install` 分支时，直接拉取 `main` 不会得到新入口。
+
+标准布局的升级动作如下（先完成备份和源码获取）：
 
 ```sh
-cd /path/to/ps5-jb-server && git pull && sudo ./install.sh upgrade
+sudo systemctl stop ps5-jb-server.service ps5-jb-host.service ps5-jb-repo.service
+sudo ./install.sh upgrade --no-payloads --no-manuals-host --no-firewall
+sudo systemctl restart ps5-jb-server.service ps5-jb-host.service ps5-jb-repo.service
 ```
+
+先停服务是因为安装器会检查端口占用；如果中途失败，应先处理报错或恢复备份，再启动原服务。旧的 `/opt/ps5-manager` 手工布局请按专门步骤升级，不要直接套用标准路径。
 
 - 覆盖 `/opt/ps5-jb-server` 下的程序与前端；
 - **保留** `config.toml`、证书、管理员密码、白名单、标签、插件仓库；

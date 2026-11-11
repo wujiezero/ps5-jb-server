@@ -24,13 +24,16 @@ def checked_path(value):
     return path
 
 
-def deployment_descriptor(program, config, admin_unit, repo_unit=None):
+def deployment_descriptor(program, config, admin_unit, repo_unit=None, host_unit=None):
     program, config = checked_path(str(program)), checked_path(str(config))
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]*\.service', admin_unit or ''):
         raise ValueError('管理服务名称无效')
     if repo_unit is not None and (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]*\.service', repo_unit)
                                   or repo_unit == admin_unit):
         raise ValueError('仓库服务名称无效')
+    if host_unit is not None and (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]*\.service', host_unit)
+                                  or host_unit in (admin_unit, repo_unit)):
+        raise ValueError('用户手册服务名称无效')
     with config.open('rb') as stream:
         raw = tomllib.load(stream)
     paths = raw.get('paths') or {}
@@ -48,16 +51,16 @@ def deployment_descriptor(program, config, admin_unit, repo_unit=None):
         raise ValueError('管理端口无效')
     host = '[' + host + ']' if ':' in host else host
     return {'schema': 1, 'program_dir': str(program), 'static_dir': str(static), 'data_dir': str(data),
-            'config_path': str(config), 'admin_unit': admin_unit, 'repo_unit': repo_unit,
+            'config_path': str(config), 'admin_unit': admin_unit, 'repo_unit': repo_unit, 'host_unit': host_unit,
             'health_url': f'https://{host}:{port}/api/version'}
 
 
-def enroll(program, config, admin_unit, repo_unit=None, dry_run=False):
+def enroll(program, config, admin_unit, repo_unit=None, dry_run=False, host_unit=None):
     program = checked_path(str(program))
     required = ('server.py', 'version.py', 'updates.py', 'update_worker.py')
     if not all((program / name).is_file() and not (program / name).is_symlink() for name in required):
         raise ValueError('请先升级已安装的服务模块和页面：缺少 version.py、updates.py 或 update_worker.py')
-    result = deployment_descriptor(program, config, admin_unit, repo_unit)
+    result = deployment_descriptor(program, config, admin_unit, repo_unit, host_unit)
     if not dry_run:
         descriptor = program / 'update-install.json'
         checked_path(str(descriptor))
@@ -89,6 +92,11 @@ def recovery_units(descriptor):
     result = {recovery: text}
     for unit in units:
         result[unit + '.d/update-recovery.conf'] = '[Unit]\nRequires=' + recovery + '\nAfter=' + recovery + '\n'
+    # host.service Requires the manager and is stopped when it stops. Wants in
+    # the reverse direction queues the host again when a verified update starts
+    # the manager; host's After=manager retains the existing startup ordering.
+    if descriptor.get('host_unit'):
+        result[admin + '.d/update-recovery.conf'] += 'Wants=' + descriptor['host_unit'] + '\n'
     return result
 
 
@@ -113,6 +121,7 @@ def main():
     parser.add_argument('--config', required=True, type=Path)
     parser.add_argument('--admin-unit', required=True)
     parser.add_argument('--repo-unit')
+    parser.add_argument('--host-unit', help='随管理服务启动的现有用户手册服务，如 ps5-host.service')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     try:
@@ -121,7 +130,7 @@ def main():
             raise ValueError('仅允许 /opt 下已安装的平铺服务目录，不能登记源码目录')
         if os.geteuid() != 0 and not args.dry_run:
             raise ValueError('请用 sudo 运行登记命令')
-        result = enroll(program, args.config, args.admin_unit, args.repo_unit, args.dry_run)
+        result = enroll(program, args.config, args.admin_unit, args.repo_unit, args.dry_run, args.host_unit)
         if not args.dry_run:
             install_recovery_units(result)
         print(json.dumps(result, ensure_ascii=False, indent=2))
