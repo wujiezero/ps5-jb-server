@@ -97,6 +97,8 @@ class Runner:
             print(line + '   (dry-run)')
             return subprocess.CompletedProcess(argv, 0, '', '')
         print(line)
+        # Keep our own buffered lines ahead of a child that writes to the same log.
+        sys.stdout.flush()
         return subprocess.run(argv, check=check, capture_output=capture, text=True)
 
     def note(self, text):
@@ -413,12 +415,39 @@ def fetch_components(layout, runner):
         runner.note('跳过插件下载（--no-payloads）')
     else:
         base = f'http://{layout.host_ip}:{layout.ports["repo"]}/payloads/'
+        # Stream the downloader's output: per-plugin failures are logged there and
+        # must reach the install log, but they never abort the install.
         runner.run([sys.executable, str(REPO / 'scripts/fetch_payloads.py'),
-                    '--repo-dir', str(layout.repo), '--base-url', base], check=False)
+                    '--repo-dir', str(layout.repo), '--base-url', base],
+                   check=False, capture=False)
     if not catalog.exists() and not layout.dry_run:
         runner.write(catalog, json.dumps({'name': 'ps5-jb-server', 'payloads': []},
                                          ensure_ascii=False, indent=1) + '\n', 0o644)
-        runner.note('插件仓库为空（稍后可运行 scripts/fetch_payloads.py 填充）')
+    report_payloads(layout, runner)
+
+
+def report_payloads(layout, runner):
+    """Say how many plugins the repository really holds.
+
+    Individual download failures are already logged by fetch_payloads.py and
+    never abort the install; this only turns an empty repository into a clear
+    warning instead of leaving the user to meet the PS5 error later.
+    """
+    catalog = layout.repo / 'repo.json'
+    try:
+        document = json.loads(catalog.read_text(encoding='utf-8'))
+        items = [item for item in document.get('payloads', []) if isinstance(item, dict)]
+    except (OSError, ValueError):
+        if not layout.dry_run:
+            runner.note('插件仓库不可读，PS5 接入前请运行 scripts/fetch_payloads.py 补下载')
+        return
+    if not items:
+        print('  ! 插件仓库为空：PS5 接入本服务仓库会报 “No valid payloads found in source JSON”。')
+        runner.note(f'稍后补下载：python3 {REPO / "scripts" / "fetch_payloads.py"} '
+                    f'--repo-dir {layout.repo} '
+                    f'--base-url http://{layout.host_ip}:{layout.ports["repo"]}/payloads/')
+        return
+    runner.note(f'插件仓库：{len(items)} 个插件')
 
 
 def install_power_engine(layout, runner):

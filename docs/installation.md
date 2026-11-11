@@ -21,6 +21,10 @@
 4. 生成 12 位管理密码 → `credentials.json`（PBKDF2-SHA256、310k 轮）与
    `/root/ps5-jb-server-access.txt`（0600）。
 5. 下载第三方组件：用户手册宿主（GPL-3.0，校验 SHA-256）、插件（`payloads.json` 清单，逐个校验）。
+   插件默认从上游镜像自动下载；某一条下载失败（网络、HTTP、校验和不符）只记录原因，不中断安装，
+   结束时汇总成功/失败数量。仓库为空时会明确告警，之后可重跑
+   `sudo python3 /opt/ps5-jb-server-src/scripts/fetch_payloads.py --repo-dir /srv/ps5-jb-server --base-url http://<本机>:8080/payloads/`
+   补齐，无需重新安装。
 6. 写 nftables 基线（默认拒绝）、`/etc/sysctl.d`（`ip_forward=0`），并 `nft -c` 校验语法。
 7. 安装三个 unit 并 `enable --now`：`ps5-jb-server`（策略/DNS/管理）、`ps5-jb-host`（用户手册 443/80）、
    `ps5-jb-repo`（插件仓库 8080）。

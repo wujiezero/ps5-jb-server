@@ -194,8 +194,11 @@ PS5 的待机即休息模式（黄灯）：插件留在内存里，唤醒后不�
 
 本仓库**不打包**任何插件二进制，也不打包上游的用户手册宿主脚本：
 
-- 插件：`payloads.json` 只记录清单与 SHA-256，安装/首次运行时由 `scripts/fetch_payloads.py` 从上游下载。
-  刷新仓库：`python3 scripts/fetch_payloads.py --repo-dir /srv/ps5-jb-server --base-url http://<本机>:8080/payloads/`
+- 插件：`payloads.json` 只记录清单、镜像地址与 SHA-256，安装时由 `scripts/fetch_payloads.py` 自动下载。
+  个别插件下载失败（网络、HTTP、校验和不符）只记录原因、不中断安装，结束时汇总成功与失败数量；
+  仓库为空时会告警，重跑同一条命令即可补齐：
+  `python3 scripts/fetch_payloads.py --repo-dir /srv/ps5-jb-server --base-url http://<本机>:8080/payloads/`
+  （清单若使用相对地址，可加 `--download-base <镜像前缀>`）。
 - 用户手册宿主：上游 [itsPLK/ps5-webkit-autoloader](https://github.com/itsPLK/ps5-webkit-autoloader)
   v0.7.1（**GPL-3.0**）的 `host.py`，安装时按 `components.json` 下载并校验 SHA-256；
   也可用 `--no-manuals-host` 跳过。
