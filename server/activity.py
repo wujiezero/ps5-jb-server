@@ -333,6 +333,9 @@ class FlowObserver:
                 'replied': True,
                 'target': 'domain:' + name,
                 'kind': 'dns',
+                # dns_service logs action='local' only for policy.LOCAL_DOMAINS,
+                # so the UI can tell a builtin host answer from a whitelist pass.
+                'local': action == 'local',
                 'allowed_now': verdict == 'allowed',
             }
             self.events.appendleft(event)

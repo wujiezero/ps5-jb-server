@@ -140,6 +140,25 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(dns[0]['verdict'], 'blocked')
         self.assertEqual(snapshot['hints']['dns_events'], 2)
 
+    def test_dns_events_mark_builtin_local_domains(self):
+        # dns_service logs action='local' only for policy.LOCAL_DOMAINS answers.
+        rows = [{'seq': 2, 'time': '2026-01-01T00:00:01+08:00', 'client': CLIENT,
+                 'name': 'manuals.playstation.net', 'qtype': 'A', 'action': 'local',
+                 'detail': HOST_IP},
+                {'seq': 1, 'time': '2026-01-01T00:00:00+08:00', 'client': CLIENT,
+                 'name': 'ps5.playstation.net', 'qtype': 'A', 'action': 'allowed',
+                 'detail': ''}]
+        observer = FlowObserver(
+            conntrack=lambda: '', classifier=self.classifier, labels=self.store,
+            dns_lookup=lambda ip: (None, None), is_allowed=lambda ip: False,
+            lan=LAN, host_ip=HOST_IP, clock=lambda: self.now, dns_events=lambda: rows)
+        observer.poll_once()
+        events = {event['domain']: event
+                  for event in observer.snapshot()['events'] if event['kind'] == 'dns'}
+        self.assertTrue(events['manuals.playstation.net']['local'])
+        self.assertEqual(events['manuals.playstation.net']['verdict'], 'allowed')
+        self.assertFalse(events['ps5.playstation.net']['local'])
+
     def test_missing_conntrack_still_shows_dns_and_recovers(self):
         rows = [{'seq': 1, 'time': '2026-01-01T00:00:00+08:00', 'client': CLIENT,
                  'name': 'ps5.playstation.net', 'qtype': 'A', 'action': 'allowed', 'detail': ''}]
