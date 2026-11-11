@@ -28,7 +28,7 @@
 
 | 文件 | 改动 |
 | --- | --- |
-| `web/index.html` | 白名单卡片 `#config-fields` 之后加 `#builtin-domains` 说明块（复用 `.policy-note` 样式） |
+| `web/index.html` | 白名单卡片内「允许的域名」字段帮助文字之后、`fieldset` 内加 `#builtin-domains` 说明块（复用 `.policy-note` 样式；实测放在 fieldset 之后会被推到卡片底部，不够显眼） |
 | `web/app.js` | ① `renderState()` 调 `renderBuiltinDomains(data.local_domains, status.host_ip)`；② `normalizeActivity()` 保留 `local`；③ `activityRow()` 对 `kind === 'dns' && local` 的行使结果列加「本机劫持」小字；④ 修正 `HELP.dns` / `HELP.manual` / `HELP.whitelist` / `HELP.activity` 文案 |
 | `web/style.css` | `#builtin-domains` 内的域名 chip 列表；`.result-note[data-tone="muted"]` |
 

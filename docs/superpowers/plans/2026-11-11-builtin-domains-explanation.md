@@ -144,7 +144,7 @@ git commit -m "状态接口：暴露内置域名列表"
 ### Task 3: 前端 — 说明块、活动行标注、功能说明文案
 
 **Files:**
-- Modify: `web/index.html`（约 310 行，`</fieldset>` 之后）
+- Modify: `web/index.html`（约 294 行，`#domains-error` 之后）
 - Modify: `web/app.js`（`normalizeActivity` 2162 行附近、`activityRow` 2297 之后、`renderState` 815 行附近、`HELP` 7692/7696/7707/7711 行）
 - Modify: `web/style.css`（`.result-note` 规则后、`.policy-note` 规则后）
 - Test: `tests/ui-interactions.js`（`fixture()` 暴露的函数列表 + 文件末尾新增 2 个 test）
@@ -190,7 +190,7 @@ Expected: FAIL — `ui.normalizeActivity is not a function`（未暴露）
 
 - [ ] **Step 3: Write minimal implementation**
 
-`web/index.html`，白名单卡片 `</fieldset>`（310 行）之后：
+`web/index.html`，白名单卡片内 `<p id="domains-error" ...></p>` 之后（即「允许的域名」字段帮助文字下方、`fieldset` 内）：
 
 ```html
               <div class="policy-note" id="builtin-domains" hidden>
