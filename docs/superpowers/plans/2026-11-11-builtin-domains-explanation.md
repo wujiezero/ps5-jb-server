@@ -146,7 +146,7 @@ git commit -m "状态接口：暴露内置域名列表"
 **Files:**
 - Modify: `web/index.html`（约 294 行，`#domains-error` 之后）
 - Modify: `web/app.js`（`normalizeActivity` 2162 行附近、`activityRow` 2297 之后、`renderState` 815 行附近、`HELP` 7692/7696/7707/7711 行）
-- Modify: `web/style.css`（`.result-note` 规则后、`.policy-note` 规则后）
+- Modify: `web/style.css`（`.activity-kind` 规则后加 `.domain-note`、`.policy-note` 规则后加 chip 列表）
 - Test: `tests/ui-interactions.js`（`fixture()` 暴露的函数列表 + 文件末尾新增 2 个 test）
 
 - [ ] **Step 1: Write the failing tests**
@@ -160,7 +160,7 @@ git commit -m "状态接口：暴露内置域名列表"
 文件末尾新增：
 
 ```js
-test('builtin DNS rows carry the local flag and render 本机劫持', () => {
+test('builtin DNS rows mark 本机劫持 after the domain, not in the verdict cell', () => {
   const ui = fixture();
   const normalized = ui.normalizeActivity({ events: [
     { kind: 'dns', domain: 'manuals.playstation.net', verdict: 'allowed', local: true, port: 53 },
@@ -168,8 +168,14 @@ test('builtin DNS rows carry the local flag and render 本机劫持', () => {
   ] });
   assert.equal(normalized.events[0].local, true);
   assert.equal(normalized.events[1].local, false);
-  assert.match(textOf(ui.activityRow(normalized.events[0])), /本机劫持/);
-  assert.doesNotMatch(textOf(ui.activityRow(normalized.events[1])), /本机劫持/);
+  const localRow = ui.activityRow(normalized.events[0]);
+  const otherRow = ui.activityRow(normalized.events[1]);
+  const domainCell = (row) => row.children[3];
+  const verdictCell = (row) => row.children[6];
+  assert.match(textOf(domainCell(localRow)), /manuals\.playstation\.net 本机劫持/);
+  assert.doesNotMatch(textOf(verdictCell(localRow)), /本机劫持/);
+  assert.match(textOf(verdictCell(localRow)), /允许/);
+  assert.doesNotMatch(textOf(otherRow), /本机劫持/);
 });
 
 test('builtin domain block lists server domains and hides when absent', () => {
@@ -212,7 +218,12 @@ Expected: FAIL — `ui.normalizeActivity is not a function`（未暴露）
 
 ```js
     // 内置域名由本机 DNS 直接应答，不是白名单放行；单独标出来，避免误读。
-    if (event.kind === 'dns' && event.local) verdictCell.append(activityResultNote('本机劫持', 'muted'));
+    if (event.kind === 'dns' && event.local) {
+      const note = document.createElement('span');
+      note.className = 'domain-note';
+      note.textContent = '本机劫持';
+      domainCell.append(note);   // 域名列：domainCell 在 activityRow 里已创建
+    }
 ```
 
 3) `renderState` 里 `$$('[data-host-ip]').forEach(...)` 之后加：
@@ -264,10 +275,23 @@ Expected: FAIL — `ui.normalizeActivity is not a function`（未暴露）
 '标「本机劫持」的 DNS 记录来自内置域名，由本机直接应答，不是白名单放行。'
 ```
 
-`web/style.css`，`.result-note[data-tone="warning"]` 之后加：
+`web/style.css`，`.activity-kind` 规则之后加：
 
 ```css
-.result-note[data-tone="muted"] { color: var(--faint); }
+/* 内置域名（本机劫持）标记：跟在域名后面，和结果列的白名单判定分开。 */
+.domain-note {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--bar);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  vertical-align: middle;
+}
 ```
 
 `.policy-note p { ... }` 之后加：
@@ -315,7 +339,7 @@ Expected: 无空白错误；工作区只剩预期文件
 
 - [ ] **Step 4: 浏览器实测（可选，建议）**
 
-用会话临时目录的 mock 页面（`.claude/launch.json` 的 mock 脚本不在仓库里，需按 `tests/browser/console-smoke.js` 的夹具重建）确认：白名单页说明块、活动行「本机劫持」小字、320/390 宽度不溢出。
+用会话临时目录的 mock 页面（`.claude/launch.json` 的 mock 脚本不在仓库里，需按 `tests/browser/console-smoke.js` 的夹具重建）确认：白名单页说明块、活动域名列「本机劫持」标签、320/390 宽度不溢出。
 
 - [ ] **Step 5: 记录**
 

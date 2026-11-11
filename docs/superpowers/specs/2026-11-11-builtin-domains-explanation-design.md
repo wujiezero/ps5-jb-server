@@ -29,8 +29,8 @@
 | 文件 | 改动 |
 | --- | --- |
 | `web/index.html` | 白名单卡片内「允许的域名」字段帮助文字之后、`fieldset` 内加 `#builtin-domains` 说明块（复用 `.policy-note` 样式；实测放在 fieldset 之后会被推到卡片底部，不够显眼） |
-| `web/app.js` | ① `renderState()` 调 `renderBuiltinDomains(data.local_domains, status.host_ip)`；② `normalizeActivity()` 保留 `local`；③ `activityRow()` 对 `kind === 'dns' && local` 的行使结果列加「本机劫持」小字；④ 修正 `HELP.dns` / `HELP.manual` / `HELP.whitelist` / `HELP.activity` 文案 |
-| `web/style.css` | `#builtin-domains` 内的域名 chip 列表；`.result-note[data-tone="muted"]` |
+| `web/app.js` | ① `renderState()` 调 `renderBuiltinDomains(data.local_domains, status.host_ip)`；② `normalizeActivity()` 保留 `local`；③ `activityRow()` 对 `kind === 'dns' && local` 的行，在**域名列**的域名后面加「本机劫持」标签（结果列保持只有「允许」，用户确认不要挤在结果列）；④ 修正 `HELP.dns` / `HELP.manual` / `HELP.whitelist` / `HELP.activity` 文案 |
+| `web/style.css` | `#builtin-domains` 内的域名 chip 列表；`.domain-note` 标签（跟域名后面的「本机劫持」） |
 
 ### 文案（用户确认版）
 
@@ -45,7 +45,7 @@
 
 - `tests/test_activity.py`：`action='local'` 的 DNS 事件 `local=True`，`action='allowed'` 的为 `False`（且仍 `verdict='allowed'`）。
 - `tests/test_review_fixes.py`：`Application.state()['local_domains']` 等于 3 个内置域名。
-- `tests/ui-interactions.js`：`normalizeActivity` 保留 `local`；`activityRow` 对 `local` 行渲染「本机劫持」、普通行不渲染；`renderBuiltinDomains` 渲染 chip 与主机 IP、空列表时隐藏。
+- `tests/ui-interactions.js`：`normalizeActivity` 保留 `local`；`activityRow` 对 `local` 行在域名列渲染「本机劫持」、结果列不含该标记、普通行不渲染；`renderBuiltinDomains` 渲染 chip 与主机 IP、空列表时隐藏。
 - 回归：`.venv/bin/python -m unittest discover -s tests`、`node --test tests/ui-interactions.js`。
 
 ## 不做

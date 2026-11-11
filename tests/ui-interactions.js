@@ -651,7 +651,7 @@ test('macOS ._ metadata files never show in the file list', () => {
   assert.equal(JSON.stringify(listed.entries.map((entry) => entry.name)), JSON.stringify(['PPSA03671', '.hidden']));
 });
 
-test('builtin DNS rows carry the local flag and render 本机劫持', () => {
+test('builtin DNS rows mark 本机劫持 after the domain, not in the verdict cell', () => {
   const ui = fixture();
   const normalized = ui.normalizeActivity({ events: [
     { kind: 'dns', domain: 'manuals.playstation.net', verdict: 'allowed', local: true, port: 53 },
@@ -659,8 +659,14 @@ test('builtin DNS rows carry the local flag and render 本机劫持', () => {
   ] });
   assert.equal(normalized.events[0].local, true);
   assert.equal(normalized.events[1].local, false);
-  assert.match(textOf(ui.activityRow(normalized.events[0])), /本机劫持/);
-  assert.doesNotMatch(textOf(ui.activityRow(normalized.events[1])), /本机劫持/);
+  const localRow = ui.activityRow(normalized.events[0]);
+  const otherRow = ui.activityRow(normalized.events[1]);
+  const domainCell = (row) => row.children[3];
+  const verdictCell = (row) => row.children[6];
+  assert.match(textOf(domainCell(localRow)), /manuals\.playstation\.net 本机劫持/);
+  assert.doesNotMatch(textOf(verdictCell(localRow)), /本机劫持/);
+  assert.match(textOf(verdictCell(localRow)), /允许/);
+  assert.doesNotMatch(textOf(otherRow), /本机劫持/);
 });
 
 test('builtin domain block lists server domains and hides when absent', () => {

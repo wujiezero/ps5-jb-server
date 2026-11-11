@@ -986,7 +986,6 @@ body[data-dock="on"] #main { padding-bottom: 72px; }
 }
 .result-note[data-tone="good"] { color: var(--green); }
 .result-note[data-tone="warning"] { color: var(--amber); }
-.result-note[data-tone="muted"] { color: var(--faint); }
 
 .quick-links { display: flex; flex-direction: column; gap: 2px; }
 .quick-link {
@@ -2443,6 +2442,21 @@ tbody tr { transition: background var(--dur) var(--ease); }
   font-size: 12px;
   font-weight: 600;
   line-height: 1.6;
+}
+
+/* 内置域名（本机劫持）标记：跟在域名后面，和结果列的白名单判定分开。 */
+.domain-note {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--bar);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 /* ── 自动加载顺序编辑器 ───────────────────────────────────────────── */

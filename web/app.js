@@ -2302,6 +2302,13 @@
     domainCell.className = 'mono';
     domainCell.textContent = asText(event.domain);
     if (!event.domain) domainCell.dataset.empty = 'true';
+    // 内置域名由本机 DNS 直接应答，不是白名单放行；标在域名后面，不挤进结果列。
+    if (event.kind === 'dns' && event.local) {
+      const note = document.createElement('span');
+      note.className = 'domain-note';
+      note.textContent = '本机劫持';
+      domainCell.append(note);
+    }
 
     const ipCell = document.createElement('td');
     ipCell.className = 'mono';
@@ -2321,8 +2328,6 @@
     // verdict 是历史结果；allowed_now 表示当前白名单是否已覆盖该目标。
     if (event.verdict === 'blocked' && event.allowedNow === true) verdictCell.append(activityResultNote('已放行（现在）', 'good'));
     else if (event.verdict === 'allowed' && event.allowedNow === false) verdictCell.append(activityResultNote('已移出白名单', 'warning'));
-    // 内置域名由本机 DNS 直接应答，不是白名单放行；单独标出来，避免误读。
-    if (event.kind === 'dns' && event.local) verdictCell.append(activityResultNote('本机劫持', 'muted'));
 
     const categoryCell = document.createElement('td');
     categoryCell.textContent = asText(event.category);
