@@ -462,6 +462,35 @@ test('update latest status distinguishes unchecked, no release, latest and avail
   }
 });
 
+test('settings shows whether internet fetches use a proxy', () => {
+  const ui = updateFixture();
+  for (const [proxy, expected] of [
+    [undefined, '未知'],
+    [{ configured: false, url: '', variable: '', error: '' }, '直连（未设置代理环境变量）'],
+    [{ configured: true, url: 'http://192.0.2.50:6152', variable: 'https_proxy', error: '' },
+      'http://192.0.2.50:6152 · 来自 https_proxy'],
+    [{ configured: false, url: '', variable: 'https_proxy',
+       error: 'https_proxy 不是可用的 HTTP 代理（只支持 http:// 或 https://，不支持 SOCKS）' }, /不支持 SOCKS/]
+  ]) {
+    ui.updates.data = updateStatus({ proxy });
+    ui.renderUpdates();
+    const cell = ui.node('update-proxy');
+    if (expected instanceof RegExp) assert.match(cell.textContent, expected);
+    else assert.equal(cell.textContent, expected);
+  }
+});
+
+test('the last release check is a date, not 1970', () => {
+  const ui = updateFixture();
+  // The API sends Unix seconds; Date would read that number as milliseconds.
+  ui.updates.data = updateStatus({ checked_at: 1794369653.6677148 });
+  ui.renderUpdates();
+  const shown = ui.node('update-checked').textContent;
+  assert.doesNotMatch(shown, /^01\/22/, shown);
+  assert.doesNotMatch(shown, /^1794/, shown);
+  assert.match(shown, /^11\/1[01] /, shown);
+});
+
 test('update notes are text and unsupported installs still allow explicit checks', () => {
   const ui = updateFixture();
   ui.updates.data = updateStatus({ latest: '1.5.0', available: true, notes: '<img src=x onerror=alert(1)>',

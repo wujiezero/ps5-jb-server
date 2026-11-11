@@ -2,7 +2,7 @@
 
 ## 版本源
 
-`server/version.py` 的 `VERSION` 是唯一应用版本源，采用 `X.Y.Z` 正式版本（当前 `1.5.0`）。管理服务、插件仓库 HTTP 标识、`GET /api/version` 和页面均使用这个版本。页面侧栏和「设置 → 服务更新」显示当前版本，不需要连接 GitHub。
+`server/version.py` 的 `VERSION` 是唯一应用版本源，采用 `X.Y.Z` 正式版本（当前 `1.6.0`）。管理服务、插件仓库 HTTP 标识、`GET /api/version` 和页面均使用这个版本。页面侧栏和「设置 → 服务更新」显示当前版本，不需要连接 GitHub。
 
 「检查更新」由服务器读取 `wujiezero/ps5-jb-server` 的 GitHub Releases latest API，只接受正式发布，跳过草稿和预发布。不在启动时自动访问 GitHub。未检查、暂无正式发布、检查失败和发现新版会分别显示；检查失败时不能点击更新。
 
@@ -130,3 +130,7 @@ systemctl status ps5-manager.service   # 或标准 ps5-jb-server.service
 ```
 
 持久状态位于 `<data>/updates/status.json`。GitHub 没有发布、API 限流、网络错误、缺少附件或校验不匹配都不会被当成可升级版本。若主机重启或执行器在修改前拒绝了部署，服务会根据任务 unit 状态解除过期的升级占用并显示错误。正式生产主机的真实升级应在首次发版后验证；自动测试使用隔离临时目录及模拟服务控制，不会重启当前服务器。
+
+- **下载超时／一直转圈**：主机所在网络无法直连 GitHub（更新包在 `objects.githubusercontent.com`，
+  国内网络常见 `The read operation timed out`）。给服务设置 `HTTPS_PROXY` 后重试即可，见
+  [安装文档](installation.md) 的「代理」一节；「设置 → 服务更新」的「网络代理」一行会显示当前是否生效。

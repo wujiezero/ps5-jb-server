@@ -1,6 +1,7 @@
 """Official release discovery and persisted web update jobs."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -175,6 +176,31 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaises(UpdateError):
             self.manager.apply('1.5.0', background=False)
         self.assertEqual(len(self.launches), 1)
+
+    def test_status_reports_the_environment_proxy_without_any_network_call(self):
+        with mock.patch.dict(os.environ, {'https_proxy': 'http://192.0.2.50:6152'}, clear=True):
+            state = self.manager.status()['proxy']
+        self.assertEqual((state['configured'], state['variable'], state['url']),
+                         (True, 'https_proxy', 'http://192.0.2.50:6152'))
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(self.manager.status()['proxy']['configured'])
+
+    def test_network_failure_suggests_a_proxy_only_when_none_is_configured(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(self.manager, 'fetch', side_effect=OSError('offline')):
+                self.assertIn('HTTPS_PROXY', self.manager.check()['check_error'])
+        with mock.patch.dict(os.environ, {'HTTPS_PROXY': 'http://192.0.2.50:6152'}, clear=True):
+            with mock.patch.object(self.manager, 'fetch', side_effect=OSError('offline')):
+                self.assertNotIn('HTTP', self.manager.check()['check_error'])
+
+    def test_downloads_use_the_shared_proxy_aware_opener(self):
+        import updates
+        opener = mock.MagicMock()
+        opener.open.return_value.__enter__.return_value.read.return_value = b'payload'
+        with mock.patch.object(updates.netproxy, 'opener', return_value=opener) as build:
+            self.assertEqual(updates.fetch_bytes(
+                'https://api.github.com/repos/wujiezero/ps5-jb-server/releases/latest', 64), b'payload')
+        self.assertIs(build.call_args.kwargs['redirect'], updates.GithubRedirect)
 
     def test_source_checkout_cannot_self_update(self):
         (self.program / 'update-install.json').unlink()

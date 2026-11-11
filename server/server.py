@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from activity import Classifier, FlowObserver, LabelsStore, make_poller
 from api_console import ConsoleAPI
+import netproxy
 from settings import Settings
 from titles import TitleCatalog, proxy_reader
 from dns_service import DNSPolicy, LimitedThreads, diagnostic_error, start_dns
@@ -1139,6 +1140,8 @@ def main():
     settings.admin_port, settings.dns_port = admin_port, dns_port
     settings.data_dir, settings.repo_dir = data_dir, repo_dir
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    # A proxy set for GitHub must not reach the PS5, the NAS or the local repo.
+    netproxy.seal_direct()
     data = data_dir
     store = ConfigStore(data / 'config.json')
     engine = create_engine(store, host_ip, lan)

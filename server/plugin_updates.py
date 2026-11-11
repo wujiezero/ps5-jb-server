@@ -22,6 +22,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import netproxy
 from version import VERSION
 
 DEFAULT_URL = 'https://itsplk.github.io/ps5-payloads-mirror/payloads_v2.json'
@@ -29,6 +30,11 @@ INDEX_LIMIT = 4 << 20
 UA = {'User-Agent': f'ps5-jb-server/{VERSION} (+plugin updates)', 'Accept': 'application/json'}
 _DIGEST = re.compile(r'[0-9a-f]{64}\Z')
 _FILENAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.(?:elf|bin)\Z', re.IGNORECASE)
+
+
+def _open(request, timeout):
+    """Default opener: the upstream lives on the internet, so it may use the proxy."""
+    return netproxy.opener().open(request, timeout=timeout)
 
 
 class PluginUpdateError(RuntimeError):
@@ -98,7 +104,7 @@ class PluginUpdates:
         self.repo = repo
         self.cache_path = Path(cache_path)
         self.url = url or DEFAULT_URL
-        self.opener = opener or urllib.request.urlopen
+        self.opener = opener or _open
         self.timeout = timeout
         self.download_timeout = download_timeout
         self.lock = threading.Lock()
@@ -126,7 +132,7 @@ class PluginUpdates:
                 data = response.read(limit + 1)
         except OSError as exc:  # URLError, HTTPError, timeouts are all OSError
             reason = getattr(exc, 'reason', None) or exc
-            raise PluginUpdateError(f'无法连接上游：{reason}') from exc
+            raise PluginUpdateError(f'无法连接上游：{reason}{netproxy.hint()}') from exc
         if len(data) > limit:
             raise PluginUpdateError('上游文件超过大小上限')
         return data

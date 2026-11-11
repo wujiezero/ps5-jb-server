@@ -133,6 +133,10 @@ sudo ./install.sh uninstall [--purge] # 停服务并卸载；--purge 一并删�
 
 侧栏与「设置 → 服务更新」显示当前版本；点击「检查更新」读取 GitHub 最新正式 Release，显示新版本和发布说明，再点击「更新到 vX.Y.Z」完成服务升级。更新包经过 SHA-256 校验，保留配置、NAS 密钥、密码及数据，启动失败自动恢复旧程序。源码运行只支持检查更新；旧部署首次启用和 `vX.Y.Z` 自动发版步骤见 [版本与发版](docs/releases.md)。
 
+本机无法直连 GitHub 时，给服务设置 `HTTPS_PROXY`（或安装时加 `--proxy URL`）就能让更新和插件上游走代理；
+PS5、NAS 与本机仓库始终直连。当前生效情况在「设置 → 服务更新」的「网络代理」一行，详见
+[安装文档](docs/installation.md) 的「代理」一节。
+
 ## PS5 端设置（一次）
 
 1. 设置 → 网络 → 设定互联网连接 → 有线/无线 → 高级设置：
@@ -256,6 +260,7 @@ dig @<本机> manuals.playstation.net  # 应返回本机地址
   它的日志在 PS5 的 `/data/tom-ps5-usbnet/log.txt`，`no Ethernet link` 表示 USB 网卡没接网线。
 - **容量显示“未知”**：FTP 协议不提供容量，需要 PS5 上同时运行 web-file-mgr（8888）。
 - **NAS 连接失败**：在 NAS 对话框点「测试连接」查看具体原因；SMB 需要本机安装 `python3-smbc`。
+- **网页更新下载超时**：网络无法直连 GitHub 的 release 附件；设置 `HTTPS_PROXY` 或 `./install.sh --proxy` 后重试。
 
 ## 开发
 

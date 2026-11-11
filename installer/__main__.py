@@ -36,6 +36,14 @@ class StepError(RuntimeError):
     pass
 
 
+def proxy_dropin_text(proxy):
+    """systemd drop-in: the service reads the proxy from its environment."""
+    return ('# Written by the ps5-jb-server installer; delete this file for a direct connection.\n'
+            '[Service]\n'
+            f'Environment="http_proxy={proxy}"\n'
+            f'Environment="https_proxy={proxy}"\n')
+
+
 def server_modules():
     """File names of all server modules that get installed into the program directory."""
     return sorted(path.name for path in (REPO / 'server').glob('*.py'))
@@ -58,6 +66,7 @@ class Layout:
     power_engine: bool = False
     extract: bool = False
     no_deps: bool = False
+    proxy: str = ''            # http(s) proxy for GitHub downloads; '' = direct
 
     # derived
     opt: Path = field(init=False)
@@ -84,6 +93,10 @@ class Layout:
         if prefix != Path('/'):
             self.systemd_dir = prefix / 'etc/systemd/system'
             self.access_file = prefix / 'root/ps5-jb-server-access.txt'
+
+    @property
+    def proxy_dropin(self):
+        return self.systemd_dir / 'ps5-jb-server.service.d' / 'proxy.conf'
 
 
 class Runner:
@@ -726,6 +739,10 @@ def install_units(layout, runner):
                       'repo_unit': 'ps5-jb-repo.service', 'host_unit': 'ps5-jb-host.service'}
     for name, text in recovery_units(descriptor).items():
         runner.write(layout.systemd_dir / name, text, 0o644)
+    if layout.proxy:
+        runner.mkdir(layout.proxy_dropin.parent)
+        runner.write(layout.proxy_dropin, proxy_dropin_text(layout.proxy), 0o644)
+        runner.note(f'代理：{layout.proxy}（服务更新与插件上游经由它；PS5/NAS 直连）')
     runner.run(['systemctl', 'daemon-reload'], check=False)
     runner.run(['systemctl', 'enable', '--now', 'ps5-jb-server.service'], check=False)
     runner.run(['systemctl', 'enable', '--now', 'ps5-jb-host.service'], check=False)
@@ -788,6 +805,10 @@ def summary(layout):
 
 def cmd_install(layout):
     runner = Runner(layout)
+    if layout.proxy:
+        # fetch_payloads.py and the manuals host downloader run as children.
+        os.environ['http_proxy'] = layout.proxy
+        os.environ['https_proxy'] = layout.proxy
     preflight(layout, runner)
     steps = [install_files, write_config, write_update_descriptor, make_certificates, make_credentials, make_nas_key,
              fetch_components, write_firewall, install_units, install_power_engine, install_extract]
@@ -802,14 +823,15 @@ def cmd_uninstall(layout, purge=False, runner=None):
     print('停止并禁用服务')
     for unit in UNIT_FILES:
         runner.run(['systemctl', 'disable', '--now', unit], check=False)
-    recovery_names = ('ps5-jb-server-update-recovery.service',
-                      'ps5-jb-server.service.d/update-recovery.conf',
-                      'ps5-jb-repo.service.d/update-recovery.conf')
+    extra_names = ('ps5-jb-server-update-recovery.service',
+                   'ps5-jb-server.service.d/update-recovery.conf',
+                   'ps5-jb-repo.service.d/update-recovery.conf',
+                   'ps5-jb-server.service.d/proxy.conf')
     for unit in UNIT_FILES:
         path = layout.systemd_dir / unit
         if path.exists():
             runner.run(['rm', '-f', str(path)], check=False)
-    for name in recovery_names:
+    for name in extra_names:
         path = layout.systemd_dir / name
         if path.exists():
             runner.run(['rm', '-f', str(path)], check=False)
@@ -899,6 +921,7 @@ def build_layout(args):
         power_engine=getattr(args, 'with_power_engine', False),
         extract=getattr(args, 'with_extract', False),
         no_deps=getattr(args, 'no_deps', False),
+        proxy=getattr(args, 'proxy', '') or '',
     )
     return layout
 
@@ -928,8 +951,13 @@ def main(argv=None):
     parser.add_argument('--with-extract', action='store_true',
                         help='同时安装游戏压缩包解压引擎（apt：python3-libarchive-c libunrar5 rclone fuse3）')
     parser.add_argument('--purge', action='store_true')
+    parser.add_argument('--proxy', default='',
+                        help='访问 GitHub 用的 HTTP 代理，例如 http://192.168.1.2:6152；不填则直连')
     args = parser.parse_args(argv)
 
+    if args.proxy and not args.proxy.startswith(('http://', 'https://')):
+        print('--proxy 只接受 http:// 或 https:// 的 HTTP 代理（urllib 不支持 SOCKS）', file=sys.stderr)
+        return 2
     layout = build_layout(args)
     try:
         if args.command in ('install', 'upgrade'):

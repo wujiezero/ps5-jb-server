@@ -114,7 +114,8 @@ class InstallerDryRunTests(unittest.TestCase):
             layout = installer.Layout(prefix=Path(tmp).resolve(), dry_run=True)
             for name in ('ps5-jb-server-update-recovery.service',
                          'ps5-jb-server.service.d/update-recovery.conf',
-                         'ps5-jb-repo.service.d/update-recovery.conf'):
+                         'ps5-jb-repo.service.d/update-recovery.conf',
+                         'ps5-jb-server.service.d/proxy.conf'):
                 path = layout.systemd_dir / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('stale')
@@ -123,6 +124,30 @@ class InstallerDryRunTests(unittest.TestCase):
             self.assertTrue(any(action and action[0:2] == ['rm', '-f']
                                 and action[-1].endswith('ps5-jb-server-update-recovery.service')
                                 for action in runner.actions))
+            self.assertTrue(any(action and action[0:2] == ['rm', '-f']
+                                and action[-1].endswith('ps5-jb-server.service.d/proxy.conf')
+                                for action in runner.actions), runner.actions)
+
+    def test_proxy_writes_a_dropin_for_the_configured_service(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = installer.Layout(prefix=Path(tmp).resolve(), host_ip='192.0.2.10',
+                                      dry_run=True, proxy='http://192.0.2.50:6152')
+            runner = installer.Runner(layout)
+            installer.install_units(layout, runner)
+            written = [action for action in runner.actions
+                       if action[:2] == ['write', str(layout.proxy_dropin)]]
+            self.assertEqual(len(written), 1, runner.actions)
+            self.assertEqual(layout.proxy_dropin,
+                             layout.systemd_dir / 'ps5-jb-server.service.d/proxy.conf')
+            body = installer.proxy_dropin_text('http://192.0.2.50:6152')
+            self.assertIn('Environment="https_proxy=http://192.0.2.50:6152"', body)
+            self.assertEqual(runner.actions[-1][:1], ['systemctl'])
+
+    def test_proxy_rejects_non_http_schemes(self):
+        result = self.run_installer('--proxy', 'socks5://192.0.2.50:1080', '--dry-run')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('SOCKS', result.stderr)
 
     def test_unknown_flag_fails(self):
         result = self.run_installer('--nope')

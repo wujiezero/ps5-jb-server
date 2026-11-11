@@ -59,8 +59,55 @@
 --no-deps             不自动安装缺少的系统软件包，只报告
 --with-power-engine   同时安装 PS5Upload 引擎（唤醒 / 待机，可选）
 --with-extract        同时安装游戏压缩包解压引擎（可选）
+--proxy URL           访问 GitHub 用的 HTTP 代理，例如 http://192.168.1.2:6152
 --dry-run             只打印动作
 ```
+
+## 代理（无法直连 GitHub 时）
+
+服务更新要访问 `github.com`、`api.github.com` 和 `objects.githubusercontent.com`，插件上游索引在
+`itsplk.github.io`。这些地址在本机只能经代理访问时，不用改代码——给服务设置环境变量即可，
+**一个都不设就直连**：
+
+| 变量 | 说明 |
+| --- | --- |
+| `PS5JB_PROXY` | 本服务专用，优先级最高 |
+| `HTTPS_PROXY` / `https_proxy` | 通用写法，GitHub 走 HTTPS |
+| `HTTP_PROXY` / `http_proxy`、`ALL_PROXY` / `all_proxy` | 依次兜底 |
+
+按上面的顺序取第一个非空值。只接受 `http://` 或 `https://` 的 HTTP 代理（`urllib` 不支持 SOCKS），
+同一个地址同时用于 HTTP 与 HTTPS；只写 `192.168.1.2:6152` 会自动补成 `http://`。
+
+三种配法，任选其一：
+
+```sh
+# 1) 安装时指定：写进 /etc/systemd/system/ps5-jb-server.service.d/proxy.conf
+sudo ./install.sh --proxy http://192.168.1.2:6152
+
+# 2) 已安装的机器：手动写同一个 drop-in
+sudo mkdir -p /etc/systemd/system/ps5-jb-server.service.d
+sudo tee /etc/systemd/system/ps5-jb-server.service.d/proxy.conf >/dev/null <<'EOF'
+[Service]
+Environment="https_proxy=http://192.168.1.2:6152"
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart ps5-jb-server
+
+# 3) 临时验证
+sudo systemctl set-environment https_proxy=http://192.168.1.2:6152
+sudo systemctl restart ps5-jb-server
+```
+
+「设置 → 服务更新」新增的「网络代理」一行会显示当前生效的地址与来源变量名，或「直连」；配错
+（例如填了 SOCKS）会直接显示原因。更新失败时页面提示里也会给出这句建议。
+
+代理只用于外网下载：PS5 控制与文件、NAS（WebDAV/SMB）、本机插件仓库和健康检查仍然直连，不会被
+代理打断，所以不需要为局域网维护 `NO_PROXY`。drop-in 位于 `/etc/systemd/system` 下，容器重启、
+`install.sh` 重跑和网页升级都不会覆盖它；`uninstall` 会删除安装器写入的 `proxy.conf`。旧的手工
+`/opt/ps5-manager` 布局服务名不同，代理文件是 `/etc/systemd/system/ps5-manager.service.d/proxy.conf`。
+
+注意 `bootstrap.sh` 那条一行命令与安装器自己的下载发生在服务之前：需要代理时用
+`curl -x http://192.168.1.2:6152 ...` 抓脚本，并用 `sudo -E ./install.sh`（或 `--proxy`）保留环境变量，
+因为 `sudo` 默认会清空它们。
 
 ## 升级
 

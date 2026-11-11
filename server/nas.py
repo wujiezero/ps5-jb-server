@@ -355,7 +355,8 @@ class WebDavClient:
         self.root = clean_path(config.get('path') or '/')
         self.origin = f'{scheme}://{host}:{config["port"]}'
         self.timeout = timeout
-        handlers = []
+        # The NAS is on the LAN: never route it through an internet proxy.
+        handlers = [urllib.request.ProxyHandler({})]
         if scheme == 'https':
             context = ssl.create_default_context()
             if not config.get('verify_tls'):

@@ -182,7 +182,10 @@
 
   const formatTime = (value, withDate = false) => {
     if (!value) return '尚无记录';
-    const parsed = new Date(value);
+    // The update API speaks Unix seconds; Date would read that as 1970.
+    const numeric = typeof value === 'number' ? value
+      : typeof value === 'string' && /^\d+(\.\d+)?$/.test(value.trim()) ? Number(value) : null;
+    const parsed = new Date(numeric !== null && numeric < 1e12 ? numeric * 1000 : value);
     if (Number.isNaN(parsed.getTime())) return asText(value);
     return parsed.toLocaleString('zh-CN', withDate
       ? { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }
@@ -1015,6 +1018,16 @@
         : latest ? `${latest} · 已是最新` : data?.checked_at ? '暂无发布' : '未检查';
     $('update-latest').textContent = latestText;
     $('update-checked').textContent = data?.checked_at ? formatTime(data.checked_at, true) : '尚未检查';
+    const proxy = data?.proxy;
+    const proxyCell = $('update-proxy');
+    proxyCell.textContent = !proxy ? '未知'
+      : proxy.error ? str(proxy.error)
+        : proxy.configured ? `${str(proxy.url)} · 来自 ${str(proxy.variable)}`
+          : '直连（未设置代理环境变量）';
+    proxyCell.dataset.tone = proxy?.error ? 'error' : proxy?.configured ? 'good' : '';
+    proxyCell.title = proxy?.configured
+      ? 'GitHub 更新与插件上游经由该代理；PS5、NAS 与本机插件仓库始终直连。'
+      : '未设置代理时直连外网。可通过 systemd drop-in 设置 PS5JB_PROXY 或 HTTPS_PROXY，或安装时用 install.sh --proxy。';
     const chip = $('update-state');
     chip.textContent = active ? (updates.timedOut ? '等待确认' : '更新中') : latestText;
     chip.dataset.tone = data?.check_error || job?.state === 'failed' || job?.state === 'rolled_back' ? 'error'

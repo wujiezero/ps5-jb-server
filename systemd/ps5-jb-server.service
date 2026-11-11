@@ -7,6 +7,13 @@ Requires=nftables.service
 
 [Service]
 Type=simple
+# Optional: route the web updater's GitHub downloads through a LAN proxy.
+# Set it with `install.sh --proxy URL` or a drop-in, e.g.
+#   /etc/systemd/system/ps5-jb-server.service.d/proxy.conf
+#   [Service]
+#   Environment="https_proxy=http://192.168.1.2:6152"
+# Unset means a direct connection; PS5, NAS and the local repository always
+# connect directly even when a proxy is set.
 ExecStart=/usr/bin/python3 @OPT@/server.py --config @CONFIG@
 # Fail closed before nftables can stop or flush its rules.
 ExecStopPost=/usr/sbin/sysctl -w net.ipv4.ip_forward=0

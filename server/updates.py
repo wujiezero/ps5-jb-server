@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
+import netproxy
 from version import VERSION, REPOSITORY
 
 ACTIVE = frozenset(('queued', 'downloading', 'validating', 'backing_up', 'installing', 'restarting', 'verifying'))
@@ -49,7 +50,8 @@ def fetch_bytes(url, limit):
         'User-Agent': f'ps5-jb-server/{VERSION}', 'Accept': 'application/vnd.github+json' if url == LATEST else 'application/octet-stream',
         'X-GitHub-Api-Version': '2022-11-28',
     })
-    with urllib.request.build_opener(GithubRedirect()).open(request, timeout=30) as response:
+    # Release assets live on hosts that some LANs can only reach through a proxy.
+    with netproxy.opener(redirect=GithubRedirect).open(request, timeout=30) as response:
         data = response.read(limit + 1)
     if len(data) > limit:
         raise UpdateError('GitHub 更新响应超过大小限制')
@@ -108,6 +110,7 @@ class UpdateManager:
                     'notes': release.get('notes') or '', 'check_error': release.get('check_error') or '',
                     'supported': descriptor is not None,
                     'unsupported_reason': '' if descriptor else '此部署尚未启用网页升级；请先用安装器登记服务路径。源码目录仅支持检查更新。',
+                    'proxy': netproxy.status(),
                     'job': job}
 
     def _recover_job(self, job):
@@ -181,7 +184,8 @@ class UpdateManager:
                           'check_error': '' if exc.code == 404 else f'GitHub 检查失败（HTTP {exc.code}），请稍后重试'}
                 exc.close()
             except (ValueError, OSError) as exc:
-                result = {'latest': None, 'available': False, 'check_error': f'检查更新失败：{exc}'}
+                hint = netproxy.hint() if isinstance(exc, OSError) else ''
+                result = {'latest': None, 'available': False, 'check_error': f'检查更新失败：{exc}{hint}'}
             result['checked_at'] = time.time()
             atomic_json(self.release_path, result)
             return self.status()
@@ -263,7 +267,8 @@ class UpdateManager:
             # unit before accepting another job rather than declaring failure.
             self._state(ident, version, 'validating', '升级执行器启动结果暂未确认，正在等待任务状态')
         except Exception as exc:
-            self._state(ident, version, 'failed', str(exc)[:500])
+            hint = netproxy.hint() if isinstance(exc, OSError) else ''
+            self._state(ident, version, 'failed', (str(exc) + hint)[:500])
 
     def _launch(self, spec_path):
         worker = self.program_dir / 'update_worker.py'
