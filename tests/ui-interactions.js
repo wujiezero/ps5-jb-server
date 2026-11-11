@@ -62,6 +62,7 @@ function fixture(extra = {}) {
   assert.ok(startup > 0, 'browser module startup must be identifiable');
   const exposed = `${source.slice(0, startup)}
     globalThis.subject = { activity, repo, activitySelected, activityVisibleEvents,
+      normalizeActivity, activityRow, renderBuiltinDomains,
       setActivityFilter, renderRepo, renderPs5Catalog,
       files, filesRow, nasRow, filesVisibleEntries, titleIdOf, titleNames, flushTitleNames, normalizeFilesEntries,
       nas, nasArchiveSelection, extractTask,
@@ -648,4 +649,26 @@ test('macOS ._ metadata files never show in the file list', () => {
     { name: '._PPSA03671', kind: 'file', size: 4096 }, { name: 'PPSA03671', dir: true }, { name: '.hidden', size: 1 }
   ] }, '/data');
   assert.equal(JSON.stringify(listed.entries.map((entry) => entry.name)), JSON.stringify(['PPSA03671', '.hidden']));
+});
+
+test('builtin DNS rows carry the local flag and render 本机劫持', () => {
+  const ui = fixture();
+  const normalized = ui.normalizeActivity({ events: [
+    { kind: 'dns', domain: 'manuals.playstation.net', verdict: 'allowed', local: true, port: 53 },
+    { kind: 'dns', domain: 'ps5.playstation.net', verdict: 'allowed', port: 53 }
+  ] });
+  assert.equal(normalized.events[0].local, true);
+  assert.equal(normalized.events[1].local, false);
+  assert.match(textOf(ui.activityRow(normalized.events[0])), /本机劫持/);
+  assert.doesNotMatch(textOf(ui.activityRow(normalized.events[1])), /本机劫持/);
+});
+
+test('builtin domain block lists server domains and hides when absent', () => {
+  const ui = fixture();
+  ui.renderBuiltinDomains(['manuals.playstation.net', 'ena.net.playstation.net'], '192.0.2.10');
+  assert.equal(ui.node('builtin-domains').hidden, false);
+  assert.equal(ui.node('builtin-domain-list').children.length, 2);
+  assert.equal(ui.node('builtin-host-ip').textContent, '192.0.2.10');
+  ui.renderBuiltinDomains([], '192.0.2.10');
+  assert.equal(ui.node('builtin-domains').hidden, true);
 });

@@ -986,6 +986,7 @@ body[data-dock="on"] #main { padding-bottom: 72px; }
 }
 .result-note[data-tone="good"] { color: var(--green); }
 .result-note[data-tone="warning"] { color: var(--amber); }
+.result-note[data-tone="muted"] { color: var(--faint); }
 
 .quick-links { display: flex; flex-direction: column; gap: 2px; }
 .quick-link {
@@ -1059,6 +1060,8 @@ body[data-dock="on"] #main { padding-bottom: 72px; }
 .policy-note { margin: 14px 0; padding: 2px 0 2px 13px; border-left: 2px solid var(--accent); }
 .policy-note strong { font-size: 0.8125rem; font-weight: 640; }
 .policy-note p { margin-top: 5px; font-size: 0.75rem; line-height: 1.7; color: var(--muted); }
+.policy-note .builtin-domain-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.policy-note .builtin-domain-list .builtin-domain { font-size: 0.75rem; font-weight: 540; }
 #ipv6-note { margin-top: 10px; }
 
 .firewall-counters { padding: 0 var(--panel-inset) 16px; font-size: 0.75rem; }

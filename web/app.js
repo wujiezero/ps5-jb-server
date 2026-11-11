@@ -809,6 +809,7 @@
     const dynamic = Number(status.dynamic_addresses);
     $('dynamic-addresses').textContent = Number.isFinite(dynamic) && dynamic >= 0 ? `${Math.floor(dynamic)} 个` : '—';
     $$('[data-host-ip]').forEach((element) => { element.textContent = asText(status.host_ip, '—'); });
+    renderBuiltinDomains(data.local_domains, status.host_ip);
     setField('last-applied', formatTime(status.last_applied, true), status.last_applied);
     $('ipv6-note').textContent = status.ipv6_forwarding === true
       ? '检测到主机已开启 IPv6 转发。当前策略仅控制 IPv4；请确认家庭网络仍关闭 IPv6 互联网。'
@@ -820,6 +821,21 @@
     setConnection('状态已同步', 'good');
     $('sync-time').textContent = `${formatTime(new Date())} · 每 8 秒刷新`;
     updateControls();
+  }
+
+  function renderBuiltinDomains(localDomains, hostIp) {
+    const block = $('builtin-domains');
+    const names = Array.isArray(localDomains) ? localDomains.map((value) => str(value)).filter(Boolean) : [];
+    block.hidden = names.length === 0;
+    const list = $('builtin-domain-list');
+    list.replaceChildren();
+    for (const name of names) {
+      const chip = document.createElement('code');
+      chip.className = 'builtin-domain';
+      chip.textContent = name;
+      list.append(chip);
+    }
+    $('builtin-host-ip').textContent = asText(hostIp, location.hostname || '本机');
   }
 
   function renderServiceInfo(status) {
@@ -2160,6 +2176,8 @@
         name: str(entry.name),
         category: str(entry.category),
         verdict: str(entry.verdict).toLowerCase() === 'blocked' ? 'blocked' : 'allowed',
+        // local 来自 DNS 引擎的 action='local'：内置域名由本机直接应答，不是白名单放行。
+        local: entry.local === true,
         allowedNow: typeof entry.allowed_now === 'boolean' ? entry.allowed_now : null
       });
     }
@@ -2303,6 +2321,8 @@
     // verdict 是历史结果；allowed_now 表示当前白名单是否已覆盖该目标。
     if (event.verdict === 'blocked' && event.allowedNow === true) verdictCell.append(activityResultNote('已放行（现在）', 'good'));
     else if (event.verdict === 'allowed' && event.allowedNow === false) verdictCell.append(activityResultNote('已移出白名单', 'warning'));
+    // 内置域名由本机 DNS 直接应答，不是白名单放行；单独标出来，避免误读。
+    if (event.kind === 'dns' && event.local) verdictCell.append(activityResultNote('本机劫持', 'muted'));
 
     const categoryCell = document.createElement('td');
     categoryCell.textContent = asText(event.category);
@@ -7689,11 +7709,11 @@
   /* ── 功能说明：图标悬停 / 聚焦 / 点按显示 ─────────────────────────── */
 
   const HELP = {
-    dns: { title: 'DNS 服务', body: '本机在 UDP / TCP 53 端口为 PS5 解析域名，只解析「访问策略」白名单里的域名，其余查询一律拒绝，PS5 因此连不上系统更新、遥测等服务。',
+    dns: { title: 'DNS 服务', body: '本机在 UDP / TCP 53 端口为 PS5 解析域名，只解析「访问策略」白名单里的域名，其余查询一律拒绝，PS5 因此连不上系统更新、遥测等服务。另有 3 个内置域名（用户手册入口等）固定由本机应答，见「访问策略」里的说明。',
       steps: ['在 PS5 的网络设置里把主 DNS 指向本机（见概览「PS5 网络设置」）。', '每次查询及结果都记录在「网络活动」。'] },
     gateway: { title: 'IPv4 网关', body: 'PS5 把默认网关指向本机后，出网的 IPv4 流量都要经过本机的 nftables 规则：默认拒绝，只放行白名单域名解析出的 IP 和白名单里的 IP / 网段。局域网访问不受影响。',
       steps: ['IPv6 不经本机转发，家庭网络应关闭 IPv6 出网。', '「错误」通常是规则写入失败，详情见设置 → 运行日志。'] },
-    manual: { title: '用户手册入口', body: 'PS5 的「用户手册」会访问 manuals.playstation.net。本机把这个域名解析到自己，并在 HTTPS 443 端口托管越狱页面，在 PS5 上打开用户手册即可进入。',
+    manual: { title: '用户手册入口', body: 'PS5 的「用户手册」会访问 manuals.playstation.net 等 3 个内置域名。本机把这 3 个域名解析到自己（不需要、也不应该加入白名单），并在 HTTPS 443 端口托管越狱页面，在 PS5 上打开用户手册即可进入。',
       steps: ['PS5：设置 → 用户指南、健康与安全以及其他信息 → 用户手册。', '状态异常时看设置 → 服务信息里的用户手册服务（ps5-jb-host）。'] },
     'repo-service': { title: '插件仓库', body: '本机在 8080 端口提供 Payload Manager（pldmgr）能识别的插件源 repo.json，PS5 添加这个源后就能下载这里的插件。',
       steps: ['在「插件仓库」上传 .elf / .bin，或从官方源检查更新。', '在「PS5 主机」卡片上点「接入本服务仓库」，自动把源加到主机。'] },
@@ -7705,11 +7725,11 @@
     counters: { title: '网关计数器', body: '网关防火墙（nftables）各条规则累计的数据包和字节数，用来判断 PS5 的流量是否真的经过本机，以及被放行还是被丢弃。',
       steps: ['重新应用白名单或重启服务后计数可能清零。'] },
     whitelist: { title: '访问白名单', body: '允许 PS5 访问的互联网目标，其余全部拒绝。修改后点右上角「保存并应用」才生效。',
-      steps: ['example.com 只匹配该域名本身；*.example.com 匹配所有子域名但不含根域名，两者都要时分两行写。', 'IPv4 / CIDR 按目标地址直接放行，也适用于不经 DNS 的连接。', '共用 CDN 的域名放行后，同一 IP 上的其他服务也可能可达。'] },
+      steps: ['example.com 只匹配该域名本身；*.example.com 匹配所有子域名但不含根域名，两者都要时分两行写。', 'IPv4 / CIDR 按目标地址直接放行，也适用于不经 DNS 的连接。', '共用 CDN 的域名放行后，同一 IP 上的其他服务也可能可达。', '用户手册、连网检测用的内置域名始终由本机应答，不用写在这里。'] },
     'upstream-dns': { title: '上游 DNS', body: '本机解析白名单域名时转发到的 DNS 服务器，只支持 IPv4 地址，一般填路由器地址或公共 DNS（例如 223.5.5.5）。' },
     apply: { title: '应用与回退', body: '「保存并应用」立即重写 DNS 白名单和网关规则；服务器保留上一版配置，改错时用「回退上一版」一键恢复。' },
     activity: { title: '网络活动', body: '实时记录经过本机网关的 IPv4 连接、PS5 的 DNS 查询，以及访问本机服务（管理页、插件仓库、pldmgr 等）的事件。',
-      steps: ['勾选「未放行」的目标后点「放行选中」，域名或 IP 加入白名单并立即生效。', '「命名选中」给目标起名、指定分类，以后更容易辨认。', '本机服务事件只作记录，不能放行。'] },
+      steps: ['勾选「未放行」的目标后点「放行选中」，域名或 IP 加入白名单并立即生效。', '「命名选中」给目标起名、指定分类，以后更容易辨认。', '标「本机劫持」的 DNS 记录来自内置域名，由本机直接应答，不是白名单放行。', '本机服务事件只作记录，不能放行。'] },
     discovery: { title: '主机发现', body: '扫描本机所在的 IPv4 网段，找出运行 pldmgr（8084）或 elfldr（9021）的 PS5；处于待机的主机也会通过 DDP 协议被发现。扫描不访问互联网。',
       steps: ['扫不到时手动输入 PS5 的 IP 添加。', '越狱后先在 PS5 上运行 Payload Manager，管理功能才完整。'] },
     hosts: { title: '发现的主机', body: '每张卡片是一台 PS5：在线状态、pldmgr / elfldr 是否可用、是否已接入本服务仓库，以及可安装、运行中、可更新的插件数。',

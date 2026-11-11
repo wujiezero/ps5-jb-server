@@ -308,6 +308,11 @@
                   </div>
                 </div>
               </fieldset>
+              <div class="policy-note" id="builtin-domains" hidden>
+                <strong>内置域名 · 始终由本机应答</strong>
+                <p class="builtin-domain-list" id="builtin-domain-list"></p>
+                <p>这 3 个域名固定解析到本机（当前 <span class="mono" id="builtin-host-ip">—</span>），用来接住 PS5 的「用户手册」入口与连网检测；不查询上游 DNS，也不会产生出网流量。它们不在上面的白名单里，但始终生效——加进白名单也不会改变行为，所以不用填。</p>
+              </div>
             </section>
 
             <section class="card" aria-labelledby="apply-title">
