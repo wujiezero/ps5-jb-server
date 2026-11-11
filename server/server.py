@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from activity import Classifier, FlowObserver, LabelsStore, make_poller
 from api_console import ConsoleAPI
+import logbook
 import netproxy
 from settings import Settings
 from titles import TitleCatalog, proxy_reader
@@ -690,7 +691,18 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         # Never log request bodies, cookies, or credentials.
-        logging.info('%s %s', self.client_address[0], fmt % args)
+        logging.getLogger('http').info('%s %s', self.client_address[0], fmt % args)
+
+    def log_request(self, code='-', size='-'):
+        # The page polls every few seconds; successful reads would bury the
+        # records that matter in the journal and in the exported service log.
+        try:
+            status = int(getattr(code, 'value', code))
+        except (TypeError, ValueError):
+            status = 0
+        level = logging.DEBUG if self.command == 'GET' and 200 <= status < 400 else logging.INFO
+        logging.getLogger('http').log(level, '%s "%s" %s', self.client_address[0],
+                                      self.requestline, status or code)
 
     def send_body(self, status, data, ctype='application/json; charset=utf-8', cookie=None):
         if not isinstance(data, bytes):
@@ -804,6 +816,14 @@ class AdminHandler(BaseHTTPRequestHandler):
         if self.path.split('?', 1)[0] == '/api/titles':
             self.handle_titles()
             return
+        if self.path.split('?', 1)[0] in ('/api/logs', '/api/logs/export'):
+            self.handle_logs()
+            return
+        if self.path == '/api/repo/upstream/progress':
+            if self.require_session():
+                plugin_updates = getattr(self.server, 'plugin_updates', None)
+                self.send_body(200, {'progress': plugin_updates.progress() if plugin_updates else None})
+            return
         if self.path.startswith(('/api/ps5', '/api/files', '/api/nas', '/api/transfers')):
             if self.server.app.console_get(self):
                 return
@@ -837,6 +857,40 @@ class AdminHandler(BaseHTTPRequestHandler):
             self.send_body(500, {'error': '查询游戏名称失败，请检查服务日志'})
             return
         self.send_body(200, result)
+
+    def handle_logs(self):
+        """GET /api/logs?level=&q=&after=&limit= (viewer) and /api/logs/export (bundle)."""
+        if not self.require_session():
+            return
+        parts = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(parts.query)
+
+        def first(key, default=''):
+            return (query.get(key) or [default])[0]
+
+        if parts.path == '/api/logs':
+            try:
+                after = max(0, int(first('after', '0')))
+                limit = int(first('limit', '500'))
+            except ValueError:
+                self.send_body(400, {'error': '日志查询参数不正确'})
+                return
+            result = logbook.query(level=first('level', 'INFO'), text=first('q')[:200],
+                                   after=after, limit=limit)
+            path = logbook.file_path()
+            self.send_body(200, {**result, 'file': str(path) if path else ''})
+            return
+        try:
+            report = diagnostic_report(self.server)
+        except Exception:
+            logging.exception('Build diagnostic report failed')
+            report = '（诊断摘要生成失败，见下方日志）\n'
+        stored = logbook.file_text()
+        body = stored or logbook.memory_text()
+        source = '日志文件 ' + str(logbook.file_path()) if stored else '内存缓冲（日志文件不可用）'
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        text = (report + '\n==== 服务日志（' + source + '）====\n' + (body or '（暂无日志）\n'))
+        self.send_body(200, {'filename': f'ps5-manager-logs-{stamp}.txt', 'text': text})
 
     def handle_upload(self):
         """Raw-body upload: metadata in the query string, bytes in the body."""
@@ -1092,6 +1146,53 @@ def _catalog_reader(path):
     return read
 
 
+def diagnostic_report(server):
+    """Plain-text header for an exported log: versions, layout and health, no secrets."""
+    import platform
+    app = server.app
+    settings = getattr(app, 'settings', None)
+    get = lambda name, default='': getattr(settings, name, default) if settings else default  # noqa: E731
+    lines = ['==== PS5 管家 诊断摘要 ====',
+             '生成时间：' + time.strftime('%Y-%m-%d %H:%M:%S %z'),
+             '服务版本：' + VERSION,
+             'Python：' + platform.python_version() + ' · ' + platform.platform(terse=True),
+             f"管理入口：https://{get('host_ip')}:{get('admin_port')}  服务网段：{get('subnet')}",
+             f"数据目录：{get('data_dir')}  仓库目录：{get('repo_dir')}"]
+    try:
+        status = app.state()['status']
+        lines.append('运行时长：{} 秒 · DNS {} · 网关 {} · 用户手册 {}'.format(
+            status.get('uptime'), status.get('dns'), status.get('gateway'), status.get('host')))
+        for key, label in (('gateway_error', '网关错误'), ('last_error', '最近应用错误')):
+            if status.get(key):
+                lines.append(f'{label}：{status[key]}')
+    except Exception as exc:
+        lines.append(f'服务状态读取失败：{exc}')
+    try:
+        units = app.units()
+        lines.append('系统服务：' + '，'.join(f"{item['name']}={item['state']}" for item in units.values()))
+    except Exception:
+        pass
+    updater = getattr(app, 'updates', None)
+    if updater is not None:
+        try:
+            status = updater.status()
+            job = status.get('job') or {}
+            lines.append('服务更新：最新 {} · 任务 {} {}'.format(
+                status.get('latest') or '未检查', job.get('state') or '无', job.get('error') or '').rstrip())
+        except Exception:
+            pass
+    plugin_updates = getattr(server, 'plugin_updates', None)
+    if plugin_updates is not None:
+        try:
+            upstream = plugin_updates.status()
+            lines.append('插件上游：检查于 {} · 可更新 {} · {}'.format(
+                upstream.get('checked_at') or '未检查', upstream.get('available'),
+                upstream.get('error') or '无错误'))
+        except Exception:
+            pass
+    return '\n'.join(lines) + '\n'
+
+
 def update_busy(console):
     """An update restarts the service; do not interrupt in-flight console writes."""
     terminal = {'done', 'done_with_warnings', 'failed', 'fail', 'canceled', 'cancelled', 'idle'}
@@ -1140,6 +1241,7 @@ def main():
     settings.admin_port, settings.dns_port = admin_port, dns_port
     settings.data_dir, settings.repo_dir = data_dir, repo_dir
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    logbook.install(data_dir / 'logs')
     # A proxy set for GitHub must not reach the PS5, the NAS or the local repo.
     netproxy.seal_direct()
     data = data_dir

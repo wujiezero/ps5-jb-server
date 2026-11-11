@@ -511,8 +511,12 @@ test('every active update phase disables actions and terminal failures stop poll
     ui.renderUpdates();
     assert.equal(ui.node('update-check').disabled, true, state);
     assert.equal(ui.node('update-apply').disabled, true, state);
-    assert.equal(ui.node('update-progress').hidden, false, state);
+    assert.equal(ui.node('update-stepper').hidden, false, state);
+    assert.equal(ui.node('update-progress').hidden, true, `${state}: the stepper replaces the text banner`);
   }
+  ui.updates.data.job = { id: 'j1', state: 'downloading', version: '1.5.0', error: '临时网络错误，正在重试' };
+  ui.renderUpdates();
+  assert.equal(ui.node('update-progress').hidden, false, 'errors still show the text banner');
   for (const [state, text] of [['failed', /更新失败/], ['rolled_back', /已回滚/], ['done', /更新完成/]]) {
     ui.updates.data.job = { id: 'j1', state, error: state === 'done' ? '' : '下载或验证失败' };
     ui.renderUpdates();

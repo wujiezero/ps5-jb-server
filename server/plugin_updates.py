@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -109,6 +110,22 @@ class PluginUpdates:
         self.download_timeout = download_timeout
         self.lock = threading.Lock()
         self.applying = threading.Lock()
+        self._progress = None
+        self._progress_lock = threading.Lock()
+
+    # ------------------------------------------------------------- progress
+
+    def progress(self):
+        """The plugin being pulled right now: stage, bytes done / total."""
+        with self._progress_lock:
+            return dict(self._progress) if self._progress else None
+
+    def _report(self, **changes):
+        with self._progress_lock:
+            if changes.get('reset'):
+                self._progress = None
+                return
+            self._progress = {**(self._progress or {}), **changes, 'updated': time.time()}
 
     # ----------------------------------------------------------- index cache
 
@@ -125,11 +142,28 @@ class PluginUpdates:
         temporary.write_text(json.dumps(document, ensure_ascii=False) + '\n', encoding='utf-8')
         os.replace(temporary, self.cache_path)
 
-    def _fetch(self, url, limit, timeout):
+    def _fetch(self, url, limit, timeout, progress=None):
         request = urllib.request.Request(url, headers=UA)
         try:
             with self.opener(request, timeout=timeout) as response:
-                data = response.read(limit + 1)
+                if progress is None:
+                    data = response.read(limit + 1)
+                else:
+                    headers = getattr(response, 'headers', None)
+                    try:
+                        total = int(headers.get('Content-Length')) if headers is not None else None
+                    except (TypeError, ValueError):
+                        total = None
+                    chunks, size = [], 0
+                    progress(0, total)
+                    while size <= limit:
+                        chunk = response.read(min(64 << 10, limit + 1 - size))
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        size += len(chunk)
+                        progress(size, total)
+                    data = b''.join(chunks)
         except OSError as exc:  # URLError, HTTPError, timeouts are all OSError
             reason = getattr(exc, 'reason', None) or exc
             raise PluginUpdateError(f'无法连接上游：{reason}{netproxy.hint()}') from exc
@@ -212,13 +246,19 @@ class PluginUpdates:
                 raise PluginUpdateError('上游没有这个插件')
             if str(item.get('checksum') or '').lower() == entry['checksum']:
                 raise PluginUpdateError('已经是上游最新版本')
-            data = self._fetch(entry['url'], self.repo.MAX_UPLOAD, self.download_timeout)
+            self._report(filename=filename, name=entry['name'], version=entry['version'],
+                         stage='downloading', done=0, total=None, started=time.time())
+            data = self._fetch(entry['url'], self.repo.MAX_UPLOAD, self.download_timeout,
+                               progress=lambda done, total: self._report(done=done, total=total))
+            self._report(stage='verifying', done=len(data), total=len(data))
             if hashlib.sha256(data).hexdigest() != entry['checksum']:
                 raise PluginUpdateError('下载的文件校验和与上游索引不符，未写入仓库（上游可能刚更新，请重新检查）')
+            self._report(stage='publishing')
             updated = self.repo.upgrade(filename, entry['filename'], data, version=entry['version'],
                                         last_update=entry['last_update'], upstream=entry['name'])
             logging.info('plugin updated from upstream: %s -> %s', filename, entry['filename'])
             return {'ok': True, 'filename': updated['filename'], 'previous': filename,
                     'version': updated.get('version', '')}
         finally:
+            self._report(reset=True)
             self.applying.release()

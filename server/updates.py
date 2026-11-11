@@ -45,14 +45,25 @@ class GithubRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetch_bytes(url, limit):
+def fetch_bytes(url, limit, progress=None):
     request = urllib.request.Request(url, headers={
         'User-Agent': f'ps5-jb-server/{VERSION}', 'Accept': 'application/vnd.github+json' if url == LATEST else 'application/octet-stream',
         'X-GitHub-Api-Version': '2022-11-28',
     })
     # Release assets live on hosts that some LANs can only reach through a proxy.
     with netproxy.opener(redirect=GithubRedirect).open(request, timeout=30) as response:
-        data = response.read(limit + 1)
+        if progress is None:
+            data = response.read(limit + 1)
+        else:
+            chunks, size = [], 0
+            while size <= limit:
+                chunk = response.read(min(256 << 10, limit + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                progress(size)
+            data = b''.join(chunks)
     if len(data) > limit:
         raise UpdateError('GitHub 更新响应超过大小限制')
     return data
@@ -229,9 +240,25 @@ class UpdateManager:
                 self._prepare(ident, release)
             return self.status()
 
-    def _state(self, ident, version, state, error=''):
+    def _state(self, ident, version, state, error='', **extra):
         atomic_json(self.status_path, {'id': ident, 'version': version, 'state': state,
-                                      'error': error, 'updated_at': time.time()})
+                                      'error': error, 'updated_at': time.time(), **extra})
+
+    def _download(self, ident, version, release):
+        """Fetch the release archive, recording bytes received for the progress bar."""
+        total = release['size']
+        if self.fetch is not fetch_bytes:
+            return self.fetch(release['asset'], MAX_ARCHIVE)
+        last = [0.0]
+
+        def progress(done):
+            now = time.monotonic()
+            if now - last[0] >= 0.5 or done >= total:
+                last[0] = now
+                self._state(ident, version, 'downloading', bytes_done=done, bytes_total=total)
+
+        self._state(ident, version, 'downloading', bytes_done=0, bytes_total=total)
+        return fetch_bytes(release['asset'], MAX_ARCHIVE, progress=progress)
 
     def _prepare(self, ident, release):
         version = release['latest']
@@ -242,7 +269,7 @@ class UpdateManager:
             if (len(checksum) != 2 or not re.fullmatch(r'[a-f0-9]{64}', checksum[0])
                     or checksum[1] != name):
                 raise UpdateError('SHA-256 校验文件格式不正确')
-            data = self.fetch(release['asset'], MAX_ARCHIVE)
+            data = self._download(ident, version, release)
             if len(data) != release['size'] or hashlib.sha256(data).hexdigest() != checksum[0]:
                 raise UpdateError('更新包 SHA-256 或长度校验失败，未修改服务')
             directory = self.directory / ident

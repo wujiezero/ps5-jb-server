@@ -2893,3 +2893,207 @@ tbody[data-enter="true"] > tr:nth-child(n+6) { animation-delay: 60ms; }
   /* 底部面板：把手区域更容易抓住 */
   .sheet-handle { width: 40px; margin-top: 8px; }
 }
+
+/* ── 组件内滚动：内容超高时在组件内部滚动，不把整页撑高 ─────────────── */
+
+.detail-card[open] > .guide-body,
+.detail-card[open] > .firewall-counters {
+  max-height: min(46dvh, 380px);
+  overflow-y: auto;
+}
+.ps5-autoload-seq { max-height: min(46dvh, 420px); overflow-y: auto; }
+#config-fields textarea { max-height: 46dvh; }
+
+@media (min-width: 1024px) {
+  /* 高度跟随视口，整块总能落在屏幕内；滚到框底后滚轮继续带动页面（不设 overscroll-behavior: contain）。 */
+  .table-wrap {
+    max-height: max(320px, calc(100dvh - 300px));
+    overflow: auto;
+  }
+  .activity-table-wrap { max-height: max(360px, calc(100dvh - 340px)); }
+  .ps5-table-wrap { max-height: max(300px, calc(100dvh - 360px)); }
+  /* 表头钉在滚动区顶部；合并边框在吸顶时会丢，用内阴影画底线。 */
+  .table-wrap > table > thead th { position: sticky; top: 0; z-index: 2; border-bottom: 0; box-shadow: inset 0 -1px 0 var(--line); }
+}
+@media (min-width: 768px) {
+  .files-table-wrap {
+    max-height: max(320px, calc(100dvh - 290px));
+    overflow: auto;
+  }
+  .files-table-wrap > table > thead th { position: sticky; top: 0; z-index: 2; border-bottom: 0; box-shadow: inset 0 -1px 0 var(--line); }
+}
+
+/* ── 功能说明图标与浮层 ───────────────────────────────────────────────── */
+
+.help-tip {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: -3px 0 -3px 2px;
+  border-radius: 50%;
+  color: var(--faint);
+  vertical-align: middle;
+  cursor: help;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+.help-tip .icon { width: 16px; height: 16px; stroke-width: 1.7; }
+.help-tip[aria-expanded="true"] { color: var(--accent); background: var(--accent-soft); }
+.help-tip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (hover: hover) and (pointer: fine) {
+  .help-tip:hover { color: var(--accent); background: var(--accent-soft); }
+}
+@media (pointer: coarse) {
+  .help-tip { width: 28px; height: 28px; margin: -7px -4px -7px 0; }
+  .help-tip .icon { width: 18px; height: 18px; }
+}
+.detail-title .help-tip, .stat-label .help-tip, .files-rail-title .help-tip { margin-top: -2px; }
+.files-toolbar > .help-tip { margin: 0 2px 0 -4px; }
+.search-toolbar > .help-tip { align-self: center; }
+
+.help-pop {
+  position: fixed;
+  z-index: 90;
+  max-width: calc(100vw - 24px);
+  padding: 12px 14px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: var(--shadow-pop);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  animation: help-pop-in 140ms var(--ease-out);
+}
+.help-pop[hidden] { display: none; }
+.help-pop-title { display: block; margin-bottom: 4px; font-size: 0.875rem; font-weight: 650; }
+.help-pop-body { color: var(--mut); }
+.help-pop-steps { margin: 8px 0 0; padding-left: 1.15em; color: var(--fg); }
+.help-pop-steps li + li { margin-top: 4px; }
+.help-pop-steps li::marker { color: var(--accent); }
+@keyframes help-pop-in { from { opacity: 0; transform: translateY(var(--help-shift, 4px)); } to { opacity: 1; transform: none; } }
+.help-pop[data-side="above"] { --help-shift: -4px; }
+@media (prefers-reduced-motion: reduce) { .help-pop { animation: none; } }
+
+/* ── 操作进度（服务更新 / 插件上游更新 / 主机插件更新） ─────────────── */
+
+.op-progress { margin-top: 12px; padding: 10px 12px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raised); }
+.op-progress[hidden] { display: none; }
+.op-label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 0.8125rem; line-height: 1.5; color: var(--fg); }
+.op-label > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.op-label-sub { margin-top: 8px; color: var(--mut); }
+.op-percent { flex: 0 0 auto; color: var(--accent); font-weight: 650; font-variant-numeric: tabular-nums; }
+.op-bar { position: relative; height: 6px; margin-top: 8px; border-radius: 3px; background: var(--bar); overflow: hidden; }
+.op-bar > span { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: inherit; background: var(--accent); transition: width 300ms var(--ease); }
+.op-progress[data-indeterminate="true"] .op-bar > span { width: 32%; animation: op-slide 1.15s ease-in-out infinite; }
+@keyframes op-slide { from { transform: translateX(-100%); } to { transform: translateX(320%); } }
+@media (prefers-reduced-motion: reduce) {
+  .op-progress[data-indeterminate="true"] .op-bar > span { width: 100%; opacity: 0.45; animation: none; }
+  .op-bar > span { transition: none; }
+}
+.repo-upstream-text .op-progress { margin-top: 10px; }
+
+.op-steps { display: flex; gap: 4px; margin: 0; padding: 0; list-style: none; counter-reset: op-step; }
+.op-step {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 3px solid var(--bar);
+  color: var(--faint);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  counter-increment: op-step;
+}
+.op-step::before { content: counter(op-step) " · "; font-variant-numeric: tabular-nums; }
+.op-step[data-state="done"] { border-top-color: var(--accent); color: var(--mut); }
+.op-step[data-state="active"] { border-top-color: var(--accent); color: var(--accent); }
+.update-stepper { margin-top: 16px; }
+.update-stepper .op-bar { margin-top: 12px; }
+@media (max-width: 420px) { .op-step::before { content: none; } }
+
+.row-meter { position: relative; display: block; width: 112px; height: 4px; border-radius: 2px; background: var(--bar); overflow: hidden; }
+.row-meter > span { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent); transition: width 300ms var(--ease); }
+
+/* ── PS5 插件版本比对 ─────────────────────────────────────────────────── */
+
+.ps5-row-detail { max-width: 240px; color: var(--mut); font-size: 0.75rem; line-height: 1.45; overflow-wrap: anywhere; }
+.ps5-catalog-table tr[data-update="true"] td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+.ps5-row-actions [hidden] { display: none; }
+#ps5-catalog-note[data-tone="update"],
+.ps5-host-counts[data-tone="update"] { color: var(--amber); font-weight: 600; }
+#ps5-panel-catalog .search-toolbar { justify-content: flex-start; gap: 10px 12px; }
+#ps5-panel-catalog .search-toolbar > .search-field { margin-right: auto; }
+#ps5-panel-catalog .search-toolbar > .help-tip { margin-left: -4px; }
+
+.repo-ps5-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius);
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.repo-ps5-hint[hidden] { display: none; }
+.repo-ps5-hint > span { flex: 1 1 260px; min-width: 0; }
+
+.upgrade-list { margin: 14px 0 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: var(--radius); max-height: min(40dvh, 320px); overflow-y: auto; }
+.upgrade-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; }
+.upgrade-item + .upgrade-item { border-top: 1px solid var(--line); }
+.upgrade-text { display: flex; flex-direction: column; min-width: 0; font-size: 0.875rem; }
+.upgrade-versions { color: var(--mut); font-size: 0.75rem; overflow-wrap: anywhere; }
+.upgrade-item .result-badge { flex: 0 0 auto; }
+
+/* ── 运行日志 ─────────────────────────────────────────────────────────── */
+
+.logs-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-top: 14px; }
+.logs-toolbar .search-field { flex: 1 1 240px; }
+.logs-follow { display: inline-flex; align-items: center; gap: 6px; margin: 0; color: var(--mut); font-size: 0.8125rem; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.logs-follow input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.logs-actions { display: flex; gap: 8px; margin-left: auto; }
+.logs-view {
+  height: min(52dvh, 440px);
+  min-height: 220px;
+  margin-top: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--raised);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+.logs-view:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.logs-empty { padding: 16px; color: var(--mut); font-size: 0.8125rem; }
+.svc-log {
+  display: grid;
+  grid-template-columns: max-content 3.2em max-content minmax(0, 1fr);
+  gap: 0 10px;
+  align-items: baseline;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.svc-log:last-child { border-bottom: 0; }
+.svc-log-time, .svc-log-source { color: var(--faint); white-space: nowrap; font-size: 0.6875rem; }
+.svc-log-level { font-weight: 650; color: var(--mut); }
+.svc-log-msg { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); font-size: 0.75rem; }
+.svc-log[data-level="WARNING"] { background: var(--amber-soft); }
+.svc-log[data-level="WARNING"] .svc-log-level { color: var(--amber); }
+.svc-log[data-level="ERROR"], .svc-log[data-level="CRITICAL"] { background: var(--red-soft); }
+.svc-log[data-level="ERROR"] .svc-log-level, .svc-log[data-level="CRITICAL"] .svc-log-level { color: var(--red); }
+#logs-state[data-tone="error"] { color: var(--red); }
+@media (max-width: 767px) {
+  .svc-log { grid-template-columns: max-content max-content minmax(0, 1fr); }
+  .svc-log-source { display: none; }
+  .logs-actions { margin-left: 0; flex: 1 1 100%; }
+  .logs-actions .button { flex: 1 1 0; }
+}
+.upstream-row label[for="upstream-dns"] { display: inline-block; }

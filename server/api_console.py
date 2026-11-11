@@ -130,6 +130,9 @@ class ConsoleAPI:
             if path == '/api/ps5/power':
                 handler.send_body(200, self.power.status(self._arg(handler, 'ip')))
                 return True
+            if path == '/api/ps5/progress':
+                handler.send_body(200, {'progress': self.ps5.progress(self._arg(handler, 'ip'))})
+                return True
             if path == '/api/files/info' and not self.file_manager:
                 handler.send_body(200, {'configured': False, 'enabled': False, 'hosts': [],
                                         'error': 'PS5 文件管理已在配置中关闭'})
@@ -241,6 +244,10 @@ class ConsoleAPI:
             elif path == '/api/ps5/install':
                 handler.send_body(200, self.ps5.install(body.get('ip'), body.get('filename'),
                                                         bool(body.get('run'))))
+            elif path == '/api/ps5/upgrade':
+                run = body.get('run')
+                handler.send_body(200, self.ps5.upgrade(body.get('ip'), body.get('filename'),
+                                                        run=None if run is None else bool(run)))
             elif path == '/api/ps5/run':
                 handler.send_body(200, self.ps5.run(body.get('ip'), body.get('filename')))
             elif path == '/api/ps5/kill':

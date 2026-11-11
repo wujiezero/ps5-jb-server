@@ -152,6 +152,7 @@
   let versionsTarget = null;
   let upstreamProgress = '';
   const toastTimers = new Map();
+  const clientLog = [];   // 本页最近的错误提示，随日志一并导出
 
   class ApiError extends Error {
     constructor(message, status = 0) {
@@ -287,6 +288,7 @@
 
   function toast(message, tone = 'info') {
     if (typeof message !== 'string' || !message) return;
+    if (tone === 'error' || tone === 'warning') noteClient(tone, message);
     const region = $('toast-region');
     const node = document.createElement('div');
     node.className = 'toast';
@@ -452,7 +454,8 @@
     if (section === 'settings') {
       if (!updates.current) loadVersion();
       refreshUpdates();
-    }
+      startLogs();
+    } else stopLogs();
     if (section === 'ps5') {
       if (!repo.loaded) refreshRepo();
       if (!ps5.loaded) refreshPs5();
@@ -494,6 +497,7 @@
     csrf = '';
     stopPolling();
     stopUpdatePolling();
+    stopLogs();
     updates.generation += 1;
     Object.assign(updates, { data: null, loading: false, action: '', error: '', reconnect: false,
       awaiting: false, deadline: 0, timedOut: false });
@@ -854,7 +858,10 @@
       const online = ps5.hosts.filter((host) => host.online);
       if (ps5.discovery.scanning && !ps5.hosts.length) set('quick-ps5', '正在扫描局域网…');
       else if (!ps5.hosts.length) set('quick-ps5', '未发现主机，进入页面重新扫描');
-      else set('quick-ps5', `${online.length} 台在线 · ${ps5.hosts.map((host) => host.ip).join('、')}`);
+      else {
+        const upgradable = ps5.hosts.reduce((sum, host) => sum + ps5UpgradeCandidates(host).length, 0);
+        set('quick-ps5', `${online.length} 台在线 · ${ps5.hosts.map((host) => host.ip).join('、')}${upgradable ? ` · ${upgradable} 个插件可更新` : ''}`);
+      }
     }
     if (files.info && files.info.host) set('quick-files', `${files.info.reachable ? '已连接' : '无法连接'} ${files.info.host}`);
   }
@@ -1063,6 +1070,9 @@
     progress.textContent = progressText;
     progress.hidden = !progressText;
     progress.dataset.tone = updates.timedOut ? 'error' : chip.dataset.tone;
+    renderUpdateStepper(job, active);
+    // 步骤条已经说明进行到哪一步；文字横幅只在出错或超时时补充。
+    if (!$('update-stepper').hidden && !job?.error && !updates.timedOut) progress.hidden = true;
     $('update-retry').hidden = !updates.timedOut && !updates.error;
     $('update-retry').disabled = updates.loading || !authenticated;
     $('update-reload').hidden = !updates.timedOut;
@@ -1734,6 +1744,8 @@
       line.textContent = parts.join(' · ');
     }
     line.dataset.tone = available.length ? 'update' : status && status.error ? 'error' : '';
+    renderUpstreamProgress();
+    renderRepoPs5Hint();
     all.hidden = available.length < 2;
     const label = all.querySelector('.button-label');
     if (label && all.getAttribute('aria-busy') !== 'true') label.textContent = `全部更新（${available.length}）`;
@@ -1775,8 +1787,14 @@
     try {
       for (const [index, item] of items.entries()) {
         const target = upstreamOf(item);
-        upstreamProgress = `正在下载 ${index + 1} / ${items.length}：${item.name} ${target?.version || ''}…`;
+        upstreamProgress = `正在更新 ${index + 1} / ${items.length}：${item.name} ${target?.version || ''}…`;
+        upstreamBatch = { index, total: items.length, name: item.name, version: target?.version || '', progress: null };
         renderUpstream();
+        const stop = startProgressPoll('/api/repo/upstream/progress', (data) => {
+          if (!upstreamBatch) return;
+          upstreamBatch.progress = data && data.progress && typeof data.progress === 'object' ? data.progress : null;
+          renderUpstreamProgress();
+        });
         try {
           const result = await api('/api/repo/upstream/apply', { filename: item.filename }, 180000);
           if (requestEpoch !== epoch) return;
@@ -1786,18 +1804,23 @@
           if (error.status === 401) { showLogin(error.message); return; }
           failure = `${item.name}：${error.message}`;
           break;
+        } finally {
+          stop();
         }
       }
     } finally {
+      upstreamBatch = null;
+      renderUpstreamProgress();
       upstreamProgress = '';
       repoBusy = false;
       buttonBusy('repo-upstream-all', false);
       updateRepoControls();
       schedulePoll();
     }
-    if (done.length) toast(`已更新 ${done.join('、')}；旧版本已保留，可在「历史」里回退。`, 'success');
+    if (done.length) toast(`已更新 ${done.join('、')}；旧版本已保留，可在「历史」里回退。PS5 上的旧版本会在「PS5 主机 → 插件库」提示一键更新。`, 'success');
     if (failure) toast(`更新失败 · ${failure}`, 'error');
     await refreshRepo();
+    if (done.length) refreshPs5().then(() => renderRepoPs5Hint());
   }
 
   function applyUpstream(item) {
@@ -2888,6 +2911,17 @@
         items.push({ key, filename: key, installed: false, delayMs: 0, outcome: '' });
       }
     }
+    const pluginUpdates = {};
+    const updatesRaw = entry.updates && typeof entry.updates === 'object' ? entry.updates : {};
+    for (const [filename, info] of Object.entries(updatesRaw)) {
+      if (!info || typeof info !== 'object' || !['current', 'outdated', 'newer', 'maybe'].includes(str(info.state))) continue;
+      const runningPid = Number(info.running);
+      pluginUpdates[filename] = {
+        state: str(info.state), confident: info.confident === true, slot: str(info.slot),
+        installed: str(info.installed), installedVersion: str(info.installed_version), repoVersion: str(info.repo_version),
+        running: Number.isInteger(runningPid) && runningPid > 0 ? runningPid : null
+      };
+    }
     const powerRaw = entry.power && typeof entry.power === 'object' ? entry.power : {};
     const power = {
       state: ['on', 'standby', 'off'].includes(str(powerRaw.state)) ? str(powerRaw.state) : entry.online === true ? 'on' : 'off',
@@ -2914,6 +2948,7 @@
       installed: Array.isArray(entry.installed) ? [...new Set(entry.installed.map((name) => str(name)).filter(Boolean))] : [],
       payloads,
       running,
+      pluginUpdates,
       autoload: {
         enabled: autoloadRaw.enabled === true,
         startDelay: count(autoloadRaw.start_delay) === null ? 5 : count(autoloadRaw.start_delay),
@@ -3305,10 +3340,12 @@
 
     const catalogItems = repo.loaded ? repo.items : [];
     const installable = catalogItems.length
-      ? catalogItems.filter((item) => !host.installed.includes(item.filename)).length
+      ? catalogItems.filter((item) => !host.installed.includes(item.filename) && !host.pluginUpdates[item.filename]).length
       : host.repoPayloads === null ? 0 : host.repoPayloads;
     const counts = card.querySelector('[data-field="counts"]');
-    counts.textContent = `可安装 ${installable} 个插件 · 运行中 ${host.running.length}`;
+    const upgradable = ps5UpgradeCandidates(host).length;
+    counts.textContent = `可安装 ${installable} 个插件 · 运行中 ${host.running.length}${upgradable ? ` · ${upgradable} 个可更新` : ''}`;
+    counts.dataset.tone = upgradable ? 'update' : '';
 
     const hint = card.querySelector('[data-field="hint"]');
     hint.hidden = host.pldmgr;
@@ -3478,7 +3515,10 @@
       return;
     }
     const rowError = ps5InlineError && ps5InlineError.scope === 'install' && ps5InlineError.ip === host.ip ? ps5InlineError : null;
-    note.textContent = `本服务仓库共 ${repo.items.length} 个插件 · 主机已安装 ${host.installed.length} 个${host.sourceAttached ? '' : ' · 仓库未接入，安装将尝试通过 elfldr 执行'}`;
+    const upgradable = ps5UpgradeCandidates(host);
+    note.textContent = `本服务仓库共 ${repo.items.length} 个插件 · 主机已安装 ${host.installed.length} 个${upgradable.length ? ` · ${upgradable.length} 个比仓库旧，可一键更新` : ''}${host.sourceAttached ? '' : ' · 仓库未接入，安装将尝试通过 elfldr 执行'}`;
+    note.dataset.tone = upgradable.length ? 'update' : '';
+    syncPs5UpgradeAll(host);
     if (!items.length) {
       body.dataset.mode = 'no-match';
       ps5CatalogKey = '';
@@ -3490,6 +3530,7 @@
       host.ip,
       host.installed,
       host.running.map((item) => [item.pid, item.name]),
+      host.pluginUpdates,
       items.map((item) => [item.filename, item.name, item.version, item.category, item.size]),
       rowError ? [rowError.key, rowError.message] : null
     ]);
@@ -3517,8 +3558,8 @@
     statusCell.dataset.field = 'status';
     const actionsCell = document.createElement('td');
     const actions = makeElement('div', 'ps5-row-actions');
-    for (const [action, label] of [['install', '安装'], ['install-run', '安装并运行']]) {
-      const button = makeElement('button', 'button button-secondary button-small');
+    for (const [action, label] of [['upgrade', '更新并应用'], ['install', '安装'], ['install-run', '安装并运行']]) {
+      const button = makeElement('button', `button ${action === 'upgrade' ? 'button-primary' : 'button-secondary'} button-small`);
       button.type = 'button';
       button.dataset.ps5Action = action;
       button.dataset.ip = host.ip;
@@ -3547,12 +3588,28 @@
         spinner.setAttribute('aria-hidden', 'true');
         content.append(spinner);
       }
-      const installed = host.installed.includes(filename);
-      const running = host.running.some((item) => item.name === filename);
+      const info = host.pluginUpdates[filename] || null;
+      const installed = host.installed.includes(filename) || Boolean(info);
+      const running = host.running.some((item) => item.name === filename) || Boolean(info && info.running);
+      const offer = Boolean(info && (info.state === 'outdated' || info.state === 'maybe'));
       const badge = makeElement('span', 'result-badge');
+      let detail = '';
       if (busy) {
+        badge.dataset.tone = 'info';
+        const progress = ps5Progress && ps5Progress.filename === filename ? ps5Progress : null;
+        badge.textContent = progress ? ps5StageText(progress) : '处理中…';
+      } else if (info && info.state === 'outdated') {
+        badge.dataset.tone = 'warning';
+        badge.textContent = running ? '可更新 · 运行中' : '可更新';
+        detail = `主机 ${info.installedVersion || info.installed} → 仓库 ${info.repoVersion || filename}`;
+      } else if (info && info.state === 'maybe') {
+        badge.dataset.tone = 'warning';
+        badge.textContent = '可能有更新';
+        detail = `主机文件 ${info.installed}，与仓库文件名不同`;
+      } else if (info && info.state === 'newer') {
         badge.dataset.tone = 'neutral';
-        badge.textContent = '安装中…';
+        badge.textContent = running ? '运行中 · 主机较新' : '主机版本较新';
+        detail = `主机 ${info.installedVersion || info.installed}`;
       } else if (running) {
         badge.dataset.tone = 'good';
         badge.textContent = '运行中';
@@ -3564,18 +3621,34 @@
         badge.textContent = '未安装';
       }
       content.append(badge);
+      if (busy && ps5Progress && ps5Progress.filename === filename) {
+        const meter = makeElement('span', 'row-meter');
+        const fill = makeElement('span');
+        fill.style.width = `${Math.round(ps5StageFraction(ps5Progress) * 100)}%`;
+        meter.append(fill);
+        content.append(meter);
+      }
+      if (detail && !busy) content.append(makeElement('span', 'ps5-row-detail mono', detail));
       if (rowError) content.append(makeElement('span', 'ps5-row-error', rowError));
       const statusCell = row.querySelector('[data-field="status"]');
       if (statusCell) statusCell.replaceChildren(content);
       row.dataset.busy = String(busy);
+      row.dataset.update = offer ? 'true' : 'false';
       for (const button of $$('[data-ps5-action]', row)) {
         const buttonBusy = busy;
-        const allowed = host.online && (host.pldmgr || host.elfldr);
+        const isUpgrade = button.dataset.ps5Action === 'upgrade';
+        button.hidden = isUpgrade ? !offer : false;
+        if (button.dataset.ps5Action === 'install') {
+          const label = button.querySelector('.button-label');
+          if (label) label.textContent = installed ? '重新安装' : '安装';
+        }
+        const allowed = isUpgrade ? host.online && host.pldmgr : host.online && (host.pldmgr || host.elfldr);
         button.disabled = !authenticated || ps5Busy || !allowed;
         button.setAttribute('aria-busy', String(buttonBusy));
         const spinner = button.querySelector('.spinner');
         if (spinner) spinner.hidden = !buttonBusy;
-        if (!allowed) button.title = !host.online ? '主机当前离线' : '需要 pldmgr 或 elfldr';
+        if (!allowed) button.title = !host.online ? '主机当前离线' : isUpgrade ? '更新需要 pldmgr' : '需要 pldmgr 或 elfldr';
+        else if (isUpgrade) button.title = running ? '停止旧进程，替换为仓库版本并重新启动' : '替换为仓库版本，下次加载时生效';
         else button.removeAttribute('title');
       }
     }
@@ -4116,8 +4189,10 @@
     renderPs5Detail({ force: true });
     const requestEpoch = epoch;
     let installed = false;
+    ps5Progress = { filename, stage: 'reading' };
+    const stopProgress = watchPs5Progress(ip, filename);
     try {
-      const result = await api('/api/ps5/install', { ip, filename, run: Boolean(run) });
+      const result = await api('/api/ps5/install', { ip, filename, run: Boolean(run) }, 180000);
       if (requestEpoch !== epoch) return;
       if (result.ok !== true) throw new ApiError('服务未确认安装结果，请刷新后检查。');
       if (result.host) updatePs5Host(result.host);
@@ -4134,6 +4209,8 @@
       ps5InlineError = { ip, scope: 'install', key: filename, message: error.message };
       toast(error.message, 'error');
     } finally {
+      stopProgress();
+      ps5Progress = null;
       ps5End();
     }
     if (installed) refreshPs5();
@@ -4276,6 +4353,9 @@
       }
       case 'pair':
         openPs5Pair(ip);
+        break;
+      case 'upgrade':
+        openPs5Upgrade(ip, [element.dataset.filename]);
         break;
       case 'install':
         installPs5Payload(ip, element.dataset.filename, false);
@@ -7354,9 +7434,614 @@
     }
   }
 
+  /* ── 进度展示（服务更新 / 插件上游 / 主机安装共用） ─────────────────── */
+
+  let ps5Progress = null;          // 当前主机安装 / 更新的服务端阶段
+  let ps5Batch = null;             // 批量更新：{ index, total, name }
+  let ps5UpgradeTarget = null;     // 更新确认对话框的目标
+  let upstreamBatch = null;        // 插件上游更新：{ index, total, name, version, progress }
+
+  const PS5_STAGES = { checking: '检查主机状态', stopping: '停止旧进程', reading: '读取仓库文件',
+    uploading: '上传到主机', verifying: '确认已保存', running: '启动新版本' };
+  const PS5_STAGE_SPAN = { checking: [0, 0.06], stopping: [0.06, 0.14], reading: [0.14, 0.2],
+    uploading: [0.2, 0.86], verifying: [0.86, 0.93], running: [0.93, 0.99] };
+  const UPSTREAM_STAGES = { downloading: '下载', verifying: '校验', publishing: '写入仓库' };
+  const UPDATE_STEPS = [['downloading', '下载'], ['validating', '校验'], ['backing_up', '备份'],
+    ['installing', '安装'], ['restarting', '重启'], ['verifying', '确认']];
+
+  const percentOf = (done, total) => (Number(total) > 0 ? Math.max(0, Math.min(1, Number(done) / Number(total))) : null);
+
+  // 主请求进行时轮询一个只读进度接口；主请求自己负责报告失败。
+  function startProgressPoll(path, onData, interval = 450) {
+    let stopped = false;
+    let timer = null;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const data = await api(path, undefined, 5000);
+        if (!stopped) onData(data);
+      } catch { /* 进度只是锦上添花 */ }
+      if (!stopped) timer = setTimeout(tick, interval);
+    };
+    timer = setTimeout(tick, 200);
+    return () => { stopped = true; clearTimeout(timer); };
+  }
+
+  function renderOpProgress(id, state) {
+    const box = $(id);
+    if (!box) return;
+    box.hidden = !state;
+    if (!state) return;
+    const [label, percent] = box.querySelectorAll('.op-label > span');
+    const fill = box.querySelector('.op-bar > span');
+    const fraction = typeof state.fraction === 'number' ? Math.max(0, Math.min(1, state.fraction)) : null;
+    if (label) label.textContent = state.label || '';
+    if (percent) percent.textContent = fraction === null ? '' : `${Math.round(fraction * 100)}%`;
+    box.dataset.indeterminate = String(fraction === null);
+    if (fill) fill.style.width = fraction === null ? '' : `${(fraction * 100).toFixed(1)}%`;
+  }
+
+  function ps5StageFraction(progress) {
+    const span = PS5_STAGE_SPAN[progress && progress.stage] || [0, 0.05];
+    const inner = progress && progress.stage === 'uploading' ? percentOf(progress.done, progress.total) : null;
+    return span[0] + (span[1] - span[0]) * (inner === null ? 0.5 : inner);
+  }
+
+  function ps5StageText(progress) {
+    const label = PS5_STAGES[progress && progress.stage] || '处理中';
+    const inner = progress && progress.stage === 'uploading' ? percentOf(progress.done, progress.total) : null;
+    return inner === null ? `${label}…` : `${label} ${Math.round(inner * 100)}%`;
+  }
+
+  function renderPs5OpProgress() {
+    if (!ps5Batch || !ps5Progress) {
+      renderOpProgress('ps5-op-progress', ps5Batch ? { label: `正在更新 ${ps5Batch.index + 1} / ${ps5Batch.total}：${ps5Batch.name}`, fraction: null } : null);
+      return;
+    }
+    const step = ps5StageFraction(ps5Progress);
+    const bytes = ps5Progress.stage === 'uploading' && Number(ps5Progress.total) > 0
+      ? ` · ${formatBytes(ps5Progress.done)} / ${formatBytes(ps5Progress.total)}` : '';
+    renderOpProgress('ps5-op-progress', {
+      label: `正在更新 ${ps5Batch.index + 1} / ${ps5Batch.total}：${ps5Batch.name} · ${PS5_STAGES[ps5Progress.stage] || '处理中'}${bytes}`,
+      fraction: (ps5Batch.index + step) / ps5Batch.total
+    });
+  }
+
+  function watchPs5Progress(ip, filename) {
+    return startProgressPoll(`/api/ps5/progress?ip=${encodeURIComponent(ip)}`, (data) => {
+      const progress = data && data.progress && typeof data.progress === 'object' ? data.progress : null;
+      if (progress && progress.filename && progress.filename !== filename) return;
+      if (progress) ps5Progress = { ...progress, filename };
+      renderPs5OpProgress();
+      const host = ps5HostByIp(ip);
+      if (host && ps5Tab === 'catalog' && !$('ps5-detail').hidden) syncPs5CatalogRows(host);
+    });
+  }
+
+  function renderUpstreamProgress() {
+    if (!upstreamBatch) {
+      renderOpProgress('repo-upstream-progress', null);
+      return;
+    }
+    const progress = upstreamBatch.progress;
+    const stage = progress && progress.stage;
+    const inner = stage === 'downloading' ? percentOf(progress.done, progress.total)
+      : stage === 'verifying' ? 1 : stage === 'publishing' ? 1 : null;
+    const share = stage === 'downloading' ? 0.85 * (inner ?? 0.3) : stage === 'verifying' ? 0.9 : stage === 'publishing' ? 0.96 : 0.02;
+    const bytes = stage === 'downloading' && progress.done
+      ? ` · ${formatBytes(progress.done)}${Number(progress.total) > 0 ? ` / ${formatBytes(progress.total)}` : ''}` : '';
+    const prefix = upstreamBatch.total > 1 ? `${upstreamBatch.index + 1} / ${upstreamBatch.total}：` : '';
+    renderOpProgress('repo-upstream-progress', {
+      label: `${prefix}${upstreamBatch.name} ${upstreamBatch.version} · ${UPSTREAM_STAGES[stage] || '连接上游'}${bytes}`.replace(/\s+·/, ' ·'),
+      fraction: stage === 'downloading' && inner === null ? null : (upstreamBatch.index + share) / upstreamBatch.total
+    });
+  }
+
+  function renderUpdateStepper(job, active) {
+    const box = $('update-stepper');
+    if (!box) return;
+    const state = job && job.state;
+    const show = Boolean(active || updates.reconnect);
+    box.hidden = !show;
+    if (!show) return;
+    let current = UPDATE_STEPS.findIndex(([key]) => key === state);
+    if (updates.reconnect && current < 4) current = 4;   // 断开连接通常意味着正在重启
+    const list = $('update-steps');
+    const items = UPDATE_STEPS.map(([key, label], index) => {
+      const item = makeElement('li', 'op-step', label);
+      item.dataset.state = index < current ? 'done' : index === current ? 'active' : 'pending';
+      if (index === current) item.setAttribute('aria-current', 'step');
+      return item;
+    });
+    list.replaceChildren(...items);
+    const download = state === 'downloading' ? percentOf(job.bytes_done, job.bytes_total) : null;
+    const base = Math.max(0, current);
+    const fraction = state === 'queued' ? 0.02 : (base + (state === 'downloading' ? (download ?? 0.15) : 0.5)) / UPDATE_STEPS.length;
+    const fill = $('update-bar');
+    if (fill) fill.style.width = `${(Math.max(0.02, Math.min(1, fraction)) * 100).toFixed(1)}%`;
+    const label = state === 'downloading' && Number(job.bytes_total) > 0
+      ? `正在下载更新包 ${formatBytes(job.bytes_done || 0)} / ${formatBytes(job.bytes_total)}`
+      : updates.reconnect ? '服务正在重启，页面会自动重新连接…'
+        : state === 'queued' ? '已提交，等待开始…' : `${UPDATE_STATE_LABELS[state] || '处理中'}…`;
+    $('update-bar-label').textContent = label;
+  }
+
+  /* ── PS5 插件：与仓库版本比对、一键更新并应用 ───────────────────────── */
+
+  function ps5UpgradeCandidates(host) {
+    if (!host || !repo.loaded || !host.pluginUpdates) return [];
+    return repo.items
+      .filter((item) => {
+        const info = host.pluginUpdates[item.filename];
+        return info && (info.state === 'outdated' || info.state === 'maybe');
+      })
+      .map((item) => ({ item, info: host.pluginUpdates[item.filename] }));
+  }
+
+  function syncPs5UpgradeAll(host) {
+    const button = $('ps5-upgrade-all');
+    if (!button) return;
+    const candidates = ps5UpgradeCandidates(host);
+    const sure = candidates.filter(({ info }) => info.state === 'outdated');
+    button.hidden = sure.length < 2;
+    const busyNow = Boolean(ps5Batch);
+    button.disabled = !authenticated || ps5Busy || !host.online || !host.pldmgr;
+    button.setAttribute('aria-busy', String(busyNow));
+    const spinner = button.querySelector('.spinner');
+    if (spinner) spinner.hidden = !busyNow;
+    const label = button.querySelector('.button-label');
+    if (label) label.textContent = busyNow ? '更新中…' : `全部更新并应用（${sure.length}）`;
+  }
+
+  function openPs5Upgrade(ip, filenames) {
+    const host = ps5HostByIp(ip);
+    if (!authenticated || ps5Busy || !host) return;
+    const list = ps5UpgradeCandidates(host).filter(({ item, info }) => (filenames ? filenames.includes(item.filename) : info.state === 'outdated'));
+    if (!list.length) return;
+    ps5UpgradeTarget = { ip, filenames: list.map(({ item }) => item.filename) };
+    $('ps5-upgrade-host').textContent = ip;
+    $('ps5-upgrade-title').textContent = list.length > 1 ? `更新 ${list.length} 个插件？` : `更新 ${list[0].item.name}？`;
+    const fragment = document.createDocumentFragment();
+    for (const { item, info } of list) {
+      const row = makeElement('li', 'upgrade-item');
+      const text = makeElement('div', 'upgrade-text');
+      text.append(makeElement('strong', '', item.name || item.filename));
+      text.append(makeElement('span', 'upgrade-versions mono', `${info.installedVersion || info.installed} → ${item.version || item.filename}`));
+      const tag = makeElement('span', 'result-badge');
+      tag.dataset.tone = info.state === 'maybe' ? 'warning' : info.running ? 'info' : 'neutral';
+      tag.textContent = info.state === 'maybe' ? '可能有更新' : info.running ? '运行中 · 将重启' : '未运行 · 仅替换';
+      row.append(text, tag);
+      fragment.append(row);
+    }
+    $('ps5-upgrade-list').replaceChildren(fragment);
+    $('ps5-upgrade-error').hidden = true;
+    ps5RememberFocus();
+    $('ps5-upgrade-dialog').showModal();
+    $('ps5-upgrade-confirm').focus({ preventScroll: true });
+  }
+
+  async function confirmPs5Upgrade() {
+    const target = ps5UpgradeTarget;
+    if (!target) return;
+    $('ps5-upgrade-dialog').close();
+    await runPs5Upgrades(target.ip, target.filenames);
+  }
+
+  async function runPs5Upgrades(ip, filenames) {
+    if (!authenticated || ps5Busy || !filenames.length) return;
+    const requestEpoch = epoch;
+    ps5InlineError = null;
+    ps5Begin('install', ip, { label: '正在更新插件…', filename: filenames[0] });
+    const done = [];
+    let failure = null;
+    try {
+      for (const [index, filename] of filenames.entries()) {
+        const item = repo.items.find((entry) => entry.filename === filename);
+        const name = (item && item.name) || filename;
+        ps5Action = { kind: 'install', ip, filename, label: `正在更新 ${name}…` };
+        ps5Batch = { index, total: filenames.length, name };
+        ps5Progress = { filename, stage: 'checking' };
+        renderPs5OpProgress();
+        renderPs5Detail({ force: true });
+        const stop = watchPs5Progress(ip, filename);
+        try {
+          const result = await api('/api/ps5/upgrade', { ip, filename }, 180000);
+          if (requestEpoch !== epoch) return;
+          if (result.host) updatePs5Host(result.host);
+          done.push(result.ran ? `${name}（已重启）` : name);
+        } catch (error) {
+          if (requestEpoch !== epoch) return;
+          if (error.status === 401) { showLogin(error.message); return; }
+          ps5InlineError = { ip, scope: 'install', key: filename, message: error.message };
+          failure = `${name}：${error.message}`;
+          break;
+        } finally {
+          stop();
+        }
+      }
+    } finally {
+      ps5Batch = null;
+      ps5Progress = null;
+      renderPs5OpProgress();
+      ps5End();
+    }
+    if (done.length) toast(`已更新 ${done.join('、')}。`, 'success');
+    if (failure) toast(`更新失败 · ${failure}`, 'error');
+    refreshPs5();
+  }
+
+  // 仓库页：上游更新后，提醒哪些主机上还是旧版本。
+  function renderRepoPs5Hint() {
+    const node = $('repo-ps5-hint');
+    if (!node) return;
+    const hosts = ps5.loaded ? ps5.hosts.map((host) => ({ host, count: ps5UpgradeCandidates(host).length })).filter((entry) => entry.count) : [];
+    node.hidden = !hosts.length;
+    if (!hosts.length) return;
+    $('repo-ps5-hint-text').textContent = `PS5 主机 ${hosts.map(({ host, count }) => `${host.ip}（${count} 个）`).join('、')} 上的插件比仓库旧，可以一键更新并应用。`;
+    $('repo-ps5-hint-go').dataset.ip = hosts[0].host.ip;
+  }
+
+  function goPs5Updates(ip) {
+    if (location.hash !== '#/ps5') location.hash = '#/ps5';
+    setTimeout(() => { if (ps5HostByIp(ip)) openPs5Detail(ip, 'catalog'); }, 60);
+  }
+
+  /* ── 功能说明：图标悬停 / 聚焦 / 点按显示 ─────────────────────────── */
+
+  const HELP = {
+    dns: { title: 'DNS 服务', body: '本机在 UDP / TCP 53 端口为 PS5 解析域名，只解析「访问策略」白名单里的域名，其余查询一律拒绝，PS5 因此连不上系统更新、遥测等服务。',
+      steps: ['在 PS5 的网络设置里把主 DNS 指向本机（见概览「PS5 网络设置」）。', '每次查询及结果都记录在「网络活动」。'] },
+    gateway: { title: 'IPv4 网关', body: 'PS5 把默认网关指向本机后，出网的 IPv4 流量都要经过本机的 nftables 规则：默认拒绝，只放行白名单域名解析出的 IP 和白名单里的 IP / 网段。局域网访问不受影响。',
+      steps: ['IPv6 不经本机转发，家庭网络应关闭 IPv6 出网。', '「错误」通常是规则写入失败，详情见设置 → 运行日志。'] },
+    manual: { title: '用户手册入口', body: 'PS5 的「用户手册」会访问 manuals.playstation.net。本机把这个域名解析到自己，并在 HTTPS 443 端口托管越狱页面，在 PS5 上打开用户手册即可进入。',
+      steps: ['PS5：设置 → 用户指南、健康与安全以及其他信息 → 用户手册。', '状态异常时看设置 → 服务信息里的用户手册服务（ps5-jb-host）。'] },
+    'repo-service': { title: '插件仓库', body: '本机在 8080 端口提供 Payload Manager（pldmgr）能识别的插件源 repo.json，PS5 添加这个源后就能下载这里的插件。',
+      steps: ['在「插件仓库」上传 .elf / .bin，或从官方源检查更新。', '在「PS5 主机」卡片上点「接入本服务仓库」，自动把源加到主机。'] },
+    runtime: { title: '运行信息', body: '运行时间是管理服务本次启动以来的时长；「最近应用」是白名单最后一次写入网关的时间；「动态授权地址」是白名单域名当前解析出、正临时放行的 IP 数，DNS 记录过期后自动收回。' },
+    'dns-log': { title: '最近 DNS 请求', body: '最近几条 PS5 的 DNS 查询和处理结果。「已拒绝 · 不在域名白名单」表示该域名被拦截。',
+      steps: ['需要放行时，到「网络活动」勾选后批量放行，或在「访问策略」手动添加。'] },
+    'ps5-network': { title: 'PS5 网络设置', body: 'PS5 需要手动设置网络才会经过本机：IP 地址保持自动获取，主 DNS 与默认网关都填本机地址，次 DNS 留空。',
+      steps: ['PS5：设置 → 网络 → 设置 → 设定互联网连接，选中当前网络后进入「高级设置」。', '设好后「测试互联网连接」能获取 IP 即可；连接互联网失败是默认拒绝的正常结果。'] },
+    counters: { title: '网关计数器', body: '网关防火墙（nftables）各条规则累计的数据包和字节数，用来判断 PS5 的流量是否真的经过本机，以及被放行还是被丢弃。',
+      steps: ['重新应用白名单或重启服务后计数可能清零。'] },
+    whitelist: { title: '访问白名单', body: '允许 PS5 访问的互联网目标，其余全部拒绝。修改后点右上角「保存并应用」才生效。',
+      steps: ['example.com 只匹配该域名本身；*.example.com 匹配所有子域名但不含根域名，两者都要时分两行写。', 'IPv4 / CIDR 按目标地址直接放行，也适用于不经 DNS 的连接。', '共用 CDN 的域名放行后，同一 IP 上的其他服务也可能可达。'] },
+    'upstream-dns': { title: '上游 DNS', body: '本机解析白名单域名时转发到的 DNS 服务器，只支持 IPv4 地址，一般填路由器地址或公共 DNS（例如 223.5.5.5）。' },
+    apply: { title: '应用与回退', body: '「保存并应用」立即重写 DNS 白名单和网关规则；服务器保留上一版配置，改错时用「回退上一版」一键恢复。' },
+    activity: { title: '网络活动', body: '实时记录经过本机网关的 IPv4 连接、PS5 的 DNS 查询，以及访问本机服务（管理页、插件仓库、pldmgr 等）的事件。',
+      steps: ['勾选「未放行」的目标后点「放行选中」，域名或 IP 加入白名单并立即生效。', '「命名选中」给目标起名、指定分类，以后更容易辨认。', '本机服务事件只作记录，不能放行。'] },
+    discovery: { title: '主机发现', body: '扫描本机所在的 IPv4 网段，找出运行 pldmgr（8084）或 elfldr（9021）的 PS5；处于待机的主机也会通过 DDP 协议被发现。扫描不访问互联网。',
+      steps: ['扫不到时手动输入 PS5 的 IP 添加。', '越狱后先在 PS5 上运行 Payload Manager，管理功能才完整。'] },
+    hosts: { title: '发现的主机', body: '每张卡片是一台 PS5：在线状态、pldmgr / elfldr 是否可用、是否已接入本服务仓库，以及可安装、运行中、可更新的插件数。',
+      steps: ['「接入本服务仓库」把本机插件源加到这台 PS5 的 pldmgr。', '「待机 / 唤醒」需要先「配对遥控游玩」，唤醒通过遥控游玩协议完成。', '「退出 pldmgr」只让 Payload Manager 退出，不会关闭主机。'] },
+    'ps5-detail': { title: '主机详情', body: '选中主机的插件管理，分三个标签：',
+      steps: ['插件库：把本服务仓库里的插件安装到主机，或安装后立即运行；主机上的版本比仓库旧时显示「可更新」，可一键「更新并应用」。', '运行中：查看并停止主机上正在运行的插件进程。', '自动加载：设置 pldmgr 启动后按什么顺序、间隔多久自动加载哪些插件。'] },
+    'ps5-upgrade': { title: '更新并应用', body: '把主机上旧版本的插件替换为插件仓库里的版本。',
+      steps: ['旧版本正在运行：先停止旧进程，上传新版本，再启动新版本。', '没有运行：只替换文件，下次手动运行或自动加载时生效。', '版本按 pldmgr 的插件槽位与文件名里的版本号比较；读不出版本号时显示「可能有更新」，请自行确认。', '通过本服务安装过的插件会记住当时的文件，比对更准确。'] },
+    autoload: { title: '自动加载', body: 'pldmgr 启动后先倒计时，再按列表顺序加载插件；每个插件后面可以设等待时间再加载下一个。设置保存在 PS5 上，下次越狱启动 pldmgr 时生效。',
+      steps: ['常见顺序：先加载 kstuff 等内核补丁，等几秒，再加载文件服务、ShadowMount+ 等。', '如果主机上的列表已在别处被修改，保存前会提示是否覆盖。'] },
+    files: { title: 'PS5 文件', body: '通过本机代理浏览 PS5 的存储（内置 /data、M.2 扩展 /mnt/ext*、USB /mnt/usb*），浏览器不直连 PS5。',
+      steps: ['PS5 需要运行 zftpd（FTP 2120）或 tom-ps5-usbnet 的文件服务，本页自动选择可用的一个。', '支持上传（可拖拽）、新建文件夹、重命名、复制 / 移动、删除和下载，删除与覆盖都会先确认。', '游戏文件夹和镜像按标题 ID 显示游戏名。'] },
+    'ps5-storage': { title: 'PS5 存储', body: 'PS5 上可浏览的存储位置和剩余空间。FTP 模式下容量通过 PS5 上 web 文件管理（8888 端口）读取，读不到时显示未知。' },
+    nas: { title: 'NAS 存储', body: '把家里 NAS 的共享目录接进来，文件从 NAS 经本机中转直接写到 PS5，不落本机磁盘。',
+      steps: ['点「＋ 添加」选择 SMB、WebDAV 或 FTP，填写地址、共享名与账号。', '账号密码用 AES-256-GCM 加密保存，页面和接口都不会回显密码。', '勾选文件后点「传到 PS5」，进度在「传输任务」查看。'] },
+    'nas-extract': { title: '流式解压安装', body: '把 NAS 上的 RAR 压缩包（单个 .rar 或 *.partNN.rar 分卷）边读边解压，直接写进 PS5，不用先下载到电脑，也不占本机磁盘。',
+      steps: ['在 NAS 列表勾选压缩包（分卷任选一个即可），点「解压安装」；同组分卷会自动找齐，缺卷会提前提示。', '「安装」按包内 eboot.bin 与 param.json 找到游戏根目录，放到目标位置下以标题 ID 命名的文件夹，ShadowMount+ 可直接识别；「合并」用于把补丁覆盖进已有游戏文件夹。', '解压完成后默认在 PS5 主屏幕注册游戏图标（需要 ps5upload 引擎）。', '不支持带密码的包和 RAR4 旧格式；固实包或大字典包需要服务器装有 unrar 引擎。失败或取消会自动清理半成品。'] },
+    transfers: { title: '传输任务', body: '集中显示上传、复制 / 移动、NAS 传输和解压任务的进度、速度与剩余时间，可随时取消。',
+      steps: ['NAS 传输与解压在服务器上执行，关闭页面不会中断。', '从浏览器上传的文件需要保持页面打开直到完成。'] },
+    repo: { title: '插件载荷', body: 'PS5 能安装的插件载荷（.elf / .bin）。这里的文件同时发布到本机插件源，PS5 的 pldmgr 和「PS5 主机」页都从这里安装。',
+      steps: ['右上角「上传插件」添加文件，名称和版本会从文件名自动识别。', '每行可编辑信息、查看历史版本或删除；每个插件保留最近 3 个旧版本，可回退。'] },
+    'repo-endpoint': { title: 'Payload Manager 源地址', body: 'pldmgr 使用的插件源地址（repo.json）。在 PS5 的 Payload Manager 里添加这个源即可浏览安装；也可以在「PS5 主机」卡片上一键接入。' },
+    upstream: { title: '上游更新', body: '对照 Payload Manager 官方源（itsPLK/ps5-payloads-mirror）检查仓库插件的新版本。只在点击时联网，不会自动检查。',
+      steps: ['下载的文件按官方索引的 SHA-256 校验，不一致就放弃。', '更新后旧版本自动保留在「历史」里，可随时回退。', '仓库更新后，PS5 上的旧版本会在「PS5 主机 → 插件库」提示一键更新。', '网络受限时可给服务配置代理（设置 → 服务更新 → 网络代理）。'] },
+    'service-update': { title: '服务更新', body: '从 GitHub 检查本服务的正式发布版本，并在网页上一键升级。',
+      steps: ['升级包会校验 SHA-256，先备份再替换程序，配置、插件和数据都保留。', '升级中服务会重启，页面短暂断开后自动重连；新版本启动失败会自动回滚。', '有传输或解压任务时不能升级。'] },
+    proxy: { title: '网络代理', body: '访问 GitHub 和插件官方源时使用的 HTTP 代理，来自服务的环境变量 PS5JB_PROXY 或 HTTPS_PROXY。PS5、NAS 和本机插件仓库始终直连。',
+      steps: ['安装时用 install.sh --proxy 设置，或给 systemd 服务加 drop-in 设置环境变量后重启服务。'] },
+    password: { title: '修改管理密码', body: '修改登录本管理页的密码，至少 10 个字符。修改后所有设备上的登录都会失效，需要用新密码重新登录。' },
+    'service-info': { title: '服务信息', body: '本服务的端口、网段、数据目录和 systemd 服务名，排查问题或手动维护时使用。' },
+    logs: { title: '运行日志', body: '管理服务的运行记录：警告与错误、主机 / 插件 / 文件操作、更新过程等。页面定时刷新这类成功的读取请求不会记录。',
+      steps: ['按级别或关键字筛选；勾选「自动刷新」时每 5 秒追加新记录。', '「导出日志」下载文本文件，包含诊断摘要、服务日志和本浏览器最近的错误提示，反馈问题时附上即可。', '解压工作单元的详细日志在服务器上用 journalctl -u ps5-extract-<任务> 查看。'] },
+    disable: { title: '停用与回滚', body: '需要停用本服务时，先把 PS5 的网关和 DNS 改回路由器，再按步骤停止服务。停止后网关规则保持默认拒绝，不会意外放开 PS5 的外网访问。' }
+  };
+
+  const help = { pop: null, anchor: null, showTimer: null, hideTimer: null, pinned: false };
+
+  function initHelpTips() {
+    const pop = makeElement('div', 'help-pop');
+    pop.id = 'help-pop';
+    pop.setAttribute('role', 'tooltip');
+    pop.hidden = true;
+    document.body.append(pop);
+    help.pop = pop;
+    for (const tip of $$('.help-tip[data-help]')) {
+      const entry = HELP[tip.dataset.help];
+      if (!entry) { tip.remove(); continue; }
+      tip.setAttribute('aria-label', `功能说明：${entry.title}`);
+      tip.setAttribute('aria-expanded', 'false');
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', 'icon');
+      svg.setAttribute('aria-hidden', 'true');
+      const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+      use.setAttribute('href', '#i-help');
+      svg.append(use);
+      tip.replaceChildren(svg);
+    }
+    const tipOf = (event) => (event.target instanceof Element ? event.target.closest('.help-tip[data-help]') : null);
+    document.addEventListener('mouseover', (event) => {
+      const tip = tipOf(event);
+      if (tip) {
+        clearTimeout(help.hideTimer);
+        if (help.anchor === tip) return;
+        clearTimeout(help.showTimer);
+        help.showTimer = setTimeout(() => showHelp(tip, false), help.anchor ? 0 : 140);
+      } else if (event.target instanceof Element && event.target.closest('#help-pop')) {
+        clearTimeout(help.hideTimer);
+      }
+    });
+    document.addEventListener('mouseout', (event) => {
+      const from = event.target instanceof Element ? event.target.closest('.help-tip[data-help], #help-pop') : null;
+      const to = event.relatedTarget instanceof Element ? event.relatedTarget.closest('.help-tip[data-help], #help-pop') : null;
+      if (!from || to) return;
+      clearTimeout(help.showTimer);
+      if (!help.pinned) help.hideTimer = setTimeout(hideHelp, 180);
+    });
+    document.addEventListener('focusin', (event) => {
+      const tip = tipOf(event);
+      if (tip && tip.matches(':focus-visible')) showHelp(tip, false);
+    });
+    document.addEventListener('focusout', (event) => {
+      if (tipOf(event) && !help.pinned) hideHelp();
+    });
+    // 点按（触屏）固定显示；在 <summary> 里时不让它展开 / 收起卡片。
+    document.addEventListener('click', (event) => {
+      const tip = tipOf(event);
+      if (tip) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (help.anchor === tip && help.pinned) hideHelp();
+        else showHelp(tip, true);
+        return;
+      }
+      if (help.anchor && !(event.target instanceof Element && event.target.closest('#help-pop'))) hideHelp();
+    }, true);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && help.anchor) {
+        const anchor = help.anchor;
+        hideHelp();
+        if (anchor.isConnected) anchor.focus({ preventScroll: true });
+      }
+    });
+    window.addEventListener('resize', () => { if (help.anchor) placeHelp(); });
+    window.addEventListener('scroll', () => { if (help.anchor) placeHelp(); }, true);
+  }
+
+  function showHelp(tip, pinned) {
+    const entry = HELP[tip.dataset.help];
+    if (!entry || !help.pop) return;
+    clearTimeout(help.hideTimer);
+    if (help.anchor && help.anchor !== tip) help.anchor.setAttribute('aria-expanded', 'false');
+    help.anchor = tip;
+    help.pinned = pinned;
+    const nodes = [makeElement('strong', 'help-pop-title', entry.title), makeElement('p', 'help-pop-body', entry.body)];
+    if (entry.steps && entry.steps.length) {
+      const list = makeElement('ul', 'help-pop-steps');
+      for (const step of entry.steps) list.append(makeElement('li', '', step));
+      nodes.push(list);
+    }
+    help.pop.replaceChildren(...nodes);
+    help.pop.hidden = false;
+    tip.setAttribute('aria-expanded', 'true');
+    tip.setAttribute('aria-describedby', 'help-pop');
+    placeHelp();
+  }
+
+  function placeHelp() {
+    const tip = help.anchor;
+    const pop = help.pop;
+    if (!tip || !pop || !tip.isConnected || !tip.getClientRects().length) { hideHelp(); return; }
+    const rect = tip.getBoundingClientRect();
+    const gap = 8;
+    const margin = 12;
+    const width = Math.min(340, window.innerWidth - margin * 2);
+    pop.style.width = `${width}px`;
+    const height = pop.offsetHeight;
+    const below = rect.bottom + gap + height <= window.innerHeight - margin || rect.top - gap - height < margin;
+    const top = below ? rect.bottom + gap : rect.top - gap - height;
+    const left = Math.min(Math.max(margin, rect.left + rect.width / 2 - width / 2), window.innerWidth - width - margin);
+    pop.dataset.side = below ? 'below' : 'above';
+    pop.style.top = `${Math.max(margin, top)}px`;
+    pop.style.left = `${left}px`;
+  }
+
+  function hideHelp() {
+    clearTimeout(help.showTimer);
+    clearTimeout(help.hideTimer);
+    if (help.anchor) {
+      help.anchor.setAttribute('aria-expanded', 'false');
+      help.anchor.removeAttribute('aria-describedby');
+    }
+    help.anchor = null;
+    help.pinned = false;
+    if (help.pop) help.pop.hidden = true;
+  }
+
+  /* ── 运行日志：查看、筛选与导出 ─────────────────────────────────────── */
+
+  const LOGS_MAX = 600;
+  const LOGS_POLL_MS = 5000;
+  const LOG_LEVELS = { DEBUG: '调试', INFO: '信息', WARNING: '警告', ERROR: '错误', CRITICAL: '严重' };
+  const logs = { entries: [], latest: 0, timer: null, loading: false, queued: false, active: false, loaded: false, searchTimer: null };
+
+  function noteClient(kind, message) {
+    clientLog.push({ time: new Date(), kind, message: String(message).slice(0, 800) });
+    if (clientLog.length > 200) clientLog.splice(0, clientLog.length - 200);
+  }
+
+  function startLogs() {
+    logs.active = true;
+    if (!logs.loaded) loadLogs(true);
+    else scheduleLogs();
+  }
+
+  function stopLogs() {
+    logs.active = false;
+    clearTimeout(logs.timer);
+    logs.timer = null;
+  }
+
+  function scheduleLogs() {
+    clearTimeout(logs.timer);
+    logs.timer = null;
+    if (logs.active && authenticated && $('logs-follow').checked) logs.timer = setTimeout(() => loadLogs(false), LOGS_POLL_MS);
+  }
+
+  async function loadLogs(reset) {
+    if (!authenticated) return;
+    if (logs.loading) { if (reset) logs.queued = true; return; }
+    clearTimeout(logs.timer);
+    logs.loading = true;
+    const requestEpoch = epoch;
+    const params = new URLSearchParams({ level: $('logs-level').value, limit: '500' });
+    const query = $('logs-search').value.trim();
+    if (query) params.set('q', query.slice(0, 200));
+    if (!reset && logs.latest) params.set('after', String(logs.latest));
+    $('logs-refresh').setAttribute('aria-busy', 'true');
+    try {
+      const data = await api(`/api/logs?${params}`);
+      if (requestEpoch !== epoch) return;
+      const fresh = (Array.isArray(data.entries) ? data.entries : []).filter((entry) => entry && Number.isFinite(Number(entry.seq))).map((entry) => ({
+        seq: Number(entry.seq), time: Number(entry.time), level: str(entry.level).toUpperCase(), source: str(entry.source), message: String(entry.message ?? '')
+      }));
+      const view = $('logs-view');
+      const nearBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 32;
+      if (reset) logs.entries = fresh;
+      else logs.entries.push(...fresh);
+      const overflow = logs.entries.length - LOGS_MAX;
+      if (overflow > 0) logs.entries.splice(0, overflow);
+      logs.latest = Math.max(reset ? 0 : logs.latest, Number(data.latest) || 0);
+      logs.loaded = true;
+      renderLogs(reset || overflow > 0 ? null : fresh, reset || nearBottom);
+      const state = $('logs-state');
+      state.textContent = `${logs.entries.length} 条 · ${formatTime(Date.now() / 1000)}`;
+      state.dataset.tone = '';
+      state.title = data.file ? `日志文件：${data.file}` : '日志文件不可用，仅保留内存中的记录';
+    } catch (error) {
+      if (requestEpoch !== epoch) return;
+      if (error.status === 401) { showLogin(error.message); return; }
+      const state = $('logs-state');
+      state.textContent = '读取失败';
+      state.dataset.tone = 'error';
+      state.title = error.message;
+    } finally {
+      logs.loading = false;
+      $('logs-refresh').setAttribute('aria-busy', 'false');
+      if (logs.queued) { logs.queued = false; loadLogs(true); } else scheduleLogs();
+    }
+  }
+
+  function logLine(entry) {
+    const line = makeElement('div', 'svc-log');
+    line.dataset.level = entry.level;
+    const when = Number.isFinite(entry.time) ? formatTime(entry.time, true) : '—';
+    line.append(
+      makeElement('span', 'svc-log-time mono', when),
+      makeElement('span', 'svc-log-level', LOG_LEVELS[entry.level] || entry.level),
+      makeElement('span', 'svc-log-source mono', entry.source),
+      makeElement('span', 'svc-log-msg mono', entry.message)
+    );
+    return line;
+  }
+
+  function renderLogs(appended, stick) {
+    const view = $('logs-view');
+    if (appended) {
+      if (appended.length) view.append(...appended.map(logLine));
+    } else if (!logs.entries.length) {
+      const filtered = $('logs-search').value.trim() || $('logs-level').value !== 'INFO';
+      view.replaceChildren(makeElement('p', 'logs-empty', filtered ? '没有符合条件的日志。' : '暂无日志记录。'));
+    } else {
+      view.replaceChildren(...logs.entries.map(logLine));
+    }
+    const empty = view.querySelector('.logs-empty');
+    if (empty && logs.entries.length) empty.remove();
+    if (stick) view.scrollTop = view.scrollHeight;
+  }
+
+  function clientLogText() {
+    const lines = clientLog.map((entry) => `${entry.time.toLocaleString('zh-CN', { hour12: false })} ${entry.kind} ${entry.message}`);
+    return ['', '==== 浏览器端记录 ====', `页面：${location.origin}${location.pathname}`, `浏览器：${navigator.userAgent}`,
+      `导出时间：${new Date().toLocaleString('zh-CN', { hour12: false })}`, ...(lines.length ? lines : ['（本次打开页面后没有错误提示）']), ''].join('\n');
+  }
+
+  function saveTextFile(text, filename) {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  async function exportLogs() {
+    if (!authenticated) return;
+    const button = $('logs-export');
+    if (button.getAttribute('aria-busy') === 'true') return;
+    buttonBusy(button, true, '正在导出…');
+    try {
+      const data = await api('/api/logs/export', undefined, 60000);
+      const name = /^[\w.-]{1,120}$/.test(str(data.filename)) ? str(data.filename) : 'ps5-manager-logs.txt';
+      saveTextFile(String(data.text ?? '') + clientLogText(), name);
+      toast(`已导出 ${name}，反馈问题时附上这个文件即可。`, 'success');
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      toast(`导出日志失败：${error.message}`, 'error');
+    } finally {
+      buttonBusy(button, false, '导出日志');
+    }
+  }
+
+  function bindPolishEvents() {
+    initHelpTips();
+    window.addEventListener('error', (event) => {
+      noteClient('error', `${event.message || '脚本错误'}${event.filename ? ` @ ${event.filename}:${event.lineno}` : ''}`);
+    });
+    window.addEventListener('unhandledrejection', (event) => {
+      const reason = event.reason;
+      noteClient('error', `未处理的异常：${reason && reason.message ? reason.message : String(reason)}`);
+    });
+    $('logs-refresh').addEventListener('click', () => loadLogs(true));
+    $('logs-export').addEventListener('click', exportLogs);
+    $('logs-level').addEventListener('change', () => loadLogs(true));
+    $('logs-follow').addEventListener('change', () => { if ($('logs-follow').checked) loadLogs(false); else stopLogsTimer(); });
+    $('logs-search').addEventListener('input', () => {
+      clearTimeout(logs.searchTimer);
+      logs.searchTimer = setTimeout(() => loadLogs(true), 300);
+    });
+    $('ps5-upgrade-all').addEventListener('click', () => { if (ps5SelectedIp) openPs5Upgrade(ps5SelectedIp, null); });
+    $('ps5-upgrade-cancel').addEventListener('click', () => $('ps5-upgrade-dialog').close());
+    $('ps5-upgrade-confirm').addEventListener('click', confirmPs5Upgrade);
+    $('ps5-upgrade-dialog').addEventListener('close', () => {
+      ps5UpgradeTarget = null;
+      flushPs5Pending();
+      ps5RestoreFocus();
+    });
+    $('repo-ps5-hint-go').addEventListener('click', (event) => goPs5Updates(event.currentTarget.dataset.ip));
+  }
+
+  function stopLogsTimer() {
+    clearTimeout(logs.timer);
+    logs.timer = null;
+  }
+
   /* ── 启动 ───────────────────────────────────────────────────────────── */
 
   bindEvents();
+  bindPolishEvents();
   loadVersion();
   renderRepo();
   updateRepoControls();

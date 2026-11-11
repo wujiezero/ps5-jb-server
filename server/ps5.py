@@ -6,7 +6,11 @@ in place of an auth token.
 """
 import concurrent.futures
 import ipaddress
+import hashlib
 import json
+import logging
+import os
+from pathlib import Path
 import re
 import socket
 import threading
@@ -303,6 +307,82 @@ def autoload_view(config, status, payloads):
             'status': status}
 
 
+def _counted(data, progress, block=64 << 10):
+    view = memoryview(data)
+    progress(0, len(data))
+    for start in range(0, len(data), block):
+        chunk = view[start:start + block]
+        yield bytes(chunk)
+        progress(start + len(chunk), len(data))
+
+
+# ---- installed plugin versions -------------------------------------------
+# pldmgr keeps one local slot per plugin and drops version/platform suffixes
+# when naming it: zftpd.elf and zftpd-ps5-v1.7.0.elf both live in local/zftpd.
+# Its read-only /manage:check names the slot for a file name; the guess below
+# is only for managers that predate that endpoint.
+_PLATFORM = re.compile(r'(?<![a-z0-9])(?:ps[45]|prospero|orbis)(?![a-z0-9])')
+
+
+def guess_slot_key(filename):
+    stem = str(filename).rsplit('.', 1)[0].lower()
+    match = re.match(r'(.+?)(?:[-_ .](?:ps[45]|v?\d)[\w.-]*)?$', stem)
+    key = re.sub(r'[^a-z0-9._-]+', '-', match.group(1) if match else stem).strip('-.')
+    return key or stem
+
+
+def version_numbers(text):
+    return tuple(int(part) for part in re.findall(r'\d+', str(text or '')))
+
+
+def filename_version(filename, key):
+    """Numbers in a payload file name after its slot name: zftpd-ps5-v1.6.0.elf -> (1, 6, 0)."""
+    stem = str(filename).rsplit('.', 1)[0].lower()
+    rest = stem[len(key):] if key and stem.startswith(key) else stem
+    return version_numbers(_PLATFORM.sub(' ', rest))
+
+
+def _version_text(numbers):
+    return '.'.join(map(str, numbers))
+
+
+def compare_installed(item, installed, record=None, key=''):
+    """How the repository build relates to the file in the console's slot.
+
+    current  — same build (recorded checksum or identical file name)
+    outdated — the repository has a newer build (versions, or the repository
+               changed after this service installed the file)
+    newer    — the console has a newer build than the repository
+    maybe    — file names differ and no version can be read from them
+    """
+    filename = str(item.get('filename') or '')
+    checksum = str(item.get('checksum') or '').lower()
+    on_console = str(installed.get('filename') or '')
+    known = bool(record) and record.get('filename') == on_console
+    repo_numbers = version_numbers(item.get('version')) or filename_version(filename, key)
+    if known and record.get('version'):
+        console_numbers = version_numbers(record['version'])
+    else:
+        console_numbers = filename_version(on_console, key)
+    if known and checksum and record.get('checksum') == checksum:
+        state = 'current'
+    elif repo_numbers and console_numbers and repo_numbers != console_numbers:
+        state = 'outdated' if repo_numbers > console_numbers else 'newer'
+    elif known and checksum and record.get('checksum'):
+        state = 'outdated'          # same or unknown version, but the repository changed since
+    elif on_console == filename:
+        state = 'current'
+    elif repo_numbers and console_numbers:
+        state = 'current'
+    else:
+        state = 'maybe'
+    installed_version = (record.get('version') if known and record.get('version')
+                         else _version_text(console_numbers))
+    return {'state': state, 'confident': bool(known or (repo_numbers and console_numbers)),
+            'installed': on_console, 'installed_version': str(installed_version or ''),
+            'repo_version': str(item.get('version') or _version_text(repo_numbers))}
+
+
 class PldmgrClient:
     def __init__(self, ip, port=PLDMGR_PORT, timeout=6):
         self.ip = ip
@@ -310,7 +390,7 @@ class PldmgrClient:
         self.timeout = timeout
         self.base = f'http://{ip}:{port}'
 
-    def _request(self, path, data=None, query=None, mutating=False, raw=None):
+    def _request(self, path, data=None, query=None, mutating=False, raw=None, progress=None):
         url = self.base + path
         if query:
             url += ('&' if '?' in url else '?') + urllib.parse.urlencode(query)
@@ -321,6 +401,11 @@ class PldmgrClient:
             headers['Content-Type'] = 'application/json'
         if raw is not None:
             headers['Content-Type'] = 'application/octet-stream'
+            if progress is not None:
+                # A sized iterable keeps Content-Length (pldmgr does not take
+                # chunked bodies) while reporting how much has been sent.
+                headers['Content-Length'] = str(len(raw))
+                body = _counted(raw, progress)
         if mutating:
             headers.update(MARKER)
         request = urllib.request.Request(url, data=body, headers=headers,
@@ -392,7 +477,20 @@ class PldmgrClient:
     def install(self, filename):
         return self._request('/repository_install', query={'filename': filename}, mutating=True)
 
-    def upload_payload(self, filename, data):
+    def slot_key(self, filename):
+        """pldmgr's own slot name for a file; None when the manager has no resolver."""
+        try:
+            existing = self._request('/manage:check', query={'filename': filename})
+        except ConsoleError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        key = existing.get('key') if isinstance(existing, dict) else None
+        if not isinstance(key, str) or not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,126}', key) or '..' in key:
+            raise ConsoleError('pldmgr 未返回有效的本地插件槽位')
+        return key
+
+    def upload_payload(self, filename, data, progress=None):
         # pldmgr strips version/platform suffixes when choosing a local slot:
         # zftpd.elf and zftpd-ps5-v1.7.0.elf both target local/zftpd. Its default
         # mode=new refuses an occupied slot with a generic HTTP 500. Ask its own
@@ -417,7 +515,7 @@ class PldmgrClient:
             if existing['folder_exists']:
                 mode = 'replace'
         result = self._request('/manage:upload', query={'filename': filename, 'mode': mode},
-                               mutating=True, raw=data)
+                               mutating=True, raw=data, progress=progress)
         return {'response': result, 'slot': target_slot, 'replaced': mode == 'replace'}
 
     def payload_path(self, filename, slot=None, local_only=False):
@@ -507,6 +605,99 @@ class HostManager:
         self.state = {}
         self.last_error = None
         self._fetch_bytes = fetch_bytes
+        data_dir = getattr(config, 'data_dir', None)
+        self.installs_path = Path(data_dir) / 'ps5-installs.json' if data_dir else None
+        self.installs = self._read_installs()
+        self.slot_keys = {}               # (ip, filename) -> pldmgr slot key
+        self.legacy = set()               # hosts whose pldmgr lacks /manage:check
+        self.jobs = {}                    # ip -> install / upgrade progress
+        self.jobs_lock = threading.Lock()
+
+    # -- install records and progress --
+    def _read_installs(self):
+        if not self.installs_path:
+            return {}
+        try:
+            document = json.loads(self.installs_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {}
+        records = document.get('installs') if isinstance(document, dict) else None
+        return {key: value for key, value in (records or {}).items()
+                if isinstance(key, str) and isinstance(value, dict)}
+
+    def _remember_install(self, ip, slot, filename, data, version):
+        if not slot:
+            return
+        with self.lock:
+            self.installs[f'{ip} {slot}'] = {
+                'filename': filename, 'checksum': hashlib.sha256(bytes(data)).hexdigest(),
+                'version': str(version or '')[:32], 'installed_at': time.time()}
+            if not self.installs_path:
+                return
+            try:
+                temporary = self.installs_path.with_name('.' + self.installs_path.name + '.tmp')
+                temporary.write_text(json.dumps({'schema': 1, 'installs': self.installs},
+                                                ensure_ascii=False) + '\n', encoding='utf-8')
+                os.replace(temporary, self.installs_path)
+            except OSError as exc:
+                logging.warning('could not save PS5 install record: %s', exc)
+
+    def _job(self, ip, **changes):
+        with self.jobs_lock:
+            if changes.get('reset'):
+                self.jobs.pop(ip, None)
+                return
+            self.jobs[ip] = {**self.jobs.get(ip, {}), **changes, 'updated': time.time()}
+
+    def progress(self, ip):
+        ip = self.validate_ip(ip)
+        with self.jobs_lock:
+            job = self.jobs.get(ip)
+            return dict(job) if job else None
+
+    def _slot_key(self, ip, client, filename, deadline):
+        cached = self.slot_keys.get((ip, filename))
+        if cached:
+            return cached
+        if ip in self.legacy or time.monotonic() > deadline:
+            return guess_slot_key(filename)
+        try:
+            key = client.slot_key(filename)
+        except ConsoleError:
+            return guess_slot_key(filename)
+        if key is None:
+            self.legacy.add(ip)
+            return guess_slot_key(filename)
+        if len(self.slot_keys) > 4096:
+            self.slot_keys.clear()
+        self.slot_keys[(ip, filename)] = key
+        return key
+
+    def _compare(self, ip, client, payloads, running):
+        """{repo filename: comparison} for repository plugins present in a local slot."""
+        local = {item['slot']: item for item in payloads if item.get('slot', '').startswith('local/')}
+        if not local:
+            return {}
+        try:
+            items = self._catalog()['items']
+        except Exception:
+            return {}
+        pids = {item['name']: item.get('pid') for item in running}
+        deadline = time.monotonic() + 3
+        result = {}
+        for item in items:
+            filename = item.get('filename') if isinstance(item, dict) else None
+            if not isinstance(filename, str) or not filename.lower().endswith(('.elf', '.bin')):
+                continue
+            key = self._slot_key(ip, client, filename, deadline)
+            installed = local.get('local/' + key)
+            if not installed:
+                continue
+            record = self.installs.get(f"{ip} {installed['slot']}")
+            info = compare_installed(item, installed, record, key)
+            info.update(slot=installed['slot'], running=pids.get(installed['filename']))
+            result[filename] = info
+        return result
 
     # -- helpers --
     def _client(self, ip):
@@ -609,6 +800,7 @@ class HostManager:
                 running.append({'pid': item.get('pid') or item.get('id'), 'name': short})
         entry['running'] = running
         entry['process_total'] = len(processes)
+        entry['updates'] = self._compare(entry['ip'], client, entry['payloads'], running)
         config = client.config()
         entry['autoload'] = autoload_view(config, client.autoload_status(), items)
         sources = client.sources()
@@ -664,21 +856,39 @@ class HostManager:
         return {'code': 0, 'state': state, 'name': '', 'host_id': '', 'firmware': '',
                 'host_type': '', 'running_app': '', 'payload': bool(payload_online)}
 
-    def install(self, ip, filename, run=False):
+    def install(self, ip, filename, run=False, keep_job=False):
         ip = self.validate_ip(ip)
-        self._load_manifest()
+        items = self._load_manifest()
         if filename not in self.manifest:
             raise ValueError('插件不在本服务仓库中')
+        version = next((str(item.get('version') or '') for item in items
+                        if isinstance(item, dict) and item.get('filename') == filename), '')
+        try:
+            return self._install(ip, filename, run, version)
+        finally:
+            if not keep_job:
+                self._job(ip, reset=True)
+
+    def _install(self, ip, filename, run, version):
+        self._job(ip, filename=filename, stage='reading', done=0, total=None)
         data = self._fetch_bytes(filename) if self._fetch_bytes else self._payload_bytes(filename)
         uploaded = False
         try:
             client = self._client(ip)
-            upload = client.upload_payload(filename, data)
+            self._job(ip, stage='uploading', done=0, total=len(data))
+            upload = client.upload_payload(
+                filename, data, progress=lambda done, total: self._job(ip, done=done, total=total))
             uploaded = True
+            self._job(ip, stage='verifying')
             path = client.payload_path(filename, slot=upload['slot'], local_only=True)
             if not path:
                 raise ConsoleError('上传后未能确认新插件文件已保存，请刷新主机详情检查后重试')
+            slot = upload['slot'] or next(
+                (item.get('slot') for item in client.payloads()
+                 if isinstance(item, dict) and item.get('path') == path), None)
+            self._remember_install(ip, slot, filename, data, version)
             if run:
+                self._job(ip, stage='running')
                 client.run(path)
             return {'ok': True, 'installed': True, 'ran': bool(run), 'mode': 'pldmgr',
                     'path': path, 'host': self.host(ip)}
@@ -692,6 +902,42 @@ class HostManager:
             ElfldrClient(ip, self.elf_port).run_url(self.manifest[filename])
             return {'ok': True, 'installed': False, 'ran': True, 'mode': 'elfldr',
                     'host': self.host(ip)}
+
+    def upgrade(self, ip, filename, run=None):
+        """Replace an older build on the console and make the new one take effect.
+
+        A running old build is stopped and the new one started in its place;
+        otherwise the file is replaced and started only when ``run`` is true.
+        """
+        ip = self.validate_ip(ip)
+        self._job(ip, filename=filename, stage='checking', done=0, total=None)
+        try:
+            host = self.host(ip)
+            if not host.get('pldmgr'):
+                raise ConsoleError('更新需要主机运行 pldmgr（8084）')
+            info = (host.get('updates') or {}).get(filename)
+            if not info:
+                raise ValueError('主机上没有找到这个插件的旧版本，请直接安装')
+            pid = info.get('running')
+            stopped = False
+            if pid is not None and str(pid).isdigit():
+                self._job(ip, stage='stopping', pid=int(pid))
+                self._client(ip).kill(int(pid))
+                stopped = True
+                time.sleep(0.8)   # let pldmgr release the old process before replacing its file
+            start = stopped if run is None else bool(run)
+            try:
+                result = self.install(ip, filename, run=start, keep_job=True)
+            except ConsoleError as exc:
+                if stopped:
+                    raise ConsoleError(f'旧版本已停止，但新版本未能完成更新：{exc}。可在「运行中」确认后手动重新运行',
+                                       status=exc.status) from exc
+                raise
+            result.update(upgraded=True, stopped=stopped, previous=info.get('installed'),
+                          previous_version=info.get('installed_version'))
+            return result
+        finally:
+            self._job(ip, reset=True)
 
     def run(self, ip, filename):
         ip = self.validate_ip(ip)

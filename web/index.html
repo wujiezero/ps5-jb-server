@@ -34,6 +34,7 @@
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
     <symbol id="i-menu" viewBox="0 0 24 24"><circle cx="6.2" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="17.8" cy="12" r="1.3" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-off" viewBox="0 0 24 24"><path d="M12 3.4v8.2M7 7.2a7 7 0 1 0 10 0"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6"/><path d="M9.7 9.5a2.4 2.4 0 1 1 3.3 2.2c-.6.3-1 .8-1 1.5v.5"/><path d="M12 16.6h.01"/></symbol>
     <symbol id="i-host" viewBox="0 0 24 24"><rect x="3.4" y="4.6" width="17.2" height="11.2" rx="2.2"/><path d="M8.2 19.6h7.6M12 15.8v3.8"/></symbol>
   </svg>
 
@@ -168,22 +169,22 @@
 
           <div class="stat-grid">
             <article class="card stat-card">
-              <p class="stat-label">DNS 服务</p>
+              <p class="stat-label">DNS 服务 <button class="help-tip" type="button" data-help="dns"></button></p>
               <p id="dns-status" class="stat-value service-value" data-tone="neutral">等待状态</p>
               <p id="dns-status-hint" class="stat-hint">UDP / TCP 53</p>
             </article>
             <article class="card stat-card">
-              <p class="stat-label">IPv4 网关</p>
+              <p class="stat-label">IPv4 网关 <button class="help-tip" type="button" data-help="gateway"></button></p>
               <p id="gateway-status" class="stat-value service-value" data-tone="neutral">等待状态</p>
               <p id="gateway-status-hint" class="stat-hint">nftables 默认拒绝</p>
             </article>
             <article class="card stat-card">
-              <p class="stat-label">用户手册入口</p>
+              <p class="stat-label">用户手册入口 <button class="help-tip" type="button" data-help="manual"></button></p>
               <p id="host-status" class="stat-value service-value" data-tone="neutral">等待状态</p>
               <p id="host-status-hint" class="stat-hint">HTTPS 443 · 越狱页面托管</p>
             </article>
             <article class="card stat-card">
-              <p class="stat-label">插件仓库</p>
+              <p class="stat-label">插件仓库 <button class="help-tip" type="button" data-help="repo-service"></button></p>
               <p id="repo-status" class="stat-value">—</p>
               <p id="repo-status-hint" class="stat-hint">等待读取仓库…</p>
             </article>
@@ -193,7 +194,7 @@
             <div class="stack">
               <section class="card" aria-labelledby="runtime-title">
                 <header class="card-head">
-                  <h2 id="runtime-title">运行信息</h2>
+                  <h2 id="runtime-title">运行信息 <button class="help-tip" type="button" data-help="runtime"></button></h2>
                   <span id="connection-state" class="state-chip" data-tone="neutral">等待同步</span>
                 </header>
                 <dl class="metric-list">
@@ -207,7 +208,7 @@
               <section class="card" aria-labelledby="logs-title">
                 <header class="card-head">
                   <div>
-                    <h2 id="logs-title">最近 DNS 请求</h2>
+                    <h2 id="logs-title">最近 DNS 请求 <button class="help-tip" type="button" data-help="dns-log"></button></h2>
                     <p class="card-sub">预览最新 5 条；计数仅统计当前返回的日志。</p>
                   </div>
                 </header>
@@ -250,7 +251,7 @@
 
               <details class="card detail-card guide-card">
                 <summary class="detail-summary">
-                  <span class="detail-title">PS5 网络设置</span>
+                  <span class="detail-title">PS5 网络设置 <button class="help-tip" type="button" data-help="ps5-network"></button></span>
                   <span class="tag">手动配置</span>
                 </summary>
                 <div class="guide-body">
@@ -269,7 +270,7 @@
 
               <details class="card detail-card">
                 <summary class="detail-summary">
-                  <span class="detail-title">网关计数器</span>
+                  <span class="detail-title">网关计数器 <button class="help-tip" type="button" data-help="counters"></button></span>
                   <span class="tag">防火墙实时数据</span>
                 </summary>
                 <div id="firewall-counters" class="firewall-counters"><p class="muted">暂无计数数据。</p></div>
@@ -282,7 +283,7 @@
           <form id="config-form" class="stack" novalidate>
             <section class="card" aria-labelledby="whitelist-title">
               <header class="card-head">
-                <div><h2 id="whitelist-title">访问白名单</h2><p class="card-sub">每行一项，留空表示不额外放行。</p></div>
+                <div><h2 id="whitelist-title">访问白名单 <button class="help-tip" type="button" data-help="whitelist"></button></h2><p class="card-sub">每行一项，留空表示不额外放行。</p></div>
                 <span id="edit-state" class="state-chip" aria-live="polite">已同步</span>
               </header>
               <fieldset id="config-fields" disabled>
@@ -298,7 +299,7 @@
 
                 <div class="upstream-row">
                   <div>
-                    <label for="upstream-dns">上游 DNS</label>
+                    <label for="upstream-dns">上游 DNS</label> <button class="help-tip" type="button" data-help="upstream-dns"></button>
                     <p id="upstream-help" class="field-help">用于解析允许域名的 IPv4 DNS 地址。</p>
                   </div>
                   <div class="upstream-input">
@@ -311,7 +312,7 @@
 
             <section class="card" aria-labelledby="apply-title">
               <header class="card-head">
-                <div><h2 id="apply-title">应用与回退</h2><p class="card-sub">保存后立即应用到网关；回退会恢复服务器保存的上一版。</p></div>
+                <div><h2 id="apply-title">应用与回退 <button class="help-tip" type="button" data-help="apply"></button></h2><p class="card-sub">保存后立即应用到网关；回退会恢复服务器保存的上一版。</p></div>
               </header>
               <dl class="metric-list">
                 <div><dt>最近应用</dt><dd><time data-field="last-applied">尚无记录</time></dd></div>
@@ -337,7 +338,7 @@
         <section id="view-activity" class="view" data-section="activity" hidden>
           <section class="card" aria-labelledby="activity-title">
             <header class="card-head">
-              <div><h2 id="activity-title">网络活动</h2><p class="card-sub">网关连接、DNS 查询与本机服务事件；勾选目标后可批量放行或命名。</p></div>
+              <div><h2 id="activity-title">网络活动 <button class="help-tip" type="button" data-help="activity"></button></h2><p class="card-sub">网关连接、DNS 查询与本机服务事件；勾选目标后可批量放行或命名。</p></div>
               <span id="activity-updated" class="tag" hidden></span>
             </header>
             <p id="activity-summary" class="summary-line" aria-live="polite">正在读取网络活动…</p>
@@ -419,7 +420,7 @@
           <section class="card" aria-labelledby="ps5-tool-title">
             <header class="card-head">
               <div>
-                <h2 id="ps5-tool-title">主机发现</h2>
+                <h2 id="ps5-tool-title">主机发现 <button class="help-tip" type="button" data-help="discovery"></button></h2>
                 <p class="card-sub">扫描本网段内的已越狱 PS5；pldmgr（8084）与 elfldr（9021）均可管理，接入仓库后即可安装载荷。</p>
               </div>
               <button id="ps5-scan" class="button button-secondary" type="button" aria-label="重新扫描局域网内的 PS5 主机">
@@ -448,7 +449,7 @@
           <section class="card" aria-labelledby="ps5-hosts-title">
             <header class="card-head">
               <div>
-                <h2 id="ps5-hosts-title">发现的主机</h2>
+                <h2 id="ps5-hosts-title">发现的主机 <button class="help-tip" type="button" data-help="hosts"></button></h2>
                 <p class="card-sub">卡片显示 pldmgr 版本、仓库接入状态与载荷计数；选择主机后可安装、运行或停止载荷。</p>
               </div>
               <span id="ps5-host-count" class="tag">扫描中…</span>
@@ -459,7 +460,7 @@
           <section id="ps5-detail" class="card ps5-detail" aria-labelledby="ps5-detail-title" hidden>
             <header class="card-head">
               <div>
-                <h2 id="ps5-detail-title">主机详情 · <span id="ps5-detail-ip" class="mono">—</span></h2>
+                <h2 id="ps5-detail-title">主机详情 · <span id="ps5-detail-ip" class="mono">—</span> <button class="help-tip" type="button" data-help="ps5-detail"></button></h2>
                 <p id="ps5-detail-sub" class="card-sub">选择主机后显示载荷与进程。</p>
               </div>
               <span id="ps5-detail-state" class="state-chip" data-tone="neutral">等待状态</span>
@@ -478,9 +479,18 @@
                   <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-search"></use></svg>
                   <input id="ps5-catalog-search" type="search" placeholder="搜索插件名称、文件名或描述" autocomplete="off" spellcheck="false" aria-describedby="ps5-catalog-search-summary">
                 </label>
+                <button id="ps5-upgrade-all" class="button button-primary button-small" type="button" hidden>
+                  <span class="spinner" aria-hidden="true" hidden></span>
+                  <span class="button-label">全部更新并应用</span>
+                </button>
+                <button class="help-tip" type="button" data-help="ps5-upgrade"></button>
               </div>
               <p id="ps5-catalog-search-summary" class="search-summary" role="status" aria-live="polite" aria-atomic="true"></p>
               <p id="ps5-catalog-note" class="summary-line" aria-live="polite">正在读取插件目录…</p>
+              <div id="ps5-op-progress" class="op-progress" role="status" aria-live="polite" hidden>
+                <p class="op-label"><span id="ps5-op-label">—</span><span id="ps5-op-percent" class="op-percent mono"></span></p>
+                <div class="op-bar"><span id="ps5-op-bar"></span></div>
+              </div>
               <div class="table-wrap ps5-table-wrap">
                 <table class="ps5-table ps5-catalog-table">
                   <thead>
@@ -521,6 +531,7 @@
                   <span class="ps5-switch-track" aria-hidden="true"></span>
                   <span class="ps5-switch-text">启用自动加载</span>
                 </label>
+                <button class="help-tip" type="button" data-help="autoload"></button>
                 <p id="ps5-autoload-help" class="field-help">pldmgr 启动后先倒计时，再按顺序逐个加载；每个插件加载后可以等待一段时间再加载下一个（与 autoloader 的 <code>!毫秒</code> 写法一致）。设置保存在主机上。</p>
                 <div class="ps5-autoload-start">
                   <label for="ps5-autoload-start-delay">启动倒计时</label>
@@ -558,7 +569,7 @@
           <section class="card files-shell" aria-labelledby="files-title">
             <header class="card-head">
               <div>
-                <h2 id="files-title">PS5 文件</h2>
+                <h2 id="files-title">PS5 文件 <button class="help-tip" type="button" data-help="files"></button></h2>
                 <p id="files-host-sub" class="card-sub">浏览主机存储、上传与整理文件。</p>
               </div>
               <span id="files-host-chip" class="tag">未连接</span>
@@ -594,10 +605,10 @@
 
             <div id="files-main" class="files-layout" hidden>
               <aside class="files-rail" aria-label="存储位置">
-                <h3 class="files-rail-title">PS5 存储</h3>
+                <h3 class="files-rail-title">PS5 存储 <button class="help-tip" type="button" data-help="ps5-storage"></button></h3>
                 <div id="files-volumes" class="files-volumes"></div>
                 <div class="files-rail-head">
-                  <h3 class="files-rail-title">NAS 存储</h3>
+                  <h3 class="files-rail-title">NAS 存储 <button class="help-tip" type="button" data-help="nas"></button></h3>
                   <button id="nas-add" class="files-rail-add" type="button" aria-label="添加 NAS 存储">＋ 添加</button>
                 </div>
                 <div id="nas-list" class="files-volumes"></div>
@@ -612,6 +623,7 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg>
                     <span class="button-label">解压安装</span>
                   </button>
+                  <button class="help-tip" type="button" data-help="nas-extract"></button>
                   <button id="nas-refresh" class="button button-secondary button-icon" type="button" aria-label="刷新 NAS 文件列表" title="刷新">
                     <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
                   </button>
@@ -702,18 +714,22 @@
         <section id="view-repository" class="view" data-section="repository" hidden>
           <section class="card" aria-labelledby="repo-title">
             <header class="card-head">
-              <div><h2 id="repo-title">插件载荷</h2><p class="card-sub">维护 PS5 插件载荷（.elf / .bin）。上传后立即写入仓库，PS5 可直接下载。</p></div>
+              <div><h2 id="repo-title">插件载荷 <button class="help-tip" type="button" data-help="repo"></button></h2><p class="card-sub">维护 PS5 插件载荷（.elf / .bin）。上传后立即写入仓库，PS5 可直接下载。</p></div>
             </header>
             <p id="repo-summary" class="summary-line" aria-live="polite">正在读取插件仓库…</p>
             <div id="repo-endpoint-row" class="endpoint-row" hidden>
-              <p class="endpoint-line"><span class="endpoint-label">Payload Manager 源地址</span> <span id="repo-endpoint" class="mono"></span></p>
+              <p class="endpoint-line"><span class="endpoint-label">Payload Manager 源地址</span> <button class="help-tip" type="button" data-help="repo-endpoint"></button> <span id="repo-endpoint" class="mono"></span></p>
               <button id="repo-copy-url" class="button button-secondary button-small" type="button">复制地址</button>
             </div>
             <p id="repo-error" class="banner banner-error" role="alert" hidden></p>
             <div class="repo-upstream" aria-labelledby="repo-upstream-label">
               <div class="repo-upstream-text">
-                <span id="repo-upstream-label" class="endpoint-label">上游更新</span>
+                <span id="repo-upstream-label" class="endpoint-label">上游更新</span> <button class="help-tip" type="button" data-help="upstream"></button>
                 <p id="repo-upstream-line" class="repo-upstream-line" aria-live="polite">尚未检查。对照 Payload Manager 官方源查找新版，更新后旧版会保留，可随时回退。</p>
+                <div id="repo-upstream-progress" class="op-progress" role="status" aria-live="polite" hidden>
+                  <p class="op-label"><span id="repo-op-label">—</span><span id="repo-op-percent" class="op-percent mono"></span></p>
+                  <div class="op-bar"><span id="repo-op-bar"></span></div>
+                </div>
               </div>
               <div class="repo-upstream-actions">
                 <button id="repo-upstream-check" class="button button-secondary button-small" type="button">
@@ -726,6 +742,10 @@
                 </button>
               </div>
             </div>
+            <p id="repo-ps5-hint" class="repo-ps5-hint" hidden>
+              <span id="repo-ps5-hint-text"></span>
+              <button id="repo-ps5-hint-go" class="button button-secondary button-small" type="button">前往 PS5 更新</button>
+            </p>
             <div class="search-toolbar">
               <label class="search-field" for="repo-search">
                 <span class="visually-hidden">搜索插件仓库</span>
@@ -756,14 +776,14 @@
         <section id="view-settings" class="view" data-section="settings" hidden>
           <section id="update-card" class="card" aria-labelledby="update-title">
             <header class="card-head">
-              <div><h2 id="update-title">服务更新</h2><p class="card-sub">检查 GitHub 正式发布，并一键更新管理服务。</p></div>
+              <div><h2 id="update-title">服务更新 <button class="help-tip" type="button" data-help="service-update"></button></h2><p class="card-sub">检查 GitHub 正式发布，并一键更新管理服务。</p></div>
               <span id="update-state" class="state-chip" data-tone="neutral">未检查</span>
             </header>
             <dl class="info-list">
               <div><dt>当前版本</dt><dd id="update-current" class="mono">读取版本…</dd></div>
               <div><dt>最新版本</dt><dd id="update-latest">未检查</dd></div>
               <div><dt>上次检查</dt><dd id="update-checked">尚未检查</dd></div>
-              <div><dt>网络代理</dt><dd id="update-proxy">读取环境变量…</dd></div>
+              <div><dt>网络代理 <button class="help-tip" type="button" data-help="proxy"></button></dt><dd id="update-proxy">读取环境变量…</dd></div>
             </dl>
             <p class="secondary-note update-notice">更新会保留配置、插件和数据，并自动重启服务；重启期间此页面会暂时断开连接。</p>
             <p id="update-unsupported" class="secondary-note" hidden></p>
@@ -771,6 +791,11 @@
               <summary>发布说明</summary>
               <pre id="update-notes"></pre>
             </details>
+            <div id="update-stepper" class="op-progress update-stepper" hidden>
+              <ol id="update-steps" class="op-steps" aria-label="更新步骤"></ol>
+              <div class="op-bar"><span id="update-bar"></span></div>
+              <p id="update-bar-label" class="op-label op-label-sub" role="status" aria-live="polite"></p>
+            </div>
             <p id="update-progress" class="banner" role="status" aria-live="polite" hidden></p>
             <p id="update-error" class="field-error" role="alert" hidden></p>
             <div class="form-actions update-actions">
@@ -784,7 +809,7 @@
 
           <form id="password-form" class="card" novalidate aria-labelledby="password-title">
             <header class="card-head">
-              <div><h2 id="password-title">修改管理密码</h2><p class="card-sub">修改后，其它设备上的登录会立即失效，需要用新密码重新登录。</p></div>
+              <div><h2 id="password-title">修改管理密码 <button class="help-tip" type="button" data-help="password"></button></h2><p class="card-sub">修改后，其它设备上的登录会立即失效，需要用新密码重新登录。</p></div>
               <span class="tag">至少 10 个字符</span>
             </header>
             <fieldset id="password-fields" disabled>
@@ -818,7 +843,7 @@
           </form>
 
           <section class="card" aria-labelledby="service-title">
-            <header class="card-head"><h2 id="service-title">服务信息</h2></header>
+            <header class="card-head"><h2 id="service-title">服务信息 <button class="help-tip" type="button" data-help="service-info"></button></h2></header>
             <dl class="info-list">
               <div><dt>管理入口</dt><dd id="info-admin" class="mono">—</dd></div>
               <div><dt>端口</dt><dd id="info-ports" class="mono">—</dd></div>
@@ -831,8 +856,45 @@
             <p class="secondary-note">插件仓库地址 <span id="info-repo-url" class="mono">—</span>；PS5 的 Payload Manager 添加这个地址即可安装插件。</p>
           </section>
 
+          <section id="logs-card" class="card" aria-labelledby="logs-card-title">
+            <header class="card-head">
+              <div><h2 id="logs-card-title">运行日志 <button class="help-tip" type="button" data-help="logs"></button></h2><p class="card-sub">查看管理服务的运行记录；反馈问题时请导出日志一并附上。</p></div>
+              <span id="logs-state" class="tag">未读取</span>
+            </header>
+            <div class="logs-toolbar">
+              <label class="search-field" for="logs-search">
+                <span class="visually-hidden">搜索日志</span>
+                <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-search"></use></svg>
+                <input id="logs-search" type="search" placeholder="搜索日志内容或模块" autocomplete="off" spellcheck="false">
+              </label>
+              <label class="filter-select" for="logs-level">级别
+                <select id="logs-level">
+                  <option value="INFO">全部</option>
+                  <option value="WARNING">警告及错误</option>
+                  <option value="ERROR">仅错误</option>
+                </select>
+              </label>
+              <label class="logs-follow" for="logs-follow"><input id="logs-follow" type="checkbox" checked> 自动刷新</label>
+              <div class="logs-actions">
+                <button id="logs-refresh" class="button button-secondary button-small" type="button" aria-label="刷新日志">
+                  <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
+                  <span class="button-label">刷新</span>
+                </button>
+                <button id="logs-export" class="button button-primary button-small" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg>
+                  <span class="spinner" aria-hidden="true" hidden></span>
+                  <span class="button-label">导出日志</span>
+                </button>
+              </div>
+            </div>
+            <div id="logs-view" class="logs-view" role="log" aria-label="服务运行日志" tabindex="0">
+              <p class="logs-empty">进入本页后自动读取。</p>
+            </div>
+            <p id="logs-note" class="footnote">日志保存在服务数据目录的 logs/ 下（单个文件 1 MB，保留 4 份）。导出内容包含诊断摘要、服务日志和本浏览器最近的错误提示，不包含密码和会话信息；发送前可以先打开检查。</p>
+          </section>
+
           <section class="card" aria-labelledby="disable-title">
-            <header class="card-head"><h2 id="disable-title">停用与回滚</h2></header>
+            <header class="card-head"><h2 id="disable-title">停用与回滚 <button class="help-tip" type="button" data-help="disable"></button></h2></header>
             <ol class="steps">
               <li><span>先把 PS5 的默认网关改回家庭路由器，DNS 改为常用解析器。</span></li>
               <li><span>再在主机上停止并禁用服务：</span><pre class="code-block"><code id="info-stop-command">systemctl disable --now ps5-jb-host ps5-jb-server ps5-jb-repo</code></pre></li>
@@ -857,7 +919,7 @@
       <section id="files-transfers" class="xfer-panel" aria-labelledby="files-transfers-title">
         <header class="xfer-panel-head">
           <div>
-            <h2 id="files-transfers-title">传输任务</h2>
+            <h2 id="files-transfers-title">传输任务 <button class="help-tip" type="button" data-help="transfers"></button></h2>
             <p id="xfer-panel-sub" class="xfer-panel-sub">上传、复制/移动与 NAS 传输</p>
           </div>
           <div class="xfer-panel-actions">
@@ -1192,6 +1254,24 @@
         </button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="ps5-upgrade-dialog" class="dialog dialog-wide" aria-labelledby="ps5-upgrade-title" aria-describedby="ps5-upgrade-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="ps5-upgrade-title">更新主机上的插件？</h2>
+      <p id="ps5-upgrade-description">把主机 <span id="ps5-upgrade-host" class="mono">—</span> 上的旧版本替换为插件仓库里的版本。正在运行的插件会先停止旧进程再启动新版本；未运行的只替换文件，下次加载时生效。</p>
+      <ul id="ps5-upgrade-list" class="upgrade-list"></ul>
+      <p class="secondary-note">「可能有更新」表示文件名不同但读不出版本号，请确认后再更新。文件服务类插件（ftpsrv、zftpd 等）在传输中被停止会中断传输。</p>
+      <p id="ps5-upgrade-error" class="field-error" role="alert" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="ps5-upgrade-cancel" class="button button-secondary" type="button">取消</button>
+      <button id="ps5-upgrade-confirm" class="button button-primary" type="button">
+        <span class="spinner" aria-hidden="true" hidden></span>
+        <span class="button-label">更新并应用</span>
+      </button>
+    </div>
   </dialog>
 
   <dialog id="ps5-kill-dialog" class="dialog" aria-labelledby="ps5-kill-title" aria-describedby="ps5-kill-description">
