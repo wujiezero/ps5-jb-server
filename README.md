@@ -21,7 +21,7 @@
 | 模块 | 能力 |
 | --- | --- |
 | 用户手册宿主 | 自签 HTTPS 站点，DNS 劫持 `manuals.playstation.net` / `ena.net.playstation.net` / `www.msftconnecttest.com` |
-| 访问策略 | 域名白名单 + IPv4/CIDR 白名单 + 上游 DNS；默认拒绝，保存即生效，可回退上一版 |
+| 访问策略 | 域名白名单 + IPv4/CIDR 白名单 + 上游 DNS；默认拒绝，保存即生效，可回退上一版；网关网卡自动探测，也可在配置里指定 |
 | 网络活动 | 记录网关连接、DNS 查询与本机服务事件；按结果与来源筛选、命名、分类、多选一键放行 |
 | 插件仓库 | 只读 HTTP 仓库；管理页可上传、替换、编辑、删除，一键复制 Payload Manager 源地址；对照 Payload Manager 官方源检查新版本，一键（或全部）下载到仓库，旧版本自动保留，可随时回退 |
 | PS5 主机 | 发现局域网 PS5（pldmgr 8084 / elfldr 9021，以及 DDP 广播，待机或未运行载荷也能发现），显示开机/待机/离线、主机名与固件；配对后可从待机唤醒并登录、一键进入待机（可选组件）；接入仓库、安装并运行、停止进程、退出 pldmgr；自动加载可编辑顺序、每个插件加载后的等待时间与启动倒计时 |
@@ -186,6 +186,7 @@ PS5 的待机即休息模式（黄灯）：插件留在内存里，唤醒后不�
 | 段 | 键 | 说明 |
 | --- | --- | --- |
 | `[network]` | `host_ip` / `subnet` / `upstream_dns` | 留空则自动探测本机地址、推导 /24、读 `/etc/resolv.conf` |
+| `[network]` | `interface` | 网关规则所用网卡，留空则取持有 `host_ip` 的网卡（再退到默认路由出口）；只支持单网卡 |
 | `[ports]` | `dns` `http` `https` `admin` `repo` | 默认 53 / 80 / 443 / 8443 / 8080 |
 | `[ps5]` | `pldmgr_port` `elf_port` `file_port` | 对应 PS5 端 8084 / 9021 / 80 |
 | `[ps5]` | `ftp_port` / `space_port` | FTP 后备端口（默认 2120，0 关闭）/ 读取容量的 web-file-mgr 端口（默认 8888，0 关闭） |
