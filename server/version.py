@@ -1,5 +1,5 @@
 """Application version; release tags and artifacts must match this constant."""
-VERSION = '1.13.0'
+VERSION = '1.13.1'
 REPOSITORY = 'wujiezero/ps5-jb-server'
 # Front-end files a release may ship: flat under web/, lowercase, js/css/html only.
 # The web updater (update_worker.WEB_FILE_PATTERN, kept self-contained), the
