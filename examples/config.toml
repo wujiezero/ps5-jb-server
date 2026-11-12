@@ -35,6 +35,9 @@ max_upload = 67108864  # 64 MiB, plugin repository uploads (held in memory)
 max_file_upload = 0     # PS5 file manager uploads are streamed; 0 = no limit
 transfer_retries = 3    # NAS -> PS5: retries per file on network errors (resumes when the FTP fallback supports REST); 0 = off
 
+[activity]
+retention_days = 30    # network activity history kept in <data>/activity.db (1-365)
+
 [repo]
 # Upstream index for "check for plugin updates" (Payload Manager's official source).
 upstream = "https://itsplk.github.io/ps5-payloads-mirror/payloads_v2.json"
