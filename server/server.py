@@ -20,6 +20,7 @@ import subprocess
 import threading
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from activity import Classifier, FlowObserver, LabelsStore, make_poller
@@ -773,75 +774,87 @@ class AdminHandler(BaseHTTPRequestHandler):
             return None
         return session
 
+    # ---------- routing ----------
     def do_GET(self):
         if not self.guard():
             return
-        if self.path == '/api/version':
-            engine = getattr(self.server.app, 'engine', None)
-            self.send_body(200, {**version_info(), 'ready': not bool(getattr(engine, 'gateway_error', None))})
+        route = _lookup(GET_ROUTES, GET_PREFIXES, self.path)
+        if route is None:
+            self.serve_static()
             return
-        if self.path == '/api/updates':
-            if self.require_session():
-                updater = getattr(self.server.app, 'updates', None)
-                if updater is None:
-                    self.send_body(503, {'error': '更新服务未启用'})
-                else:
-                    self.send_body(200, updater.status())
-            return
-        if self.path == '/api/state':
-            session = self.require_session()
-            if session:
-                try:
-                    self.send_body(200, {**self.server.app.state(), 'csrf': session['csrf']})
-                except Exception:
-                    logging.exception('Read state failed')
-                    self.send_body(500, {'error': '读取状态失败，请检查服务日志'})
-            return
-        if self.path.startswith('/api/activity'):
-            if not self.require_session():
+        if route.auth:
+            self.session = self.require_session(write=route.auth == 'write')
+            if not self.session:
                 return
+        if getattr(self, route.handler)() is False:
+            # A console prefix the console API does not know: same 404 as any page.
+            self.serve_static()
+
+    def do_POST(self):
+        if not self.guard():
+            return
+        path = self.path.split('?', 1)[0]
+        route = _lookup(POST_ROUTES, POST_PREFIXES, self.path)
+        updater = getattr(self.server.app, 'updates', None)
+        tracked = route is not None and route.tracked and not path.endswith('/cancel')
+        if tracked and updater and (updater.status().get('job') or {}).get('state') in UPDATE_ACTIVE:
+            if self.require_session(write=True):
+                self.send_body(409, {'error': '服务正在升级，请完成后再开始新操作'})
+            return
+        args = ()
+        if route is None or route.body == 'json':
+            body = self.json_body()
+            if body is None:
+                return
+            if route is None:
+                self.send_body(404, {'error': '未知操作'})
+                return
+            args = (body,)
+        if route.auth and not self.require_session(write=route.auth == 'write'):
+            return
+        tracked = tracked and updater is not None and hasattr(updater, 'begin_operation')
+        if tracked:
             try:
-                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-                limit = max(1, min(int((query.get('limit') or ['200'])[0]), 500))
-                activity = self.server.app.activity
-                if activity.updated is None:
-                    # First read after start: do not make the user wait for the poller tick.
-                    activity.poll_once()
-                self.send_body(200, activity.snapshot(limit))
-            except Exception:
-                logging.exception('Read activity failed')
-                self.send_body(500, {'error': '读取网络活动失败，请检查服务日志'})
-            return
-        if self.path == '/api/repo':
-            if not self.require_session():
+                updater.begin_operation()
+            except UpdateError as exc:
+                self.send_body(409, {'error': str(exc)})
                 return
-            try:
-                summary = self.server.repo.summary()
-                settings = getattr(self.server.app, 'settings', None)
-                host = getattr(settings, 'host_ip', None) or self.server.server_address[0]
-                port = getattr(settings, 'repo_port', None) or 8080
-                plugin_updates = getattr(self.server, 'plugin_updates', None)
-                self.send_body(200, {**summary, 'host': host, 'port': port,
-                                     'max_upload': self.server.repo.MAX_UPLOAD,
-                                     'upstream': plugin_updates.status() if plugin_updates else None})
-            except Exception:
-                logging.exception('Read repository failed')
-                self.send_body(500, {'error': '读取插件仓库失败，请检查服务日志'})
-            return
-        if self.path.split('?', 1)[0] == '/api/titles':
-            self.handle_titles()
-            return
-        if self.path.split('?', 1)[0] in ('/api/logs', '/api/logs/export'):
-            self.handle_logs()
-            return
-        if self.path == '/api/repo/upstream/progress':
-            if self.require_session():
-                plugin_updates = getattr(self.server, 'plugin_updates', None)
-                self.send_body(200, {'progress': plugin_updates.progress() if plugin_updates else None})
-            return
-        if self.path.startswith(('/api/ps5', '/api/files', '/api/nas', '/api/transfers')):
-            if self.server.app.console_get(self):
-                return
+        try:
+            getattr(self, route.handler)(*args)
+        except PermissionError as exc:
+            self.send_body(403, {'error': str(exc)})
+        except FileNotFoundError as exc:
+            self.send_body(404, {'error': str(exc)})
+        except FileExistsError as exc:
+            self.send_body(409, {'error': str(exc)})
+        except ValueError as exc:
+            self.send_body(400, {'error': str(exc)})
+        except Exception as exc:
+            logging.exception('Policy apply failed')
+            self.send_body(500, {'error': '应用失败：' + diagnostic_error(exc) + '。已尝试恢复上一份策略，请查看概览状态。'})
+        finally:
+            if tracked:
+                updater.end_operation()
+
+    def json_body(self):
+        """Small JSON object request bodies; None after answering 400."""
+        try:
+            if self.headers.get('Transfer-Encoding'):
+                raise ValueError('不支持此请求编码')
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 32768:
+                raise ValueError('请求大小必须在 1–32768 字节之间')
+            if self.headers.get_content_type() != 'application/json':
+                raise ValueError('需要 JSON 请求')
+            body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError('配置必须是 JSON 对象')
+        except (ValueError, UnicodeError, TimeoutError):
+            self.send_body(400, {'error': '请求格式或大小不正确'})
+            return None
+        return body
+
+    def serve_static(self):
         name = static_name(self.path)
         if name is None:
             self.send_body(404, {'error': '未找到页面'})
@@ -856,10 +869,61 @@ class AdminHandler(BaseHTTPRequestHandler):
             return
         self.send_body(200, data, STATIC_TYPES[name.rsplit('.', 1)[1]])
 
+    # ---------- GET handlers (session checked by the dispatcher) ----------
+    def get_version(self):
+        engine = getattr(self.server.app, 'engine', None)
+        self.send_body(200, {**version_info(), 'ready': not bool(getattr(engine, 'gateway_error', None))})
+
+    def get_updates(self):
+        updater = getattr(self.server.app, 'updates', None)
+        if updater is None:
+            self.send_body(503, {'error': '更新服务未启用'})
+        else:
+            self.send_body(200, updater.status())
+
+    def get_state(self):
+        try:
+            self.send_body(200, {**self.server.app.state(), 'csrf': self.session['csrf']})
+        except Exception:
+            logging.exception('Read state failed')
+            self.send_body(500, {'error': '读取状态失败，请检查服务日志'})
+
+    def get_activity(self):
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            limit = max(1, min(int((query.get('limit') or ['200'])[0]), 500))
+            activity = self.server.app.activity
+            if activity.updated is None:
+                # First read after start: do not make the user wait for the poller tick.
+                activity.poll_once()
+            self.send_body(200, activity.snapshot(limit))
+        except Exception:
+            logging.exception('Read activity failed')
+            self.send_body(500, {'error': '读取网络活动失败，请检查服务日志'})
+
+    def get_repo(self):
+        try:
+            summary = self.server.repo.summary()
+            settings = getattr(self.server.app, 'settings', None)
+            host = getattr(settings, 'host_ip', None) or self.server.server_address[0]
+            port = getattr(settings, 'repo_port', None) or 8080
+            plugin_updates = getattr(self.server, 'plugin_updates', None)
+            self.send_body(200, {**summary, 'host': host, 'port': port,
+                                 'max_upload': self.server.repo.MAX_UPLOAD,
+                                 'upstream': plugin_updates.status() if plugin_updates else None})
+        except Exception:
+            logging.exception('Read repository failed')
+            self.send_body(500, {'error': '读取插件仓库失败，请检查服务日志'})
+
+    def get_upstream_progress(self):
+        plugin_updates = getattr(self.server, 'plugin_updates', None)
+        self.send_body(200, {'progress': plugin_updates.progress() if plugin_updates else None})
+
+    def get_console(self):
+        return self.server.app.console_get(self)
+
     def handle_titles(self):
         """GET /api/titles?ids=CUSA1,PPSA2&folder=/mnt/ext0/games/PPSA2 -> names."""
-        if not self.require_session():
-            return
         catalog = getattr(self.server.app, 'titles', None)
         if catalog is None:
             self.send_body(200, {'titles': {}, 'pending': [], 'enabled': False})
@@ -876,8 +940,6 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def handle_logs(self):
         """GET /api/logs?level=&q=&after=&limit= (viewer) and /api/logs/export (bundle)."""
-        if not self.require_session():
-            return
         parts = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(parts.query)
 
@@ -953,179 +1015,100 @@ class AdminHandler(BaseHTTPRequestHandler):
                      entry['filename'], length)
         self.send_body(200, {'ok': True, 'filename': entry['filename'], 'replaced': replace})
 
-    def handle_repo_version(self, route, body):
+    def handle_repo_version(self, body):
         """Upstream update, rollback and archived-version removal for one plugin."""
+        route = self.path.split('?', 1)[0]
         filename = body.get('filename')
         if not isinstance(filename, str):
             raise ValueError('请指定插件文件')
-        updater = getattr(self.server.app, 'updates', None)
-        if updater:
-            updater.begin_operation()
-        try:
-            if route == '/api/repo/upstream/apply':
-                plugin_updates = getattr(self.server, 'plugin_updates', None)
-                if plugin_updates is None:
-                    self.send_body(503, {'error': '插件更新检查未启用'})
-                    return
-                try:
-                    result = plugin_updates.apply(filename)
-                except PluginUpdateError as exc:
-                    self.send_body(409, {'error': str(exc)})
-                    return
-                self.send_body(200, result)
+        if route == '/api/repo/upstream/apply':
+            plugin_updates = getattr(self.server, 'plugin_updates', None)
+            if plugin_updates is None:
+                self.send_body(503, {'error': '插件更新检查未启用'})
                 return
-            checksum = body.get('checksum')
-            if not isinstance(checksum, str):
-                raise ValueError('请指定历史版本')
-            if route == '/api/repo/rollback':
-                item = self.server.repo.rollback(filename, checksum)
-                logging.info('repository rollback: %s -> %s', filename, item['filename'])
-                self.send_body(200, {'ok': True, 'filename': item['filename'],
-                                     'version': item.get('version', '')})
-            else:
-                self.server.repo.delete_version(filename, checksum)
-                self.send_body(200, {'ok': True})
-        finally:
-            if updater:
-                updater.end_operation()
+            try:
+                result = plugin_updates.apply(filename)
+            except PluginUpdateError as exc:
+                self.send_body(409, {'error': str(exc)})
+                return
+            self.send_body(200, result)
+            return
+        checksum = body.get('checksum')
+        if not isinstance(checksum, str):
+            raise ValueError('请指定历史版本')
+        if route == '/api/repo/rollback':
+            item = self.server.repo.rollback(filename, checksum)
+            logging.info('repository rollback: %s -> %s', filename, item['filename'])
+            self.send_body(200, {'ok': True, 'filename': item['filename'],
+                                 'version': item.get('version', '')})
+        else:
+            self.server.repo.delete_version(filename, checksum)
+            self.send_body(200, {'ok': True})
 
-    def do_POST(self):
-        if not self.guard():
-            return
-        route = self.path.split('?', 1)[0]
-        updater = getattr(self.server.app, 'updates', None)
-        if updater and (updater.status().get('job') or {}).get('state') in UPDATE_ACTIVE:
-            if ((route.startswith(('/api/ps5', '/api/files', '/api/nas')) or
-                 route in ('/api/repo/upload', '/api/repo/update', '/api/repo/delete') + REPO_VERSION_ROUTES)
-                    and not route.endswith('/cancel')):
-                if self.require_session(write=True):
-                    self.send_body(409, {'error': '服务正在升级，请完成后再开始新操作'})
-                return
-        if route.startswith(('/api/ps5', '/api/files', '/api/nas', '/api/transfers')):
-            tracked = updater is not None and hasattr(updater, 'begin_operation') and not route.endswith('/cancel')
-            if tracked:
-                try:
-                    updater.begin_operation()
-                except UpdateError as exc:
-                    self.send_body(409, {'error': str(exc)})
-                    return
-            try:
-                self.server.app.console_post(self, route)
-            finally:
-                if tracked:
-                    updater.end_operation()
-            return
-        if route == '/api/repo/upload':
-            tracked = updater is not None and hasattr(updater, 'begin_operation')
-            if tracked:
-                try:
-                    updater.begin_operation()
-                except UpdateError as exc:
-                    self.send_body(409, {'error': str(exc)})
-                    return
-            try:
-                self.handle_upload()
-            finally:
-                if tracked:
-                    updater.end_operation()
-            return
+    # ---------- POST handlers (JSON body; session and CSRF checked by the dispatcher) ----------
+    def post_login(self, body):
         try:
-            if self.headers.get('Transfer-Encoding'):
-                raise ValueError('不支持此请求编码')
-            length = int(self.headers.get('Content-Length', '0'))
-            if not 0 < length <= 32768:
-                raise ValueError('请求大小必须在 1–32768 字节之间')
-            if self.headers.get_content_type() != 'application/json':
-                raise ValueError('需要 JSON 请求')
-            body = json.loads(self.rfile.read(length))
-            if not isinstance(body, dict):
-                raise ValueError('配置必须是 JSON 对象')
-        except (ValueError, UnicodeError, TimeoutError):
-            self.send_body(400, {'error': '请求格式或大小不正确'})
-            return
-        if route == '/api/login':
-            try:
-                token, csrf = self.server.auth.login(self.client_address[0], body.get('password'))
-                self.send_body(200, {'csrf': csrf}, cookie=f'ps5_session={token}; Path=/; Max-Age={AuthManager.IDLE_SECONDS}; HttpOnly; Secure; SameSite=Lax')
-            except PermissionError as exc:
-                self.send_body(401, {'error': str(exc)})
-            return
-        if route not in ('/api/config', '/api/rollback', '/api/logout',
-                         '/api/password', '/api/repo/update', '/api/repo/delete',
-                         '/api/labels', '/api/allow', '/api/updates/check', '/api/updates/apply',
-                         '/api/repo/upstream/check') + REPO_VERSION_ROUTES:
-            self.send_body(404, {'error': '未知操作'})
-            return
-        if not self.require_session(write=True):
-            return
-        try:
-            if route in ('/api/updates/check', '/api/updates/apply'):
-                if updater is None:
-                    self.send_body(503, {'error': '更新服务未启用'})
-                elif route.endswith('/check'):
-                    self.send_body(200, updater.check())
-                else:
-                    if set(body) != {'version'} or not isinstance(body.get('version'), str):
-                        raise UpdateError('请指定检查结果中的目标版本')
-                    self.send_body(200, updater.apply(body['version']))
-            elif route == '/api/logout':
-                self.server.auth.logout(self.token())
-                self.send_body(200, {'ok': True}, cookie='ps5_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax')
-            elif route == '/api/password':
-                change_password(self.server.auth, self.server.credentials_path,
-                                body.get('current_password'), body.get('new_password'))
-                self.send_body(200, {'ok': True},
-                               cookie='ps5_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax')
-            elif route == '/api/labels':
-                self.server.app.activity.labels.set(body.get('target'),
-                                                    body.get('name', ''), body.get('category', ''))
-                self.send_body(200, {'ok': True})
-            elif route == '/api/allow':
-                targets = body.get('targets')
-                if not isinstance(targets, list) or not targets:
-                    raise ValueError('请选择要放行的条目')
-                if len(targets) > 200:
-                    raise ValueError('一次最多放行 200 项')
-                self.send_body(200, {'ok': True, 'config': self.server.app.allow(targets)})
-            elif route == '/api/repo/update':
-                updater = getattr(self.server.app, 'updates', None)
-                if updater: updater.begin_operation()
-                try:
-                    self.server.repo.update(body.get('filename'),
-                                            **{key: body[key] for key in RepoManager._FIELDS if key in body})
-                    self.send_body(200, {'ok': True})
-                finally:
-                    if updater: updater.end_operation()
-            elif route == '/api/repo/upstream/check':
-                plugin_updates = getattr(self.server, 'plugin_updates', None)
-                if plugin_updates is None:
-                    self.send_body(503, {'error': '插件更新检查未启用'})
-                else:
-                    self.send_body(200, plugin_updates.check())
-            elif route in REPO_VERSION_ROUTES:
-                self.handle_repo_version(route, body)
-            elif route == '/api/repo/delete':
-                updater = getattr(self.server.app, 'updates', None)
-                if updater: updater.begin_operation()
-                try:
-                    self.server.repo.delete(body.get('filename'))
-                    self.send_body(200, {'ok': True})
-                finally:
-                    if updater: updater.end_operation()
-            else:
-                self.server.app.change(body, rollback=route == '/api/rollback')
-                self.send_body(200, {'ok': True})
+            token, csrf = self.server.auth.login(self.client_address[0], body.get('password'))
+            self.send_body(200, {'csrf': csrf}, cookie=f'ps5_session={token}; Path=/; Max-Age={AuthManager.IDLE_SECONDS}; HttpOnly; Secure; SameSite=Lax')
         except PermissionError as exc:
-            self.send_body(403, {'error': str(exc)})
-        except FileNotFoundError as exc:
-            self.send_body(404, {'error': str(exc)})
-        except FileExistsError as exc:
-            self.send_body(409, {'error': str(exc)})
-        except ValueError as exc:
-            self.send_body(400, {'error': str(exc)})
-        except Exception as exc:
-            logging.exception('Policy apply failed')
-            self.send_body(500, {'error': '应用失败：' + diagnostic_error(exc) + '。已尝试恢复上一份策略，请查看概览状态。'})
+            self.send_body(401, {'error': str(exc)})
+
+    def post_updates(self, body):
+        updater = getattr(self.server.app, 'updates', None)
+        if updater is None:
+            self.send_body(503, {'error': '更新服务未启用'})
+        elif self.path.split('?', 1)[0].endswith('/check'):
+            self.send_body(200, updater.check())
+        else:
+            if set(body) != {'version'} or not isinstance(body.get('version'), str):
+                raise UpdateError('请指定检查结果中的目标版本')
+            self.send_body(200, updater.apply(body['version']))
+
+    def post_logout(self, body):
+        self.server.auth.logout(self.token())
+        self.send_body(200, {'ok': True}, cookie='ps5_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax')
+
+    def post_password(self, body):
+        change_password(self.server.auth, self.server.credentials_path,
+                        body.get('current_password'), body.get('new_password'))
+        self.send_body(200, {'ok': True},
+                       cookie='ps5_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax')
+
+    def post_labels(self, body):
+        self.server.app.activity.labels.set(body.get('target'),
+                                            body.get('name', ''), body.get('category', ''))
+        self.send_body(200, {'ok': True})
+
+    def post_allow(self, body):
+        targets = body.get('targets')
+        if not isinstance(targets, list) or not targets:
+            raise ValueError('请选择要放行的条目')
+        if len(targets) > 200:
+            raise ValueError('一次最多放行 200 项')
+        self.send_body(200, {'ok': True, 'config': self.server.app.allow(targets)})
+
+    def post_repo_update(self, body):
+        self.server.repo.update(body.get('filename'),
+                                **{key: body[key] for key in RepoManager._FIELDS if key in body})
+        self.send_body(200, {'ok': True})
+
+    def post_upstream_check(self, body):
+        plugin_updates = getattr(self.server, 'plugin_updates', None)
+        if plugin_updates is None:
+            self.send_body(503, {'error': '插件更新检查未启用'})
+        else:
+            self.send_body(200, plugin_updates.check())
+
+    def post_repo_delete(self, body):
+        self.server.repo.delete(body.get('filename'))
+        self.send_body(200, {'ok': True})
+
+    def post_config(self, body):
+        self.server.app.change(body, rollback=self.path.split('?', 1)[0] == '/api/rollback')
+        self.send_body(200, {'ok': True})
+
+    def post_console(self):
+        self.server.app.console_post(self, self.path.split('?', 1)[0])
 
 
 STATIC_TYPES = {'html': 'text/html; charset=utf-8', 'js': 'text/javascript; charset=utf-8',
@@ -1140,6 +1123,82 @@ def static_name(path):
 
 
 REPO_VERSION_ROUTES = ('/api/repo/upstream/apply', '/api/repo/rollback', '/api/repo/version/delete')
+
+
+@dataclass(frozen=True)
+class Route:
+    """One admin endpoint.
+
+    auth: 'read' / 'write' (session, plus CSRF for write) checked by the
+    dispatcher, or None when public or the handler checks it itself.
+    tracked: refused while a service upgrade runs and counted as an operation
+    the upgrade waits for (paths ending in /cancel are never tracked).
+    body: 'json' is parsed by the dispatcher and passed to the handler; any
+    other body is read by the handler.
+    exact: GET only; the route matches only without a query string.
+    """
+    handler: str
+    auth: str | None = 'read'
+    tracked: bool = False
+    body: str | None = None
+    exact: bool = False
+
+
+CONSOLE_PREFIXES = ('/api/ps5', '/api/files', '/api/nas', '/api/transfers')
+
+GET_ROUTES = {
+    '/api/version': Route('get_version', auth=None, exact=True),
+    '/api/updates': Route('get_updates', exact=True),
+    '/api/state': Route('get_state', exact=True),
+    '/api/repo': Route('get_repo', exact=True),
+    '/api/titles': Route('handle_titles'),
+    '/api/logs': Route('handle_logs'),
+    '/api/logs/export': Route('handle_logs'),
+    '/api/repo/upstream/progress': Route('get_upstream_progress', exact=True),
+}
+# Checked in order after GET_ROUTES; a prefix also matches longer paths.
+GET_PREFIXES = (
+    ('/api/activity', Route('get_activity')),
+    (CONSOLE_PREFIXES, Route('get_console', auth=None)),
+)
+
+
+def _json_route(handler, tracked=False, auth='write'):
+    return Route(handler, auth=auth, tracked=tracked, body='json')
+
+
+POST_ROUTES = {
+    '/api/login': _json_route('post_login', auth=None),
+    '/api/config': _json_route('post_config'),
+    '/api/rollback': _json_route('post_config'),
+    '/api/logout': _json_route('post_logout'),
+    '/api/password': _json_route('post_password'),
+    '/api/labels': _json_route('post_labels'),
+    '/api/allow': _json_route('post_allow'),
+    '/api/updates/check': _json_route('post_updates'),
+    '/api/updates/apply': _json_route('post_updates'),
+    '/api/repo/upstream/check': _json_route('post_upstream_check'),
+    '/api/repo/update': _json_route('post_repo_update', tracked=True),
+    '/api/repo/delete': _json_route('post_repo_delete', tracked=True),
+    **{route: _json_route('handle_repo_version', tracked=True) for route in REPO_VERSION_ROUTES},
+    # Raw body; the handler checks session and CSRF itself.
+    '/api/repo/upload': Route('handle_upload', auth=None, tracked=True, body='raw'),
+}
+POST_PREFIXES = (
+    # The console API checks session, CSRF and the body itself.
+    (CONSOLE_PREFIXES, Route('post_console', auth=None, tracked=True)),
+)
+
+
+def _lookup(routes, prefixes, raw_path):
+    path = raw_path.split('?', 1)[0]
+    route = routes.get(path)
+    if route is not None:
+        return None if route.exact and raw_path != path else route
+    for prefix, candidate in prefixes:
+        if path.startswith(prefix):
+            return candidate
+    return None
 
 
 class AdminServer(LimitedThreads, HTTPServer):

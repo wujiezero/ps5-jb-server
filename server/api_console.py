@@ -116,86 +116,112 @@ class ConsoleAPI:
         return False
 
     # ---------- GET ----------
+    # Answered even when [ps5] control is off ('/api/ps5' reports it disabled).
+    _GET_ALWAYS = frozenset(('/api/ps5', '/api/ps5/power', '/api/ps5/progress'))
+    GET_ROUTES = {
+        '/api/ps5': '_get_ps5',
+        '/api/ps5/power': '_get_power',
+        '/api/ps5/progress': '_get_progress',
+        '/api/files/info': '_get_files_info',
+        '/api/files/download': '_get_download',
+        '/api/files/tar': '_get_tar',
+        '/api/files/volumes': '_get_volumes',
+        '/api/files/list': '_get_list',
+        '/api/files/size': '_get_size',
+        '/api/files/job': '_get_job',
+        '/api/nas': '_get_nas',
+        '/api/nas/archive': '_get_nas_archive',
+        '/api/nas/list': '_get_nas_list',
+        '/api/transfers': '_get_transfers',
+        '/api/files/transfers': '_get_file_transfers',
+    }
+
     def handle_get(self, handler):
+        """True when answered; False for an unknown path (the caller answers 404)."""
         path = urllib.parse.urlsplit(handler.path).path
         if not handler.require_session():
             return True
         try:
-            if path == '/api/ps5':
-                if not self.enabled:
-                    handler.send_body(200, {'hosts': [], 'discovery': {'enabled': False}})
+            name = self.GET_ROUTES.get(path)
+            if path not in self._GET_ALWAYS:
+                if path == '/api/files/info' and not self.file_manager:
+                    handler.send_body(200, {'configured': False, 'enabled': False, 'hosts': [],
+                                            'error': 'PS5 文件管理已在配置中关闭'})
                     return True
-                handler.send_body(200, self._with_power(self.ps5.overview()))
-                return True
-            if path == '/api/ps5/power':
-                handler.send_body(200, self.power.status(self._arg(handler, 'ip')))
-                return True
-            if path == '/api/ps5/progress':
-                handler.send_body(200, {'progress': self.ps5.progress(self._arg(handler, 'ip'))})
-                return True
-            if path == '/api/files/info' and not self.file_manager:
-                handler.send_body(200, {'configured': False, 'enabled': False, 'hosts': [],
-                                        'error': 'PS5 文件管理已在配置中关闭'})
-                return True
-            if self._disabled(handler, path):
-                return True
-            if path == '/api/files/info':
-                handler.send_body(200, {**self.files.info(), 'enabled': True,
-                                        'hosts': self._known_hosts()})
-                return True
-            if path == '/api/files/download':
-                target = self._arg(handler, 'path')
-                return self._stream(handler, lambda: self.files.stream(target),
-                                    _basename(target, 'download.bin'), 'application/octet-stream')
-            if path == '/api/files/tar':
-                target = self._arg(handler, 'path')
-                return self._stream(handler, lambda: self.files.stream_folder(target),
-                                    _basename(target, 'folder') + '.tar', 'application/x-tar')
-            if path == '/api/files/volumes':
-                handler.send_body(200, self.files.volumes())
-                return True
-            if path == '/api/files/list':
-                handler.send_body(200, self.files.list(self._arg(handler, 'path', '/data')))
-                return True
-            if path == '/api/files/size':
-                handler.send_body(200, self.files.folder_size(self._arg(handler, 'path', '/data')))
-                return True
-            if path == '/api/files/job':
-                handler.send_body(200, self.files.job())
-                return True
-            if path == '/api/nas':
-                handler.send_body(200, {'connections': self.nas.list_public(),
-                                        'protocols': {'webdav': True, 'smb': smb_available(),
-                                                      'ftp': True},
-                                        'encryption': SecretBox.available(),
-                                        'archive': archive.available() or unrar_engine_available(),
-                                        'unrar': unrar_engine_available()})
-                return True
-            if path == '/api/nas/archive':
-                handler.send_body(200, self.transfers.inspect_archive(
-                    self._arg(handler, 'id'), self._arg(handler, 'path', '')))
-                return True
-            if path == '/api/nas/list':
-                config = self.nas.get(self._arg(handler, 'id'))
-                target = clean_path(self._arg(handler, 'path', '/'))
-                client = client_for(config)
-                try:
-                    entries = client.list(target)
-                finally:
-                    client.close()
-                entries.sort(key=lambda item: (not item['dir'], item['name'].lower()))
-                handler.send_body(200, {'path': target, 'entries': entries})
-                return True
-            if path == '/api/transfers':
-                handler.send_body(200, {'jobs': self.transfers.snapshot()})
-                return True
-            if path == '/api/files/transfers':
-                handler.send_body(200, self.files.transfers())
-                return True
-            return False
+                if self._disabled(handler, path):
+                    return True
+            if name is None:
+                return False
+            result = getattr(self, name)(handler)
+            return True if result is None else result
         except Exception as exc:  # every failure must still answer the browser
             self._fail(handler, exc)
             return True
+
+    def _get_ps5(self, handler):
+        if not self.enabled:
+            handler.send_body(200, {'hosts': [], 'discovery': {'enabled': False}})
+            return
+        handler.send_body(200, self._with_power(self.ps5.overview()))
+
+    def _get_power(self, handler):
+        handler.send_body(200, self.power.status(self._arg(handler, 'ip')))
+
+    def _get_progress(self, handler):
+        handler.send_body(200, {'progress': self.ps5.progress(self._arg(handler, 'ip'))})
+
+    def _get_files_info(self, handler):
+        handler.send_body(200, {**self.files.info(), 'enabled': True, 'hosts': self._known_hosts()})
+
+    def _get_download(self, handler):
+        target = self._arg(handler, 'path')
+        return self._stream(handler, lambda: self.files.stream(target),
+                            _basename(target, 'download.bin'), 'application/octet-stream')
+
+    def _get_tar(self, handler):
+        target = self._arg(handler, 'path')
+        return self._stream(handler, lambda: self.files.stream_folder(target),
+                            _basename(target, 'folder') + '.tar', 'application/x-tar')
+
+    def _get_volumes(self, handler):
+        handler.send_body(200, self.files.volumes())
+
+    def _get_list(self, handler):
+        handler.send_body(200, self.files.list(self._arg(handler, 'path', '/data')))
+
+    def _get_size(self, handler):
+        handler.send_body(200, self.files.folder_size(self._arg(handler, 'path', '/data')))
+
+    def _get_job(self, handler):
+        handler.send_body(200, self.files.job())
+
+    def _get_nas(self, handler):
+        handler.send_body(200, {'connections': self.nas.list_public(),
+                                'protocols': {'webdav': True, 'smb': smb_available(), 'ftp': True},
+                                'encryption': SecretBox.available(),
+                                'archive': archive.available() or unrar_engine_available(),
+                                'unrar': unrar_engine_available()})
+
+    def _get_nas_archive(self, handler):
+        handler.send_body(200, self.transfers.inspect_archive(
+            self._arg(handler, 'id'), self._arg(handler, 'path', '')))
+
+    def _get_nas_list(self, handler):
+        config = self.nas.get(self._arg(handler, 'id'))
+        target = clean_path(self._arg(handler, 'path', '/'))
+        client = client_for(config)
+        try:
+            entries = client.list(target)
+        finally:
+            client.close()
+        entries.sort(key=lambda item: (not item['dir'], item['name'].lower()))
+        handler.send_body(200, {'path': target, 'entries': entries})
+
+    def _get_transfers(self, handler):
+        handler.send_body(200, {'jobs': self.transfers.snapshot()})
+
+    def _get_file_transfers(self, handler):
+        handler.send_body(200, self.files.transfers())
 
     def _stream(self, handler, opener, filename, ctype):
         try:
@@ -227,115 +253,172 @@ class ConsoleAPI:
         return [host['ip'] for host in self.ps5.discovery.snapshot()['hosts']]
 
     # ---------- POST ----------
+    POST_ROUTES = {
+        '/api/ps5/scan': '_post_scan',
+        '/api/ps5/attach': '_post_attach',
+        '/api/ps5/install': '_post_install',
+        '/api/ps5/upgrade': '_post_upgrade',
+        '/api/ps5/run': '_post_run',
+        '/api/ps5/kill': '_post_kill',
+        '/api/ps5/autoload': '_post_autoload',
+        '/api/ps5/power/pair': '_post_pair',
+        '/api/ps5/power/wake': '_post_wake',
+        '/api/ps5/power/standby': '_post_standby',
+        '/api/ps5/shutdown': '_post_shutdown',
+        '/api/files/configure': '_post_configure',
+        '/api/files/mkdir': '_post_mkdir',
+        '/api/files/rename': '_post_rename',
+        '/api/files/delete': '_post_delete',
+        '/api/files/copy': '_post_copy',
+        '/api/files/move': '_post_copy',
+        '/api/files/cancel': '_post_files_cancel',
+        '/api/nas/save': '_post_nas_save',
+        '/api/nas/delete': '_post_nas_delete',
+        '/api/nas/test': '_post_nas_test',
+        '/api/nas/transfer': '_post_nas_transfer',
+        '/api/nas/extract': '_post_nas_extract',
+        '/api/transfers/cancel': '_post_transfers_cancel',
+        '/api/transfers/clear': '_post_transfers_clear',
+        '/api/files/bench': '_post_bench',
+    }
+    # Raw request bodies: the handler checks session and CSRF itself.
+    RAW_POST_ROUTES = {'/api/files/upload': '_upload'}
+
     def handle_post(self, handler, route):
         path = route.rstrip('/')
-        if path == '/api/files/upload':
-            return self._upload(handler)
+        if path in self.RAW_POST_ROUTES:
+            return getattr(self, self.RAW_POST_ROUTES[path])(handler)
         if not handler.require_session(write=True):
             return True
         if self._disabled(handler, path):
             return True
         try:
             body = self._json_body(handler)
-            if path == '/api/ps5/scan':
-                handler.send_body(200, self.ps5.scan())
-            elif path == '/api/ps5/attach':
-                handler.send_body(200, {'ok': True, 'host': self.ps5.attach(body.get('ip'))})
-            elif path == '/api/ps5/install':
-                handler.send_body(200, self.ps5.install(body.get('ip'), body.get('filename'),
-                                                        bool(body.get('run'))))
-            elif path == '/api/ps5/upgrade':
-                run = body.get('run')
-                handler.send_body(200, self.ps5.upgrade(body.get('ip'), body.get('filename'),
-                                                        run=None if run is None else bool(run)))
-            elif path == '/api/ps5/run':
-                handler.send_body(200, self.ps5.run(body.get('ip'), body.get('filename')))
-            elif path == '/api/ps5/kill':
-                handler.send_body(200, self.ps5.kill(body.get('ip'), body.get('pid')))
-            elif path == '/api/ps5/autoload':
-                handler.send_body(200, self.ps5.autoload(
-                    body.get('ip'), bool(body.get('enabled')),
-                    items=body.get('items'), start_delay=body.get('start_delay'),
-                    lead_ms=body.get('lead_ms') or 0, files=body.get('files')))
-            elif path == '/api/ps5/power/pair':
-                handler.send_body(200, self.power.pair(body.get('ip'), body.get('pin'),
-                                                       body.get('account_id')))
-            elif path == '/api/ps5/power/wake':
-                handler.send_body(200, {'ok': True, 'job': self.power.wake(body.get('ip'))})
-            elif path == '/api/ps5/power/standby':
-                handler.send_body(200, self.power.standby(body.get('ip')))
-            elif path == '/api/ps5/shutdown':
-                handler.send_body(200, self.ps5.shutdown(body.get('ip')))
-            elif path == '/api/files/configure':
-                info = self.files.configure(body.get('host'))
-                if info.get('configured'):
-                    self._remember()
-                handler.send_body(200, {**info, 'hosts': self._known_hosts()})
-            elif path == '/api/files/mkdir':
-                self._ok(handler, self.files.mkdir(body.get('path')))
-            elif path == '/api/files/rename':
-                self._ok(handler, self.files.rename(body.get('from'), body.get('to')))
-            elif path == '/api/files/delete':
-                self._ok(handler, self.files.delete(body.get('path')))
-            elif path in ('/api/files/copy', '/api/files/move'):
-                result = self.files.copy(body.get('from'), body.get('to'),
-                                         move=path.endswith('move'))
-                instant = isinstance(result, dict) and result.get('instant') is True
-                handler.send_body(200, {'ok': True, 'result': result, 'instant': instant})
-            elif path == '/api/files/cancel':
-                self._ok(handler, self.files.cancel())
-            elif path == '/api/nas/save':
-                handler.send_body(200, {'ok': True, 'connection': self.nas.save(body)})
-            elif path == '/api/nas/delete':
-                self.nas.delete(body.get('id'))
-                handler.send_body(200, {'ok': True})
-            elif path == '/api/nas/test':
-                existing = self.nas.get(body['id']) if body.get('id') else None
-                config = self.nas.validate(body, existing)
-                handler.send_body(200, check_connection(config))
-            elif path == '/api/nas/transfer':
-                host = body.get('host') or self.files.host
-                auto_register = bool(body.get('auto_register', False))
-                if auto_register:
-                    self.game_services.preflight(host)
-                handler.send_body(200, {'ok': True, 'job': self.transfers.start(
-                    body.get('id'), body.get('paths'), body.get('dest'),
-                    body.get('overwrite') or 'skip', auto_register=auto_register,
-                    host=host, title=body.get('title') or '')})
-            elif path == '/api/nas/extract':
-                auto_register = bool(body.get('auto_register', True))
-                host = body.get('host') or self.files.host
-                selected = body.get('paths') or ([body.get('path')] if body.get('path') else [])
-                try:
-                    config = self.nas.get(body.get('id'))
-                except NasError:
-                    config = None
-                source_client = client_for(config) if config else None
-                try:
-                    plan = plan_sources(source_client, selected)
-                finally:
-                    if source_client is not None:
-                        source_client.close()
-                if plan.get('kind') != 'archive':
-                    raise ValueError('所选源不是可流式解压的 RAR 分卷；PKG 请使用安装包流程')
-                if auto_register:
-                    self.game_services.preflight(host)
-                handler.send_body(200, {'ok': True, 'job': self.transfers.start_extract(
-                    body.get('id'), plan['path'], body.get('dest'), body.get('mode') or 'install',
-                    auto_register=auto_register, host=host,
-                    title=body.get('title') or plan.get('title_hint') or '')})
-            elif path == '/api/transfers/cancel':
-                handler.send_body(200, self.transfers.cancel(body.get('id')))
-            elif path == '/api/transfers/clear':
-                handler.send_body(200, self.transfers.clear())
-            elif path == '/api/files/bench':
-                handler.send_body(200, {'ok': True, 'result': self.files.bench(body.get('path'))})
-            else:
+            name = self.POST_ROUTES.get(path)
+            if name is None:
                 handler.send_body(404, {'error': '未知操作'})
+            else:
+                getattr(self, name)(handler, body, path)
             return True
         except Exception as exc:
             self._fail(handler, exc)
             return True
+
+    def _post_scan(self, handler, body, path):
+        handler.send_body(200, self.ps5.scan())
+
+    def _post_attach(self, handler, body, path):
+        handler.send_body(200, {'ok': True, 'host': self.ps5.attach(body.get('ip'))})
+
+    def _post_install(self, handler, body, path):
+        handler.send_body(200, self.ps5.install(body.get('ip'), body.get('filename'),
+                                                bool(body.get('run'))))
+
+    def _post_upgrade(self, handler, body, path):
+        run = body.get('run')
+        handler.send_body(200, self.ps5.upgrade(body.get('ip'), body.get('filename'),
+                                                run=None if run is None else bool(run)))
+
+    def _post_run(self, handler, body, path):
+        handler.send_body(200, self.ps5.run(body.get('ip'), body.get('filename')))
+
+    def _post_kill(self, handler, body, path):
+        handler.send_body(200, self.ps5.kill(body.get('ip'), body.get('pid')))
+
+    def _post_autoload(self, handler, body, path):
+        handler.send_body(200, self.ps5.autoload(
+            body.get('ip'), bool(body.get('enabled')),
+            items=body.get('items'), start_delay=body.get('start_delay'),
+            lead_ms=body.get('lead_ms') or 0, files=body.get('files')))
+
+    def _post_pair(self, handler, body, path):
+        handler.send_body(200, self.power.pair(body.get('ip'), body.get('pin'), body.get('account_id')))
+
+    def _post_wake(self, handler, body, path):
+        handler.send_body(200, {'ok': True, 'job': self.power.wake(body.get('ip'))})
+
+    def _post_standby(self, handler, body, path):
+        handler.send_body(200, self.power.standby(body.get('ip')))
+
+    def _post_shutdown(self, handler, body, path):
+        handler.send_body(200, self.ps5.shutdown(body.get('ip')))
+
+    def _post_configure(self, handler, body, path):
+        info = self.files.configure(body.get('host'))
+        if info.get('configured'):
+            self._remember()
+        handler.send_body(200, {**info, 'hosts': self._known_hosts()})
+
+    def _post_mkdir(self, handler, body, path):
+        self._ok(handler, self.files.mkdir(body.get('path')))
+
+    def _post_rename(self, handler, body, path):
+        self._ok(handler, self.files.rename(body.get('from'), body.get('to')))
+
+    def _post_delete(self, handler, body, path):
+        self._ok(handler, self.files.delete(body.get('path')))
+
+    def _post_copy(self, handler, body, path):
+        result = self.files.copy(body.get('from'), body.get('to'), move=path.endswith('move'))
+        instant = isinstance(result, dict) and result.get('instant') is True
+        handler.send_body(200, {'ok': True, 'result': result, 'instant': instant})
+
+    def _post_files_cancel(self, handler, body, path):
+        self._ok(handler, self.files.cancel())
+
+    def _post_nas_save(self, handler, body, path):
+        handler.send_body(200, {'ok': True, 'connection': self.nas.save(body)})
+
+    def _post_nas_delete(self, handler, body, path):
+        self.nas.delete(body.get('id'))
+        handler.send_body(200, {'ok': True})
+
+    def _post_nas_test(self, handler, body, path):
+        existing = self.nas.get(body['id']) if body.get('id') else None
+        config = self.nas.validate(body, existing)
+        handler.send_body(200, check_connection(config))
+
+    def _post_nas_transfer(self, handler, body, path):
+        host = body.get('host') or self.files.host
+        auto_register = bool(body.get('auto_register', False))
+        if auto_register:
+            self.game_services.preflight(host)
+        handler.send_body(200, {'ok': True, 'job': self.transfers.start(
+            body.get('id'), body.get('paths'), body.get('dest'),
+            body.get('overwrite') or 'skip', auto_register=auto_register,
+            host=host, title=body.get('title') or '')})
+
+    def _post_nas_extract(self, handler, body, path):
+        auto_register = bool(body.get('auto_register', True))
+        host = body.get('host') or self.files.host
+        selected = body.get('paths') or ([body.get('path')] if body.get('path') else [])
+        try:
+            config = self.nas.get(body.get('id'))
+        except NasError:
+            config = None
+        source_client = client_for(config) if config else None
+        try:
+            plan = plan_sources(source_client, selected)
+        finally:
+            if source_client is not None:
+                source_client.close()
+        if plan.get('kind') != 'archive':
+            raise ValueError('所选源不是可流式解压的 RAR 分卷；PKG 请使用安装包流程')
+        if auto_register:
+            self.game_services.preflight(host)
+        handler.send_body(200, {'ok': True, 'job': self.transfers.start_extract(
+            body.get('id'), plan['path'], body.get('dest'), body.get('mode') or 'install',
+            auto_register=auto_register, host=host,
+            title=body.get('title') or plan.get('title_hint') or '')})
+
+    def _post_transfers_cancel(self, handler, body, path):
+        handler.send_body(200, self.transfers.cancel(body.get('id')))
+
+    def _post_transfers_clear(self, handler, body, path):
+        handler.send_body(200, self.transfers.clear())
+
+    def _post_bench(self, handler, body, path):
+        handler.send_body(200, {'ok': True, 'result': self.files.bench(body.get('path'))})
 
     def _with_power(self, overview):
         """Add pairing / wake progress to each host; cheap local calls only."""
