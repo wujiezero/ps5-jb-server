@@ -389,6 +389,45 @@ class UpdateWorkerTests(unittest.TestCase):
         self.assertEqual(self.events, [])
         self.assert_unchanged()
 
+    def test_flat_lowercase_web_files_are_accepted(self):
+        self.write_archive(overrides={'web/extra.js': b'// split module\n', 'web/files-view.css': b'a{}',
+                                      'web/help.html': b'<p>'})
+        result = self.run_worker()
+        self.assertEqual(result['state'], 'done', result)
+        self.assertEqual((self.static / 'extra.js').read_bytes(), b'// split module\n')
+        self.assertEqual((self.static / 'files-view.css').read_bytes(), b'a{}')
+
+    def test_new_web_file_is_removed_on_rollback(self):
+        self.write_archive(overrides={'web/extra.js': b'// new'})
+        self.hooks['health'] = lambda url, version: (_ for _ in ()).throw(RuntimeError('bad')) \
+            if version == '1.4.0' else None
+        result = self.run_worker()
+        self.assertEqual(result['state'], 'rolled_back', result)
+        self.assertFalse((self.static / 'extra.js').exists())
+
+    def test_web_files_outside_the_rule_are_rejected(self):
+        for name in ('web/sub/x.js', 'web/x.php', 'web/.hidden.js', 'web/X.JS', 'web/x.js.map',
+                     'web/' + 'a' * 65 + '.js', 'web/-x.js'):
+            with self.subTest(name=name):
+                self.write_archive(overrides={name: b'x'})
+                result = self.run_worker()
+                self.assertEqual(result['state'], 'failed', result)
+                self.assertIn('unexpected runtime member', result['error'])
+                self.assertEqual(self.events, [])
+                self.assert_unchanged()
+
+    def test_worker_rule_matches_the_shared_constant(self):
+        import sys
+        sys.path.insert(0, str(WORKER_PATH.parent))
+        from version import WEB_FILE_PATTERN
+        self.assertEqual(worker.WEB_FILE_PATTERN, WEB_FILE_PATTERN)
+
+    def test_recovery_accepts_split_web_files(self):
+        paths = {'program_dir': self.program, 'static_dir': self.static}
+        self.assertEqual(worker._runtime_name(self.static / 'extra.js', paths), 'web/extra.js')
+        with self.assertRaises(ValueError):
+            worker._runtime_name(self.static / 'x.php', paths)
+
     def test_interrupted_transaction_persists_recovery_manifest_before_replacement(self):
         self.interrupt_transaction()
         transaction = self.updates / 'transaction.json'

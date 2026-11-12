@@ -31,7 +31,22 @@ ps5-jb-server-1.4.0.tar.gz.sha256
 python3 scripts/build_release.py --tag v1.4.0 --output /tmp/ps5-release
 ```
 
-发布包只包含运行模块、前端、规则集和离线标题库，包含根 `VERSION`。不包含配置、密码、密钥、证书、数据、测试文件、第三方 payload 或源码仓库。打包结果可重复，GitHub 自动生成的 Source code 附件不作为网页升级源。
+发布包只包含运行模块、前端、规则集和离线标题库，包含根 `VERSION`。
+
+### 发布包的文件白名单
+
+网页升级执行器（`server/update_worker.py`）只接受下面这些归档成员，其它任何文件都会让升级在校验阶段失败、不改动系统：
+
+| 位置 | 规则 |
+| --- | --- |
+| `server/<名字>.py` | 平铺一层的 Python 模块（`host.py` 除外） |
+| `web/<名字>` | 平铺一层，名字匹配 `[a-z0-9][a-z0-9._-]{0,63}\.(js\|css\|html)`（全小写，不带子目录） |
+| 其它 | `VERSION`、`rulesets/compiled.json`、`titledb/titles.json`、`titledb/UPSTREAM_LICENSE` |
+
+`web/index.html`、`web/app.js`、`web/style.css` 必须存在。前端文件名规则定义在 `server/version.py` 的
+`WEB_FILE_PATTERN`，打包脚本、安装器和管理页静态服务共用；执行器为了不导入发布包里的模块，自带一份相同的副本（有测试保证一致）。
+
+这条规则从 `v1.9.1` 开始。**`v1.9.0` 及更早版本的执行器只认上面三个前端文件**：之后发布的、前端拆成多个文件的版本无法从这些旧版直接网页升级（会在校验阶段被拒绝，不改动系统），需要先网页升级到 `v1.9.1`–`v1.12.x` 之间任一版本，或按下文「首次升级」用 SSH 升级一次。不包含配置、密码、密钥、证书、数据、测试文件、第三方 payload 或源码仓库。打包结果可重复，GitHub 自动生成的 Source code 附件不作为网页升级源。
 
 ## 网页一键升级
 
@@ -101,7 +116,7 @@ sudo systemctl restart ps5-jb-server.service ps5-jb-host.service ps5-jb-repo.ser
 ```sh
 sudo systemctl stop ps5-manager.service ps5-repo.service
 sudo install -m 644 server/*.py /opt/ps5-manager/
-sudo install -m 644 web/index.html web/app.js web/style.css /opt/ps5-manager/static/
+sudo install -m 644 web/*.html web/*.js web/*.css /opt/ps5-manager/static/
 sudo install -d /opt/ps5-manager/rulesets /opt/ps5-manager/titledb
 sudo install -m 644 rulesets/compiled.json /opt/ps5-manager/rulesets/
 sudo install -m 644 titledb/titles.json titledb/UPSTREAM_LICENSE /opt/ps5-manager/titledb/

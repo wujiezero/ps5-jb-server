@@ -38,6 +38,9 @@ UNIT_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.@-]*\.service\Z')
 RUNTIME_FILES = frozenset(('VERSION', 'web/index.html', 'web/app.js', 'web/style.css',
                            'rulesets/compiled.json', 'titledb/titles.json',
                            'titledb/UPSTREAM_LICENSE'))
+# Must equal version.WEB_FILE_PATTERN (tested); the worker imports nothing from a release.
+WEB_FILE_PATTERN = r'[a-z0-9][a-z0-9._-]{0,63}\.(?:js|css|html)'
+WEB_FILE_RE = re.compile(WEB_FILE_PATTERN + r'\Z')
 REQUIRED_FILES = frozenset(('server/server.py', 'server/update_worker.py',
                             'server/version.py', 'web/index.html', 'web/app.js',
                             'web/style.css', 'VERSION'))
@@ -258,7 +261,8 @@ def _stage(spec, paths, stage):
                 python_module = (len(parts) == 3 and parts[1] == 'server'
                                  and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*\.py', parts[2])
                                  and parts[2] != 'host.py')
-                if relative not in RUNTIME_FILES and not python_module:
+                web_file = len(parts) == 3 and parts[1] == 'web' and WEB_FILE_RE.match(parts[2])
+                if relative not in RUNTIME_FILES and not python_module and not web_file:
                     raise ValueError(f'unexpected runtime member: {name}')
                 if relative in names:
                     raise ValueError(f'duplicate archive member: {name}')
@@ -561,6 +565,8 @@ def _runtime_name(target, paths):
             return name
     if target.parent == paths['program_dir'] and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*\.py', target.name) and target.name != 'host.py':
         return 'server/' + target.name
+    if target.parent == paths['static_dir'] and WEB_FILE_RE.match(target.name):
+        return 'web/' + target.name
     raise ValueError(f'unsafe recovery target: {target}')
 
 

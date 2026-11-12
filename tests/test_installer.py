@@ -200,6 +200,16 @@ class DependencyInstallTests(unittest.TestCase):
         self.assertIn('依赖齐全', text)
 
 
+class WebFilesTests(unittest.TestCase):
+    def test_installer_copies_every_shipped_web_file(self):
+        installer = load_installer()
+        names = installer.web_files()
+        self.assertTrue({'index.html', 'app.js', 'style.css'} <= set(names))
+        sys.path.insert(0, str(REPO / 'scripts'))
+        import build_release
+        self.assertEqual(names, [path.name for path in build_release.web_files(REPO)])
+
+
 class InterfaceTests(unittest.TestCase):
     def test_installer_shares_the_service_detection(self):
         from unittest import mock

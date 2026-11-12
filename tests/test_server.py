@@ -112,6 +112,47 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/api/state', cookie=cookie)[0], 401)
 
 
+class StaticFileTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        static = Path(self.tmp.name)
+        for name, body in (('index.html', '<p>'), ('app.js', '//'), ('style.css', 'a{}'),
+                           ('extra.js', '// split'), ('notes.php', '<?php'), ('.hidden.js', 'x')):
+            (static / name).write_text(body)
+        (static / 'sub').mkdir()
+        (static / 'sub' / 'x.js').write_text('x')
+        self.server = AdminServer(('127.0.0.1', 0), AdminHandler)
+        self.server.app = FakeApp()
+        self.server.auth = AuthManager(AuthManager.make_credentials('a-long-test-password'))
+        self.server.static_dir = static
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    def get(self, path):
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=3)
+        conn.request('GET', path)
+        response = conn.getresponse()
+        body = response.read()
+        conn.close()
+        return response.status, response.getheader('Content-Type'), body
+
+    def test_matching_files_are_served_with_their_type(self):
+        self.assertEqual(self.get('/')[2], b'<p>')
+        self.assertEqual(self.get('/extra.js')[:2], (200, 'text/javascript; charset=utf-8'))
+        self.assertEqual(self.get('/style.css')[1], 'text/css; charset=utf-8')
+        self.assertEqual(self.get('/index.html')[1], 'text/html; charset=utf-8')
+
+    def test_unknown_or_unmatched_names_are_404(self):
+        for path in ('/missing.js', '/notes.php', '/.hidden.js', '/sub/x.js', '/../app.js',
+                     '/%2e%2e/app.js', '/APP.JS', '/app.js/'):
+            with self.subTest(path=path):
+                self.assertEqual(self.get(path)[0], 404)
+
+
 class StartupTests(unittest.TestCase):
     def test_firewall_failure_keeps_diagnostics_available_and_forwarding_off(self):
         import server

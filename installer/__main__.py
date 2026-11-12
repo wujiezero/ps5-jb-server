@@ -14,6 +14,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -41,6 +42,15 @@ def proxy_dropin_text(proxy):
             '[Service]\n'
             f'Environment="http_proxy={proxy}"\n'
             f'Environment="https_proxy={proxy}"\n')
+
+
+def web_files():
+    """Front-end files to install; same rule as the release builder and the web updater."""
+    sys.path.insert(0, str(REPO / 'server'))
+    from version import WEB_FILE_PATTERN
+    pattern = re.compile(WEB_FILE_PATTERN + r'\Z')
+    return sorted(path.name for path in (REPO / 'web').iterdir()
+                  if path.is_file() and pattern.match(path.name))
 
 
 def server_modules():
@@ -422,7 +432,7 @@ def install_files(layout, runner):
     # Every module ships: a hand-kept list silently missed ftp_files/nas/power once.
     for name in server_modules():
         runner.copy_file(REPO / 'server' / name, layout.opt / name)
-    for name in ('index.html', 'app.js', 'style.css'):
+    for name in web_files():
         runner.copy_file(REPO / 'web' / name, layout.opt / 'web' / name)
     runner.copy_file(REPO / 'rulesets' / 'compiled.json', layout.opt / 'rulesets' / 'compiled.json')
     for name in ('titles.json', 'UPSTREAM_LICENSE'):

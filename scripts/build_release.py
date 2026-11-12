@@ -20,13 +20,31 @@ def source_version(root):
     raise ValueError('缺少有效版本号 VERSION')
 
 
+def web_files(root):
+    """Front-end files to ship: index.html, app.js, style.css plus any matching the shared rule."""
+    pattern = re.compile(web_file_pattern(root) + r'\Z')
+    return sorted(path for path in (Path(root) / 'web').iterdir()
+                  if path.is_file() and pattern.match(path.name))
+
+
+def web_file_pattern(root):
+    tree = ast.parse((Path(root) / 'server/version.py').read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'WEB_FILE_PATTERN'
+                                                for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise ValueError('缺少前端文件名规则 WEB_FILE_PATTERN')
+
+
 def build_release(root, output, tag=None):
     root, output = Path(root), Path(output)
     version = source_version(root)
     if tag and tag != 'v' + version:
         raise ValueError(f'发布 tag 必须与版本匹配：v{version}')
     paths = sorted((root / 'server').glob('*.py'))
-    paths += [root / 'web' / name for name in ('index.html', 'app.js', 'style.css')]
+    paths += web_files(root)
+    if not all((root / 'web' / name).is_file() for name in ('index.html', 'app.js', 'style.css')):
+        raise ValueError('安装包不完整：缺少前端文件')
     paths += [root / 'rulesets/compiled.json', root / 'titledb/titles.json', root / 'titledb/UPSTREAM_LICENSE']
     required = ('server.py', 'version.py', 'update_worker.py')
     if not all((root / 'server' / name).is_file() for name in required):

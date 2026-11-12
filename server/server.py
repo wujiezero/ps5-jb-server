@@ -31,7 +31,7 @@ from titles import TitleCatalog, proxy_reader
 from dns_service import DNSPolicy, LimitedThreads, diagnostic_error, start_dns
 from policy import ConfigStore, Firewall, LOCAL_DOMAINS
 from plugin_updates import PluginUpdates, PluginUpdateError
-from version import VERSION, version_info
+from version import VERSION, WEB_FILE_PATTERN, version_info
 from updates import UpdateManager, UpdateError, ACTIVE as UPDATE_ACTIVE
 
 
@@ -842,18 +842,19 @@ class AdminHandler(BaseHTTPRequestHandler):
         if self.path.startswith(('/api/ps5', '/api/files', '/api/nas', '/api/transfers')):
             if self.server.app.console_get(self):
                 return
-        files = {'/': ('index.html', 'text/html; charset=utf-8'),
-                 '/index.html': ('index.html', 'text/html; charset=utf-8'),
-                 '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
-                 '/style.css': ('style.css', 'text/css; charset=utf-8')}
-        if self.path not in files:
+        name = static_name(self.path)
+        if name is None:
             self.send_body(404, {'error': '未找到页面'})
             return
-        name, ctype = files[self.path]
         try:
-            self.send_body(200, (self.server.static_dir / name).read_bytes(), ctype)
+            data = (self.server.static_dir / name).read_bytes()
+        except FileNotFoundError:
+            self.send_body(404, {'error': '未找到页面'})
+            return
         except OSError:
             self.send_body(503, {'error': '页面文件暂不可用'})
+            return
+        self.send_body(200, data, STATIC_TYPES[name.rsplit('.', 1)[1]])
 
     def handle_titles(self):
         """GET /api/titles?ids=CUSA1,PPSA2&folder=/mnt/ext0/games/PPSA2 -> names."""
@@ -1125,6 +1126,17 @@ class AdminHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logging.exception('Policy apply failed')
             self.send_body(500, {'error': '应用失败：' + diagnostic_error(exc) + '。已尝试恢复上一份策略，请查看概览状态。'})
+
+
+STATIC_TYPES = {'html': 'text/html; charset=utf-8', 'js': 'text/javascript; charset=utf-8',
+                'css': 'text/css; charset=utf-8'}
+_STATIC_NAME = re.compile(WEB_FILE_PATTERN + r'\Z')
+
+
+def static_name(path):
+    """File name under static_dir for a request path, or None. The pattern has no '/'."""
+    name = path.split('?', 1)[0].removeprefix('/') or 'index.html'
+    return name if _STATIC_NAME.match(name) else None
 
 
 REPO_VERSION_ROUTES = ('/api/repo/upstream/apply', '/api/repo/rollback', '/api/repo/version/delete')
