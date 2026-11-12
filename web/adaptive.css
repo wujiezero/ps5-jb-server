@@ -1,0 +1,544 @@
+/* 窄屏列表、无障碍偏好、自动加载编辑器、浮动传输面板与动效。按 index.html 中 <link> 的顺序加载，层叠顺序与拆分前一致。 */
+
+/* ── 新页面的手机布局 ────────────────────────────────────────────────── */
+
+@media (max-width: 767px) {
+  .ps5-add-row .button { min-height: 46px; }
+  .ps5-host { padding: 12px; }
+  .ps5-host-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .ps5-host-actions .button { width: 100%; min-height: 44px; padding: 8px 10px; }
+  .ps5-host-actions .button:last-child { grid-column: 1 / -1; }
+  .ps5-tabs { display: flex; width: 100%; }
+  .ps5-tab { flex: 1; min-height: 44px; padding: 8px 10px; }
+  .ps5-switch { min-height: 48px; }
+  .ps5-autoload-item { min-height: 52px; padding: 12px; }
+  .ps5-autoload-item input[type="checkbox"] { width: 22px; height: 22px; }
+  .ps5-actions-row .button { min-height: 46px; }
+  .ps5-detail { scroll-margin-top: calc(max(var(--gutter), env(safe-area-inset-top)) + 80px); }
+  .files-table { min-width: 0; }
+  .filter-row { flex-wrap: wrap; row-gap: 8px; }
+  .filter-link { flex: 1 1 100%; justify-content: flex-end; min-height: 44px; margin-left: 0; }
+
+  .files-shell { padding: 16px; }
+  .files-workspace { padding: 12px 16px; }
+  .files-toolbar .button { min-height: 44px; }
+  .files-toolbar .button-icon { width: 44px; min-width: 44px; }
+  .files-search { order: 10; flex: 1 1 100%; min-width: 0; max-width: none; margin-left: 0; min-height: 44px; }
+  .files-search input[type="search"] { min-height: 44px; font-size: 1rem; }
+  .files-crumb { min-height: 44px; }
+  .files-table-wrap { max-height: none; border: 0; border-radius: 0; }
+  .files-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto 44px; gap: 0 8px; align-items: center; padding: 8px 0; }
+  .files-table td:nth-child(1) { grid-column: 1 / 3; grid-row: 1; min-width: 0; }
+  .files-table td.files-size-col,
+  .files-table td.files-time-col {
+    grid-row: 2;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    background: transparent;
+    font-size: 0.75rem;
+    line-height: 1.6;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+  .files-table td.files-size-col { grid-column: 1; }
+  .files-table td.files-time-col { grid-column: 2; text-align: right; }
+  .files-table td.files-actions-col { grid-column: 3; grid-row: 1 / 3; width: 44px; align-self: start; }
+  .files-table td.empty-state { grid-column: 1 / -1; }
+  .files-row-menu { width: 44px; min-height: 44px; }
+  .files-name { min-height: 44px; }
+  .files-name-button { flex: 1; min-width: 0; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
+  .files-name-text { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .files-name-stack { flex: 1; padding: 4px 0; }
+  .files-name-stack > .files-name-button { width: 100%; min-height: 32px; text-align: left; }
+  .title-name { white-space: normal; overflow-wrap: anywhere; }
+  .files-transfers-wrap { max-height: none; border: 0; border-radius: 0; }
+  .files-transfers-table td { min-width: 0; overflow-wrap: anywhere; }
+  .files-transfer-name { max-width: none; white-space: normal; }
+  .files-dest-item { min-height: 44px; }
+  .files-transfers-table { min-width: 0; }
+  .files-dest-list { height: min(300px, 42dvh); }
+  .files-drop-card { padding: 22px 18px; max-width: 320px; }
+  .files-menu-item { min-height: 44px; }
+}
+
+/* ── 手机与平板竖屏（≤1023px）：表格改为分隔列表，存储位置改为横向条 ──
+   平板竖屏内容区约 670px，放不下 880px 的活动表与 720px 的仓库表；
+   文件表在平板上仍放得下，只在手机上转列表。 */
+@media (max-width: 1023px) {
+  /* 表格 → 分隔列表；沿页面纵向滚动，不为每行创建浮动卡片。 */
+  .table-wrap:not(.files-table-wrap) { overflow: visible; max-height: none; border: 0; border-radius: 0; margin-top: 12px; }
+  .table-wrap:not(.files-table-wrap) table { min-width: 0; display: block; }
+  .table-wrap:not(.files-table-wrap) thead { display: none; }
+  .table-wrap:not(.files-table-wrap) tbody { display: block; }
+  .table-wrap:not(.files-table-wrap) tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    margin: 0;
+    padding: 12px 0;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+  }
+  .table-wrap:not(.files-table-wrap) tbody tr:last-child { border-bottom: 0; }
+  .table-wrap:not(.files-table-wrap) td { display: block; padding: 0; border: 0; white-space: normal; }
+  .table-wrap:not(.files-table-wrap) td.empty-state { flex: 1 1 100%; padding: 26px 10px !important; }
+  .table-wrap:not(.files-table-wrap) td.empty-state .empty-cta { margin-top: 10px; }
+
+  /* 活动卡片 */
+  .activity-table td:nth-child(1) { order: 0; flex: 0 0 auto; }
+  .activity-table td:nth-child(4) {
+    order: 1;
+    flex: 1 1 40%;
+    font-size: 1rem;
+    font-weight: 620;
+    letter-spacing: -0.01em;
+    overflow-wrap: anywhere;
+  }
+  /* 直连 IP 没有域名时，用 IP 充当卡片标题，避免出现「—」标题 */
+  .activity-table td:nth-child(4)[data-empty="true"] { display: none; }
+  .activity-table tr:has(td:nth-child(4)[data-empty="true"]) td:nth-child(5) {
+    order: 1;
+    flex: 1 1 40%;
+    font-size: 1rem;
+    font-weight: 620;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .activity-table tr:has(td:nth-child(4)[data-empty="true"]) td:nth-child(5)::before { content: none; }
+  .activity-table tbody tr:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .activity-table td:nth-child(7) { order: 2; flex: 0 0 auto; margin-left: auto; text-align: right; }
+  .activity-table td:nth-child(9) { order: 3; flex: 1 1 100%; font-size: 0.8125rem; color: var(--muted); }
+  .activity-table td:nth-child(9)[data-empty="true"] { display: block; flex-basis: 100%; height: 0; padding: 0; }
+  .activity-table td:nth-child(9)[data-empty="true"]::before { content: none; }
+  .activity-table td.check-cell:empty { display: none; }
+  .activity-table td:nth-child(9), .activity-table td:nth-child(8) { max-width: none; }
+  .activity-table td:nth-child(2) { flex: 0 0 auto; }
+  .activity-table td:nth-child(4) { flex: 1 1 calc(100% - 100px); min-width: 0; overflow-wrap: anywhere; word-break: normal; }
+  .activity-table tr:has(td.check-cell:not(:empty)) td:nth-child(4) { flex-basis: calc(100% - 156px); }
+  .activity-table tr:has(td:nth-child(4)[data-empty="true"]) td:nth-child(5) { flex: 1 1 calc(100% - 100px); }
+  .skeleton-row td { flex: 1 1 28%; }
+  .activity-table td:nth-child(2) { order: 4; }
+  .activity-table td:nth-child(3) { order: 5; }
+  .activity-table td:nth-child(5) { order: 6; }
+  .activity-table td:nth-child(6) { order: 7; }
+  .activity-table td:nth-child(8) { order: 8; }
+  .activity-table td:nth-child(2),
+  .activity-table td:nth-child(3),
+  .activity-table td:nth-child(5),
+  .activity-table td:nth-child(6) {
+    font-size: 0.75rem;
+    color: var(--muted);
+    flex: 0 1 auto;
+  }
+  .activity-table td:nth-child(3)::before,
+  .activity-table td:nth-child(5)::before { content: "· "; }
+  .activity-table td:nth-child(6)::before { content: "· 端口 "; }
+  .activity-table td:nth-child(8) {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .activity-table td:nth-child(7) .result-note { margin-top: 2px; text-align: right; }
+  .activity-check-target { width: 44px; height: 44px; margin: -6px 0 -6px -8px; }
+  .activity-table input[type="checkbox"] { width: 22px; height: 22px; }
+
+  /* 仓库卡片 */
+  .repo-table td:nth-child(1) { order: 0; flex: 1 1 100%; }
+  .repo-table td:nth-child(2) { order: 1; flex: 1 1 100%; font-size: 0.75rem; }
+  .repo-table td:nth-child(3),
+  .repo-table td:nth-child(4),
+  .repo-table td:nth-child(5) {
+    order: 2;
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .repo-table td:nth-child(3)::before { content: "版本 "; }
+  .repo-table td:nth-child(4)::before { content: "分类 "; }
+  .repo-table td:nth-child(5)::before { content: "大小 "; }
+  .repo-table td:nth-child(3) .repo-update { display: inline; margin: 0 0 0 6px; }
+  .repo-table td:nth-child(6) { order: 3; flex: 1 1 100%; margin-top: 4px; }
+  .repo-actions { justify-content: flex-start; gap: 2px; margin-left: -8px; }
+  .repo-action { min-height: 44px; padding: 8px 10px; }
+
+  .ps5-table-wrap { max-height: none; border: 0; border-radius: 0; }
+  .ps5-table { min-width: 0; }
+  .table-wrap .ps5-table tbody tr { align-items: flex-start; }
+
+  .ps5-catalog-table td:nth-child(1) { order: 0; flex: 1 1 100%; padding: 0; }
+  .ps5-catalog-table td:nth-child(2),
+  .ps5-catalog-table td:nth-child(3),
+  .ps5-catalog-table td:nth-child(4) {
+    order: 1;
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 99px;
+    background: var(--bar);
+    font-size: 0.75rem;
+    color: var(--mut);
+  }
+  .ps5-catalog-table td:nth-child(2)::before { content: "版本 "; }
+  .ps5-catalog-table td:nth-child(3)::before { content: "分类 "; }
+  .ps5-catalog-table td:nth-child(4)::before { content: "大小 "; }
+  .ps5-catalog-table td:nth-child(5) { order: 2; flex: 0 0 auto; margin-left: auto; min-width: 0; }
+  .ps5-catalog-table td:nth-child(6) { order: 3; flex: 1 1 100%; padding: 4px 0 0; }
+  .ps5-row-actions { margin-top: 2px; }
+  .ps5-row-actions .button { min-height: 44px; padding: 8px 12px; }
+  .ps5-row-status-inner { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .ps5-row-error { flex: 1 1 100%; max-width: none; }
+
+  .ps5-running-table td:nth-child(1) { order: 0; flex: 0 0 auto; padding: 2px 8px; border-radius: 99px; background: var(--bar); font-size: 0.75rem; color: var(--mut); }
+  .ps5-running-table td:nth-child(2) { order: 1; flex: 1 1 50%; font-weight: 600; overflow-wrap: anywhere; }
+  .ps5-running-table td:nth-child(3) { order: 2; flex: 0 0 auto; margin-left: auto; }
+  .ps5-running-table .button { min-height: 44px; }
+
+  .files-layout { display: block; margin: 4px -16px -16px; border-top: 1px solid var(--line); min-height: 0; }
+  .files-rail { flex-direction: row; gap: 8px; padding: 12px 16px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); border-bottom-left-radius: 0; }
+  .files-rail-title { display: none; }
+  .files-rail-empty { flex: 0 0 176px; align-self: center; }
+  .files-volumes { flex-direction: row; gap: 8px; }
+  .files-vol { flex: 0 0 auto; min-width: 208px; width: 208px; }
+  .files-rail-head { margin: 0 4px; flex-direction: column; justify-content: center; }
+  .files-rail-head .files-rail-title { display: none; }
+  .files-rail-add { min-height: 44px; white-space: nowrap; }
+  #nas-list { flex-direction: row; gap: 8px; }
+}
+
+@media (max-width: 380px) {
+  .ps5-host-actions { grid-template-columns: minmax(0, 1fr); }
+  .files-vol { min-width: 180px; width: 180px; }
+}
+
+/* ── 无障碍与显示偏好 ─────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  .dialog[open],
+  .dialog[open]::backdrop,
+  .toast { animation: fade-in 160ms ease both !important; }
+  .spinner { animation: spin 1.6s linear infinite !important; }
+  .skeleton { animation: none !important; }
+  .detail-summary::after { transition: none !important; }
+  .button:active:not(:disabled),
+  .nav-item:active,
+  .tab-item:active,
+  .quick-link:active,
+  .segment:active,
+  .ps5-tab:active { transform: none !important; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .sidebar,
+  .app-bar,
+  .tabbar,
+  .bulk-bar,
+  .toast {
+    background: var(--panel);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .app-bar::after,
+  .tabbar::before { display: none; }
+  .dialog-actions { background: var(--surface); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --line: #9eacbc;
+    --line-strong: #6f7f92;
+    --mut: #414b58;
+    --faint: #5f6d80;
+    --chrome: rgba(250, 251, 253, 0.98);
+    --chrome-strong: #ffffff;
+  }
+  /* 1.5px 在 DPR=1 时会被渲染为 1px，因此这里直接使用 2px 才真正增强对比。 */
+  .card,
+  .dialog,
+  .table-wrap { border-width: 2px; }
+  .button-secondary,
+  input,
+  textarea,
+  select { border-width: 2px; }
+  .nav-item[aria-current="page"],
+  .tab-item[aria-current="page"] { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .result-badge,
+  .tag,
+  .state-chip { border: 1px solid var(--line-strong); }
+}
+
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root {
+    --line: #53627c;
+    --line-strong: #7c8ba5;
+    --mut: #b7c1cd;
+    --faint: #98a6bc;
+    --chrome: #0f1726;
+    --chrome-strong: #172030;
+  }
+}
+
+/* 网络活动：事件来源标记（DNS / 本机服务） */
+.activity-kind {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--accent-soft);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+/* 内置域名（本机劫持）标记：跟在域名后面，和结果列的白名单判定分开。 */
+.domain-note {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--bar);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* ── 自动加载顺序编辑器 ───────────────────────────────────────────── */
+.ps5-autoload-start { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 12px 0; }
+.ps5-autoload-start label { font-weight: 600; font-size: 0.875rem; }
+.ps5-delay-input { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8125rem; color: var(--muted); }
+.ps5-delay-input input { width: 88px; min-height: 36px; padding: 4px 8px; font-family: var(--font-mono); font-size: 0.8125rem; text-align: right; }
+.ps5-autoload-seq { list-style: none; margin: 8px 0 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.ps5-autoload-seq:empty { display: none; }
+.ps5-seq-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto auto; align-items: center; gap: 8px 12px; padding: 10px 12px; }
+.ps5-seq-row + .ps5-seq-row { border-top: 1px solid var(--line); }
+.ps5-seq-index { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); text-align: right; }
+.ps5-seq-main { min-width: 0; }
+.ps5-seq-name { display: block; font-weight: 600; font-size: 0.875rem; overflow-wrap: anywhere; }
+.ps5-seq-key { display: block; font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); overflow-wrap: anywhere; }
+.ps5-seq-tags { display: inline-flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+.ps5-seq-tools { display: inline-flex; gap: 4px; }
+.ps5-seq-tools button { min-width: 32px; min-height: 32px; padding: 0 8px; }
+.ps5-seq-wait { grid-column: 2 / -1; }
+.ps5-autoload-add { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ps5-autoload-add select { flex: 1 1 220px; min-width: 0; min-height: 36px; }
+@media (min-width: 768px) {
+  .ps5-seq-row { grid-template-columns: 28px minmax(0, 1fr) auto auto; }
+  .ps5-seq-wait { grid-column: auto; }
+}
+@media (max-width: 767px) {
+  .ps5-seq-row { grid-template-columns: 24px minmax(0, 1fr) auto; }
+  .ps5-seq-tools { grid-column: 3; grid-row: 1; }
+  .ps5-seq-wait { grid-column: 2 / -1; }
+}
+
+@media (max-width: 767px) {
+  .files-table.nas-table tbody tr { grid-template-columns: 40px minmax(0, 1fr) auto; }
+  .files-table.nas-table td.check-cell { grid-column: 1; grid-row: 1 / 3; align-self: center; width: 40px; padding: 0; }
+  .files-table.nas-table td:nth-child(2) { grid-column: 2 / 4; grid-row: 1; }
+  .files-table.nas-table td.files-size-col { grid-column: 2; grid-row: 2; }
+  .files-table.nas-table td.files-time-col { grid-column: 3; grid-row: 2; }
+  .files-table.nas-table thead { display: none; }
+}
+
+#files-dest-space { margin-top: 10px; }
+#files-dest-space[data-tone="error"] { color: var(--danger); font-weight: 600; }
+
+@media (max-width: 767px) {
+  .xfer-stat-value { white-space: normal; overflow-wrap: anywhere; }
+  .xfer-head .button { min-height: 44px; }
+}
+
+.nas-warn { color: var(--danger); font-weight: 600; }
+
+
+/* ── 浮动传输面板 ─────────────────────────────────────────────────────── */
+.xfer-dock {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.xfer-dock[hidden] { display: none; }
+.xfer-dock > * { pointer-events: auto; }
+.xfer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  min-height: 48px;
+  padding: 7px 16px 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--chrome-strong);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  backdrop-filter: saturate(1.4) blur(14px);
+  box-shadow: var(--shadow-pop);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 160ms var(--ease-out), border-color 180ms ease;
+  animation: xfer-pop var(--dur-enter) var(--ease-out) both;
+}
+.xfer-pill:active { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) {
+  .xfer-pill:hover { border-color: var(--line-strong); }
+}
+.xfer-dock[data-open="true"] .xfer-pill { border-color: var(--accent); }
+.xfer-ring { flex: none; width: 32px; height: 32px; transform: rotate(-90deg); }
+.xfer-ring circle { fill: none; stroke-width: 3.5; }
+.xfer-ring-track { stroke: var(--bar); }
+.xfer-ring-fill {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  transition: stroke-dashoffset 700ms linear, stroke 200ms ease;
+}
+.xfer-dock[data-tone="idle"] .xfer-ring-fill { stroke: var(--ok); }
+.xfer-dock[data-tone="error"] .xfer-ring-fill { stroke: var(--danger); }
+.xfer-dock[data-active="true"] .xfer-ring { animation: xfer-breathe 1.6s ease-in-out infinite; }
+.xfer-pill-text { display: flex; flex-direction: column; min-width: 0; }
+.xfer-pill-text strong { font-size: 0.8125rem; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xfer-pill-text span { color: var(--mut); font-size: 0.75rem; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.xfer-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: min(68vh, 640px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--panel);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  transform-origin: bottom right;
+  /* closed: leave quickly */
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(10px) scale(0.97);
+  transition: opacity var(--dur-exit) ease, transform var(--dur-exit) var(--ease-out), visibility 0s linear var(--dur-exit);
+}
+.xfer-dock[data-open="true"] .xfer-panel {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity var(--dur-enter) ease, transform 260ms var(--ease-drawer), visibility 0s;
+}
+.xfer-dock[data-open="false"] .xfer-panel { position: absolute; bottom: 58px; right: 0; }
+.xfer-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 14px 12px 16px; border-bottom: 1px solid var(--line); }
+.xfer-panel-head h2 { margin: 0; font-size: 0.9375rem; }
+.xfer-panel-sub { margin-top: 2px; color: var(--mut); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.xfer-panel-actions { display: flex; align-items: center; gap: 6px; }
+.xfer-panel .xfer-list { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 10px; }
+.xfer-panel .field-error { margin: 0 14px 12px; }
+.xfer-panel .xfer-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.xfer-enter { animation: xfer-in var(--dur-enter) var(--ease-out) both; }
+
+@keyframes xfer-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes xfer-pop { from { opacity: 0; transform: translateY(8px) scale(0.96); } }
+@keyframes xfer-breathe { 50% { opacity: 0.72; } }
+
+@media (max-width: 767px) {
+  .xfer-dock {
+    left: 12px;
+    right: 12px;
+    width: auto;
+    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 10px);
+  }
+  .xfer-panel { max-height: 62vh; transform-origin: bottom center; }
+  .xfer-dock[data-open="false"] .xfer-panel { left: 0; bottom: 62px; }
+  .xfer-pill { min-height: 52px; }
+}
+
+/* ── 页面与弹层动效 ───────────────────────────────────────────────────── */
+/* Route changes only (not polling): the view fades in and its first cards
+   settle with a short stagger. */
+.view[data-enter="true"] { animation: view-in 200ms ease both; }
+.view[data-enter="true"] > * { animation: rise-in var(--dur-enter) var(--ease-out) both; }
+.view[data-enter="true"] > *:nth-child(2) { animation-delay: 30ms; }
+.view[data-enter="true"] > *:nth-child(3) { animation-delay: 60ms; }
+.view[data-enter="true"] > *:nth-child(4) { animation-delay: 90ms; }
+.view[data-enter="true"] > *:nth-child(n+5) { animation-delay: 120ms; }
+.stat-grid[data-enter="true"] > *, .view[data-enter="true"] .stat-grid > * { animation: rise-in var(--dur-enter) var(--ease-out) both; }
+.view[data-enter="true"] .stat-grid > *:nth-child(2) { animation-delay: 25ms; }
+.view[data-enter="true"] .stat-grid > *:nth-child(3) { animation-delay: 50ms; }
+.view[data-enter="true"] .stat-grid > *:nth-child(4) { animation-delay: 75ms; }
+@keyframes view-in { from { opacity: 0; } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* Folder navigation: rows arrive top-down, capped so long lists stay quick. */
+tbody[data-enter="true"] > tr { animation: row-in 180ms var(--ease-out) both; }
+tbody[data-enter="true"] > tr:nth-child(2) { animation-delay: 12ms; }
+tbody[data-enter="true"] > tr:nth-child(3) { animation-delay: 24ms; }
+tbody[data-enter="true"] > tr:nth-child(4) { animation-delay: 36ms; }
+tbody[data-enter="true"] > tr:nth-child(5) { animation-delay: 48ms; }
+tbody[data-enter="true"] > tr:nth-child(n+6) { animation-delay: 60ms; }
+@keyframes row-in { from { opacity: 0; transform: translateY(4px); } }
+
+/* Dialog exit (enter already uses dialog-in / sheet-up). */
+.dialog[data-closing="true"] { animation: dialog-out var(--dur-exit) var(--ease-out) forwards; }
+.dialog[data-closing="true"]::backdrop { animation: fade-out var(--dur-exit) ease forwards; }
+@keyframes dialog-out { to { opacity: 0; transform: translateY(6px) scale(0.98); } }
+@keyframes fade-out { to { opacity: 0; } }
+@media (max-width: 767px) {
+  .dialog[data-closing="true"] { animation: sheet-down 180ms var(--ease-drawer) forwards; }
+  @keyframes sheet-down { to { transform: translateY(100%); } }
+}
+
+/* Tabs, collapsible cards and small state changes. */
+.ps5-panel:not([hidden]) { animation: view-in 180ms ease both; }
+.detail-card[open] > :not(summary) { animation: rise-in 200ms var(--ease-out) both; }
+.quick-link { transition: background-color 160ms ease, transform 160ms var(--ease-out); }
+.quick-link:active { transform: scale(0.99); }
+.quick-arrow { transition: transform 180ms var(--ease-out); }
+@media (hover: hover) and (pointer: fine) {
+  .quick-link:hover .quick-arrow { transform: translateX(3px); }
+}
+.files-vol { transition: border-color 160ms ease, background-color 160ms ease, transform 160ms var(--ease-out); }
+.files-vol:active { transform: scale(0.98); }
+.result-badge, .state-chip, .tag { transition: background-color 200ms ease, color 200ms ease; }
+.usage i { transition: width 400ms var(--ease-out); }
+.ps5-host { transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease; }
+.files-name-button, .files-crumb { transition: color 140ms ease, background-color 140ms ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* Keep fades that explain state, drop movement. */
+  .view[data-enter="true"] > *, .view[data-enter="true"] .stat-grid > *,
+  tbody[data-enter="true"] > tr, .detail-card[open] > :not(summary),
+  .xfer-enter, .xfer-pill { animation: view-in 120ms ease both !important; animation-delay: 0ms !important; }
+  .xfer-panel, .xfer-dock[data-open="true"] .xfer-panel { transform: none !important; }
+  .xfer-dock[data-active="true"] .xfer-ring { animation: none; }
+  .dialog[data-closing="true"] { animation: fade-out 120ms ease forwards !important; }
+  .quick-link:hover .quick-arrow { transform: none; }
+}
+.xfer-panel .xfer-stat-value { white-space: normal; overflow-wrap: anywhere; }
+
+.ps5-pair-mode { display: flex; flex-direction: column; gap: 8px; margin: 14px 0 4px; padding: 0; border: 0; }
+.ps5-host .button[hidden] { display: none; }

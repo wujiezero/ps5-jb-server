@@ -254,6 +254,11 @@ Webhook 地址、Bark 设备密钥、ntfy 主题与令牌、Telegram 机器人�
 
 ## 前端
 
-- 单页、hash 路由（`#/overview` `#/policy` `#/activity` `#/ps5` `#/files` `#/repository` `#/settings`）。
+- 单页、hash 路由（`#/overview` `#/policy` `#/activity` `#/ps5` `#/files` `#/library` `#/repository` `#/settings`）。
+- 按功能拆分的普通脚本（`<script defer>`，非 ES 模块，共享一个全局词法作用域），按 `index.html` 中的顺序加载：
+  `core.js`（工具函数、请求、轻提示、按钮状态）→ `shell.js`（路由与外壳）→ `overview.js` → `policy.js` → `settings.js` →
+  `repository.js` → `activity.js` → `ui.js`（底部面板、进度、功能说明等通用组件）→ `ps5.js` → `files.js` → `nas.js` → `library.js` →
+  `app.js`（事件绑定与启动，最后加载）。加载时执行的顶层语句只能引用已加载文件里的声明；顶层函数不能重名（后加载的会覆盖前面的）。
+- 样式按 `<link>` 顺序层叠：`style.css`（变量、排版、表单）→ `shell.css` → `pages.css` → `ps5.css` → `adaptive.css` → `features.css`。
 - 无内联脚本/样式，无外部资源；服务端字符串一律 `textContent`。
 - 8 秒轮询受保护：不覆盖未保存的表单、打开的弹窗、进行中的上传与已选中的行。

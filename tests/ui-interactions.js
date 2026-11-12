@@ -58,8 +58,12 @@ function fixture(extra = {}) {
     createDocumentFragment: () => new Element('fragment'),
     body: new Element('body')
   };
-  const source = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
-  const startup = source.lastIndexOf('  bindEvents();');
+  // index.html loads classic scripts in order; joined they share one scope, as in the browser.
+  const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
+  const scripts = [...html.matchAll(/<script src="\/([a-z0-9._-]+\.js)" defer><\/script>/g)].map((match) => match[1]);
+  assert.equal(scripts[scripts.length - 1], 'app.js', 'app.js (event binding and startup) must load last');
+  const source = '(() => {\n' + scripts.map((name) => fs.readFileSync(path.join(__dirname, '../web', name), 'utf8')).join('\n');
+  const startup = source.lastIndexOf('\nbindEvents();');
   assert.ok(startup > 0, 'browser module startup must be identifiable');
   const exposed = `${source.slice(0, startup)}
     globalThis.subject = { activity, repo, activitySelected, activityVisibleEvents,
