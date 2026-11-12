@@ -4,7 +4,7 @@
 
 | 单元 | 端口 | 职责 |
 | --- | --- | --- |
-| `ps5-jb-server` | 53 udp/tcp、8443 tcp | 策略 DNS、管理页与 API、nftables 策略、网络活动采集 |
+| `ps5-jb-server` | 53 udp/tcp、8443 tcp；8090 tcp（PKG 安装时按需监听） | 策略 DNS、管理页与 API、nftables 策略、网络活动采集 |
 | `ps5-jb-host` | 443、80 | 用户手册站点（自签证书，CN/SAN 为 `manuals.playstation.net` 等） |
 | `ps5-jb-repo` | 8080 | 只读插件仓库 `/repo.json` 与 `/payloads/<file>` |
 
@@ -137,6 +137,25 @@
 - NAS 传输与解压任务列表写在 `transfers.json`，已发现的 PS5 写在 `hosts.json`（都是 0600，原子写），服务重启后读回；
   单文件网络错误自动重试，PS5 走 FTP 且支持 `REST STREAM` 时断点续传，细节见 [文件管理](file-manager.md)。
 
+## PKG 安装
+
+`server/pkg_host.py` + `TransferManager` 的 `package` 任务 + `GameServices.package_install()`。
+
+- 引擎 `POST /api/pkg/install` 的 `source` 用 `{"url": "http://<host_ip>:<pkg_port>/p/<令牌>.pkg"}`，`proxy_link = true`
+  （主机拉不到时由引擎中转）；其余选项保持保守（不覆盖重装、不删源）。
+- 端点首次使用时监听，只有 GET / HEAD、单段 Range、强 ETag + Last-Modified；令牌 24 字符随机、任务结束即撤销、
+  最长 24 小时；来源地址限目标 PS5、`127.0.0.1` 与本机地址；最多 16 个并发连接。每个请求按偏移重新打开 NAS 读取。
+- 轮询引擎状态：`resolve`→准备、`deliver`→传输、`install`→安装、`verify`→确认；进度取 `metrics.served_bytes`，
+  没有时用端点自己计的字节数。取消和超时都会 `POST /api/pkg/install/stop`。
+- 金手指不经过引擎：ZIP（≤16 MiB）读进内存，`parse_cheat_zip()` 归一化后经 `FileProxy` 写到 `/data/etaHEN/cheats/<格式>/`。
+
+## 游戏库
+
+`server/library.py`。对 `files.volumes()` 的每个卷，列卷根目录（名字含游戏编号的文件夹）和 `[ps5] game_dirs` 下一层；
+名字里没有编号的子文件夹只再列一次它的 `sce_sys/` 看有没有 param 文件。结果按主机缓存 60 秒，删除 / 移动后作废。
+名称走 `TitleCatalog.lookup()`（带文件夹，缺中文名时读 param）。大小、封面只对扫描到的路径开放：大小一次算一个，
+按「路径 + 修改时间」存到 `<data>/library-cache.json`；封面限 PNG 文件头和 2 MiB，存到 `<data>/library-icons/`（最多 1000 张）。
+
 ## 会话与登录
 
 - 登录后写入 `ps5_session` Cookie：`HttpOnly; Secure; SameSite=Lax; Max-Age=30 天`。
@@ -184,7 +203,7 @@ Webhook 地址、Bark 设备密钥、ntfy 主题与令牌、Telegram 机器人�
 `ps5jb-nas:notify:<渠道 ID>`，与 NAS 账号共用 `nas.key`（所以备份时一起处理）；接口只返回 `has_secret`。
 
 - 事件：`transfer.finished/failed`、`extract.finished/failed`（`TransferManager` 每个任务结束时通知监听者一次，取消不通知）、
-  `update.finished/failed`、`gateway.error`；`package.*`、`backup.*` 预留给 PKG 安装与 PS5 备份。每个渠道勾选订阅。
+  `package.finished/failed`、`update.finished/failed`、`gateway.error`；`backup.*` 预留给 PS5 备份。每个渠道勾选订阅。
 - 发送：有界队列（100 条，满了丢最旧的）+ 一个后台线程，绝不阻塞传输线程。每次 5 秒超时，网络错误重试 2 次，
   4xx（除 408/429）不重试；同一事件键 60 秒内只发一次。只允许 http/https，拒绝改变协议的重定向。
 - 出口：目标解析到私有地址时直连，否则走 `netproxy.opener()`；渠道可关掉代理。日志只写渠道名、类型和失败类型
