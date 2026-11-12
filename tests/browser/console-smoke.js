@@ -56,6 +56,8 @@ module.exports = async (page) => {
       case '/api/nas': json = { connections: [] }; break;
       case '/api/titles': json = { titles: {} }; break;
       case '/api/files/job': json = { state: 'idle' }; break;
+      case '/api/library': json = { host: host.ip, games: [{ title: 'CUSA12345', name: '一个名字很长很长的游戏用来检查卡片在窄屏上会不会撑破页面', folder: 'CUSA12345', path: '/data/games/CUSA12345', volume: '/data', volume_label: '内置存储', platform: 'PS4', mtime: 1794200000, size: null }], volumes: [{ path: '/data', label: '内置存储' }], errors: [], game_dirs: ['games'] }; break;
+      case '/api/library/icon': return route.fulfill({ status: 404, json: { error: '这个游戏没有封面' } });
       default: return route.fulfill({ status: 404, json: { error: 'Unknown fixture API: ' + url.pathname } });
     }
     await route.fulfill({ json });
@@ -161,7 +163,7 @@ module.exports = async (page) => {
     const overflows = [];
     for (const width of [320, 390, 768, 1440]) {
       await page.setViewportSize({ width, height: 900 });
-      for (const section of ['overview', 'policy', 'activity', 'ps5', 'files', 'repository', 'settings']) {
+      for (const section of ['overview', 'policy', 'activity', 'ps5', 'files', 'library', 'repository', 'settings']) {
         await routeTo(section);
         await page.evaluate(() => new Promise(requestAnimationFrame));
         const size = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
@@ -177,7 +179,7 @@ module.exports = async (page) => {
       await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' });
       for (const width of [320, 390, 767, 768, 1023, 1024, 1440, 1920, 2560]) {
         await page.setViewportSize({ width, height: 900 });
-        for (const section of ['overview', 'policy', 'activity', 'ps5', 'files', 'repository', 'settings']) {
+        for (const section of ['overview', 'policy', 'activity', 'ps5', 'files', 'library', 'repository', 'settings']) {
           await routeTo(section);
           await page.evaluate(() => new Promise(requestAnimationFrame));
           const sample = await page.evaluate(() => {

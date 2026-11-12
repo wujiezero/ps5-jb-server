@@ -69,6 +69,7 @@ function fixture(extra = {}) {
       nas, nasArchiveSelection, extractTask, packageTask, filesTransferTasks, filesTransferCard, normalizePs5,
       setNasJobs(value) { nasJobs = value; },
       renderRestoreResult, backupFilename, renderSelfcheck, renderNotify, notifyState, normalizeNotify,
+      library, normalizeLibrary, libraryCard, libraryVisible, renderLibrary,
       actHistory, renderStats, renderHistory, setActivityMode,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
@@ -767,6 +768,41 @@ test('extraction cards mention imported cheats and a failed cheat step', () => {
     files_done: 1, errors: [], state: 'done' };
   assert.match(ui.extractTask({ ...base, cheat_result: { written: ['a', 'b'] } }).line, /已导入 2 个金手指文件.*重新加载/);
   assert.match(ui.extractTask({ ...base, state: 'done_with_warnings', cheat_error: '金手指导入失败：坏 ZIP' }).line, /坏 ZIP/);
+});
+
+test('game library cards: cover only for title IDs, register only for ID-named folders, size sorting', () => {
+  const ui = fixture();
+  ui.setAuthenticated(true);
+  const data = ui.normalizeLibrary({ host: '192.0.2.5', games: [
+    { title: 'CUSA12345', name: '某游戏', folder: 'CUSA12345', path: '/data/CUSA12345', volume: '/data', volume_label: 'data', platform: 'PS4', size: null },
+    { title: 'PPSA01234', name: 'Big', folder: 'PPSA01234-app', path: '/mnt/ext0/games/PPSA01234-app', volume: '/mnt/ext0', platform: 'PS5', size: 5 << 30 },
+    { title: '', name: 'Homebrew<script>', folder: 'Homebrew', path: '/data/games/Homebrew', volume: '/data', size: 1024 },
+    { name: 'bad' }
+  ], volumes: [{ path: '/data', label: 'data' }, { path: '/mnt/ext0', label: 'ext0' }] });
+  assert.equal(data.games.length, 3);
+  const buttons = (card) => {
+    const out = [];
+    const walk = (node) => { if (node.tagName === 'button') out.push(node.textContent); node.children.forEach(walk); };
+    walk(card);
+    return out;
+  };
+  const [plain, big, homebrew] = data.games.map(ui.libraryCard);
+  assert.deepEqual(buttons(plain), ['计算大小', '打开文件夹', '移动', '注册图标', '删除']);
+  assert.ok(!buttons(big).includes('注册图标'), 'folder name differs from the title ID');
+  assert.ok(buttons(big).includes('5.0 GB') || buttons(big).some((label) => /GB/.test(label)));
+  assert.equal(homebrew.children[0].tagName, 'span', 'no cover request without a title ID');
+  assert.equal(plain.children[0].tagName, 'img');
+  assert.match(plain.children[0].src, /\/api\/library\/icon\?path=%2Fdata%2FCUSA12345/);
+  assert.match(textOf(homebrew), /Homebrew<script>/, 'names are text, never markup');
+  Object.assign(ui.library, data, { loaded: true });
+  ui.node('library-sort').value = 'size';
+  assert.deepEqual(ui.libraryVisible().map((game) => game.name), ['Big', 'Homebrew<script>', '某游戏']);
+  ui.node('library-sort').value = 'name';
+  ui.node('library-search').value = 'cusa';
+  assert.deepEqual(ui.libraryVisible().map((game) => game.title), ['CUSA12345']);
+  ui.node('library-search').value = '';
+  ui.node('library-volume').value = '/mnt/ext0';
+  assert.deepEqual(ui.libraryVisible().map((game) => game.name), ['Big']);
 });
 
 test('restore results are listed as text with their state; backup names are sanitized', () => {

@@ -27,6 +27,24 @@ DEFAULTS = {
 }
 
 
+DEFAULT_GAME_DIRS = ('games', 'homebrew', 'etaHEN/games')
+_GAME_DIR = re.compile(r'[A-Za-z0-9 _.\-]{1,64}(?:/[A-Za-z0-9 _.\-]{1,64}){0,3}\Z')
+
+
+def clean_dirs(value):
+    """[ps5] game_dirs from TOML (list) or the environment (comma separated)."""
+    if isinstance(value, str):
+        value = value.split(',')
+    if not isinstance(value, (list, tuple)):
+        return list(DEFAULT_GAME_DIRS)
+    result = []
+    for item in value:
+        item = str(item).strip().strip('/')
+        if item and _GAME_DIR.fullmatch(item) and '..' not in item.split('/') and item not in result:
+            result.append(item)
+    return result[:16]
+
+
 @dataclass
 class Settings:
     host_ip: str
@@ -45,6 +63,8 @@ class Settings:
     ftp_port: int = 2120
     space_port: int = 8888
     pkg_port: int = 8090                # PKG install: NAS file served to the console; 0 = off
+    # Folders under each volume that the game library lists (one level deep).
+    game_dirs: tuple = DEFAULT_GAME_DIRS
     engine_url: str = 'http://127.0.0.1:19113'
     ps5_control: bool = True
     file_manager: bool = True
@@ -113,6 +133,7 @@ class Settings:
             ftp_port=int(pick('ps5', 'ftp_port', 'PS5JB_FTP_PORT', 2120)),
             space_port=int(pick('ps5', 'space_port', 'PS5JB_SPACE_PORT', 8888)),
             pkg_port=max(0, min(65535, int(pick('ps5', 'pkg_port', 'PS5JB_PKG_PORT', 8090)))),
+            game_dirs=tuple(clean_dirs(pick('ps5', 'game_dirs', 'PS5JB_GAME_DIRS', list(DEFAULT_GAME_DIRS)))),
             engine_url=str(pick('ps5', 'engine_url', 'PS5JB_ENGINE_URL', 'http://127.0.0.1:19113')),
             ps5_control=flag('ps5', 'control', 'PS5JB_PS5_CONTROL', True),
             file_manager=flag('ps5', 'file_manager', 'PS5JB_FILE_MANAGER', True),

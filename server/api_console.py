@@ -17,6 +17,7 @@ from notify import Notifier, NotifyStore
 from power import EngineClient, PowerError, PowerManager
 from game_services import GameServices, parse_cheat_zip, write_cheats
 from game_sources import plan_sources
+from library import Library, LibraryError
 from pkg_host import PkgHost
 from ps5 import ConsoleError, HostManager
 
@@ -48,6 +49,9 @@ class ConsoleAPI:
                                          retries=getattr(settings, 'transfer_retries', 3),
                                          pkg_host=self.pkg_host)
         self.power = PowerManager(self.engine, self.ps5.validate_ip)
+        # titles is attached by the server once its TitleCatalog exists.
+        self.library = Library(self.files, settings.data_dir,
+                               getattr(settings, 'game_dirs', None) or ('games', 'homebrew', 'etaHEN/games'))
         # Channel secrets share the NAS key (and its backup / restore).
         self.notify_store = NotifyStore(settings.data_dir / 'notify.json', self.nas.box)
         self.notifier = Notifier(self.notify_store, state_path=settings.data_dir / 'notify-state.json')
@@ -127,7 +131,7 @@ class ConsoleAPI:
         if path.startswith('/api/ps5') and not self.enabled:
             handler.send_body(403, {'error': 'PS5 主机控制已在配置中关闭（[ps5] control）'})
             return True
-        if path.startswith('/api/files') and not self.file_manager:
+        if path.startswith(('/api/files', '/api/library')) and not self.file_manager:
             handler.send_body(403, {'error': 'PS5 文件管理已在配置中关闭（[ps5] file_manager）'})
             return True
         return False
@@ -151,6 +155,9 @@ class ConsoleAPI:
         '/api/nas/plan': '_get_nas_plan',
         '/api/nas/list': '_get_nas_list',
         '/api/transfers': '_get_transfers',
+        '/api/library': '_get_library',
+        '/api/library/size': '_get_library_size',
+        '/api/library/icon': '_get_library_icon',
         '/api/files/transfers': '_get_file_transfers',
     }
 
@@ -251,6 +258,25 @@ class ConsoleAPI:
         entries.sort(key=lambda item: (not item['dir'], item['name'].lower()))
         handler.send_body(200, {'path': target, 'entries': entries})
 
+    def _get_library(self, handler):
+        refresh = self._arg(handler, 'refresh') in ('1', 'true', 'yes')
+        result = self.library.scan(refresh=refresh)
+        handler.send_body(200, {**result, 'game_dirs': self.library.game_dirs})
+
+    def _get_library_size(self, handler):
+        handler.send_body(200, self.library.size(self._arg(handler, 'path')))
+
+    def _get_library_icon(self, handler):
+        try:
+            data, etag = self.library.icon(self._arg(handler, 'path'))
+        except LibraryError as exc:
+            handler.send_body(404, {'error': str(exc)})
+            return
+        if handler.headers.get('If-None-Match') == etag:
+            handler.send_body(304, b'', ctype='image/png', cache='private, max-age=86400', etag=etag)
+            return
+        handler.send_body(200, data, ctype='image/png', cache='private, max-age=86400', etag=etag)
+
     def _get_transfers(self, handler):
         handler.send_body(200, {'jobs': self.transfers.snapshot()})
 
@@ -327,6 +353,7 @@ class ConsoleAPI:
         '/api/transfers/clear': '_post_transfers_clear',
         '/api/transfers/retry': '_post_transfers_retry',
         '/api/files/bench': '_post_bench',
+        '/api/library/register': '_post_library_register',
     }
     # Raw request bodies: the handler checks session and CSRF itself.
     RAW_POST_ROUTES = {'/api/files/upload': '_upload', '/api/files/cheats': '_upload_cheats'}
@@ -404,9 +431,11 @@ class ConsoleAPI:
 
     def _post_delete(self, handler, body, path):
         self._ok(handler, self.files.delete(body.get('path')))
+        self.library.forget()
 
     def _post_copy(self, handler, body, path):
         result = self.files.copy(body.get('from'), body.get('to'), move=path.endswith('move'))
+        self.library.forget()
         instant = isinstance(result, dict) and result.get('instant') is True
         handler.send_body(200, {'ok': True, 'result': result, 'instant': instant})
 
@@ -520,6 +549,14 @@ class ConsoleAPI:
 
     def _post_transfers_retry(self, handler, body, path):
         handler.send_body(200, {'ok': True, 'job': self.transfers.retry(body.get('id'))})
+
+    def _post_library_register(self, handler, body, path):
+        game = self.library.known(body.get('path'))
+        if not game['title'] or game['folder'] != game['title']:
+            raise ValueError('只有以游戏编号命名的文件夹可以注册主屏幕图标（例如 …/CUSA12345）')
+        host = body.get('host') or self.files.host
+        handler.send_body(200, {'ok': True, 'result': self.game_services.register(
+            host, {'title': game['title'], 'path': game['path'], 'name': game['name']})})
 
     def _post_bench(self, handler, body, path):
         handler.send_body(200, {'ok': True, 'result': self.files.bench(body.get('path'))})

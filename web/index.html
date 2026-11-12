@@ -98,6 +98,10 @@
             <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><use href="#i-folder"></use></svg></span>
             <span class="nav-label">PS5 文件</span>
           </a>
+          <a class="nav-item" href="#/library" data-section="library" aria-label="游戏库" title="游戏库">
+            <span class="nav-icon" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24" fill="none"><rect x="3.6" y="4.4" width="6.4" height="15.2" rx="1.6" stroke="currentColor" stroke-width="1.6"/><rect x="12" y="4.4" width="3.6" height="15.2" rx="1.2" stroke="currentColor" stroke-width="1.6"/><path d="m17.4 5.6 3 13.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
+            <span class="nav-label">游戏库</span>
+          </a>
         </div>
         <div class="nav-group" role="group" aria-label="网络管理">
           <p class="nav-group-label">网络管理</p>
@@ -818,6 +822,39 @@
           </div>
         </section>
 
+        <section id="view-library" class="view" data-section="library" hidden>
+          <section class="card" aria-labelledby="library-title">
+            <header class="card-head">
+              <div>
+                <h2 id="library-title">游戏库 <button class="help-tip" type="button" data-help="library"></button></h2>
+                <p id="library-summary" class="card-sub">PS5 存储上的游戏文件夹。</p>
+              </div>
+              <button id="library-refresh" class="button button-secondary button-small" type="button" aria-label="重新扫描游戏库">
+                <span class="spinner" aria-hidden="true" hidden></span>
+                <span class="button-label">重新扫描</span>
+              </button>
+            </header>
+            <div class="files-toolbar library-toolbar">
+              <label class="files-search" for="library-search">
+                <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+                <input id="library-search" type="search" placeholder="搜索名称或游戏编号" autocomplete="off" spellcheck="false" aria-label="搜索游戏">
+              </label>
+              <label class="visually-hidden" for="library-volume">按存储筛选</label>
+              <select id="library-volume"><option value="">全部存储</option></select>
+              <label class="visually-hidden" for="library-sort">排序</label>
+              <select id="library-sort">
+                <option value="name">按名称</option>
+                <option value="size">按大小（已计算的在前）</option>
+              </select>
+            </div>
+            <p id="library-error" class="banner banner-error" role="alert" hidden></p>
+            <p id="library-warnings" class="field-help" hidden></p>
+            <ul id="library-grid" class="library-grid" aria-label="游戏列表"></ul>
+            <p id="library-empty" class="empty-state" hidden>没有找到游戏文件夹。</p>
+            <p class="field-help">通过 PKG 安装到系统分区（/user/app）的游戏不在文件白名单内，这里看不到。</p>
+          </section>
+        </section>
+
         <section id="view-repository" class="view" data-section="repository" hidden>
           <section class="card" aria-labelledby="repo-title">
             <header class="card-head">
@@ -1163,6 +1200,7 @@
         <button id="mobile-more-close" class="button button-secondary button-icon" type="button" aria-label="关闭更多功能"><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-x"></use></svg></button>
       </header>
       <nav class="mobile-more-nav" aria-label="更多功能导航">
+        <a class="more-link" href="#/library" data-section="library">游戏库</a>
         <a class="more-link" href="#/policy" data-section="policy">访问策略</a>
         <a class="more-link" href="#/repository" data-section="repository">插件仓库<span class="tag" data-badge="repository" hidden></span></a>
         <a class="more-link" href="#/settings" data-section="settings">设置</a>

@@ -1504,7 +1504,7 @@ class Route:
     exact: bool = False
 
 
-CONSOLE_PREFIXES = ('/api/ps5', '/api/files', '/api/nas', '/api/transfers')
+CONSOLE_PREFIXES = ('/api/ps5', '/api/files', '/api/nas', '/api/transfers', '/api/library')
 
 GET_ROUTES = {
     '/api/version': Route('get_version', auth=None, exact=True),
@@ -1748,6 +1748,7 @@ def main():
                                    autoscan=True)
     admin.app.titles = TitleCatalog(settings.titles_path, data / 'titles-cache.json',
                                     reader=proxy_reader(admin.app.console.files))
+    admin.app.console.library.titles = admin.app.titles
     admin.repo = RepoManager(repo_dir,
                              base_url=f'http://{host_ip}:{settings.repo_port}/payloads/',
                              max_upload=settings.max_upload)

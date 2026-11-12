@@ -71,11 +71,13 @@ class _Server(ThreadingHTTPServer):
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
-            try:
-                request.close()
-            finally:
-                return
-        super().process_request(request, client_address)
+            self.shutdown_request(request)       # too many readers: drop the connection
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.slots.release()
+            raise
 
     def process_request_thread(self, request, client_address):
         try:
