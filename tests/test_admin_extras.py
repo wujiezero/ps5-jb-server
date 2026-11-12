@@ -197,6 +197,38 @@ class HTTPIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         return headers['Set-Cookie'].split(';')[0], body['csrf']
 
+    def test_upload_and_streamed_download_share_one_keep_alive_connection(self):
+        import io
+        from api_console import ConsoleAPI
+        cookie, csrf = self.login()
+        streamed = []
+
+        def console_get(handler):
+            # Same _stream path the PS5 download uses: first with a length, then without.
+            reply = io.BytesIO(b'ELF' * 1000)
+            reply.headers = {} if streamed else {'Content-Length': '3000'}
+            streamed.append(True)
+            return ConsoleAPI._stream(None, handler, lambda: reply, 'a.elf', 'application/octet-stream')
+        self.server.app.console_get = console_get
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        try:
+            conn.request('POST', '/api/repo/upload?filename=demo.elf&name=Demo', b'\x7fELF' + b'x' * 4000,
+                         {'Cookie': cookie, 'X-CSRF-Token': csrf, 'Content-Type': 'application/octet-stream'})
+            first = conn.getresponse()
+            self.assertEqual(first.status, 200, first.read())
+            sock = conn.sock
+            conn.request('GET', '/api/files/download?path=/data/a.elf', headers={'Cookie': cookie})
+            second = conn.getresponse()
+            self.assertEqual(second.read(), b'ELF' * 1000)
+            self.assertIsNone(second.getheader('Connection'))
+            self.assertIs(conn.sock, sock)
+            conn.request('GET', '/api/files/download?path=/data/a.elf', headers={'Cookie': cookie})
+            third = conn.getresponse()
+            self.assertEqual(third.getheader('Connection'), 'close', 'unknown length ends the connection')
+            self.assertEqual(third.read(), b'ELF' * 1000)
+        finally:
+            conn.close()
+
     def test_password_endpoint_requires_csrf_and_changes_login(self):
         cookie, csrf = self.login()
         status, _, _ = self.call('POST', '/api/password', {'current_password': PASSWORD, 'new_password': NEW_PASSWORD}, {'Cookie': cookie})

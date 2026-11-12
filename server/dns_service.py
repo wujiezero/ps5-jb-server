@@ -367,8 +367,10 @@ class DNSPolicy:
 class LimitedThreads(socketserver.ThreadingMixIn):
     daemon_threads = True
     block_on_close = False
+    # Concurrent handler threads; further connections are closed at once.
+    SLOTS = 32
     def __init__(self, *args, **kwargs):
-        self.slots = threading.BoundedSemaphore(32)
+        self.slots = threading.BoundedSemaphore(self.SLOTS)
         super().__init__(*args, **kwargs)
     def process_request(self, request, address):
         if not self.slots.acquire(blocking=False):

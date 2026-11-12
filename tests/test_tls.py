@@ -55,6 +55,12 @@ class TLSAdmissionTests(unittest.TestCase):
                     response = conn.getresponse()
                     response.read()
                     self.assertEqual(response.status, 401)
+                    tls_socket = conn.sock
+                    conn.request('GET', '/api/version')
+                    response = conn.getresponse()
+                    response.read()
+                    self.assertEqual(response.status, 200)
+                    self.assertIs(conn.sock, tls_socket, 'TLS connection is kept alive')
                 finally:
                     conn.close()
             finally:

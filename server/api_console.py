@@ -235,9 +235,14 @@ class ConsoleAPI:
         handler.send_header('Content-Disposition', _disposition(filename))
         handler.send_header('Cache-Control', 'no-store')
         handler.send_header('X-Content-Type-Options', 'nosniff')
-        if length and length.isdigit():
+        known = bool(length and length.isdigit())
+        if known:
             handler.send_header('Content-Length', length)
+        else:
+            # Without a length the end of the body is the end of the connection.
+            handler.send_header('Connection', 'close')
         handler.end_headers()
+        sent = 0
         try:
             with response:
                 while True:
@@ -245,8 +250,13 @@ class ConsoleAPI:
                     if not chunk:
                         break
                     handler.wfile.write(chunk)
+                    sent += len(chunk)
         except OSError:
             logging.info('download interrupted by client')
+            handler.close_connection = True
+        if known and sent != int(length):
+            # A short body cannot be followed by another response on this connection.
+            handler.close_connection = True
         return True
 
     def _known_hosts(self):

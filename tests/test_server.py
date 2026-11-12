@@ -153,6 +153,128 @@ class StaticFileTests(unittest.TestCase):
                 self.assertEqual(self.get(path)[0], 404)
 
 
+class KeepAliveTests(unittest.TestCase):
+    """HTTP/1.1: persistent connections, ETag revalidation and gzip (B2)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.static = Path(self.tmp.name)
+        (self.static / 'index.html').write_text('<p>hello</p>')
+        (self.static / 'app.js').write_text('// ' + 'const x = 1;\n' * 400)
+        (self.static / 'style.css').write_text('a{}')
+        self.app = FakeApp()
+        self.server = AdminServer(('127.0.0.1', 0), AdminHandler)
+        self.server.app = self.app
+        self.server.auth = AuthManager(AuthManager.make_credentials('a-long-test-password'))
+        self.server.static_dir = self.static
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.conn = http.client.HTTPConnection(*self.server.server_address, timeout=3)
+
+    def tearDown(self):
+        self.conn.close()
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    def send(self, method, path, body=None, headers=None):
+        self.conn.request(method, path, body, headers or {})
+        response = self.conn.getresponse()
+        return response, response.read()
+
+    def login_cookie(self):
+        response, body = self.send('POST', '/api/login', json.dumps({'password': 'a-long-test-password'}),
+                                   {'Content-Type': 'application/json'})
+        return response.getheader('Set-Cookie').split(';')[0], json.loads(body)['csrf']
+
+    def test_one_connection_serves_several_requests(self):
+        self.assertEqual(self.conn.__class__.__name__, 'HTTPConnection')
+        first, _ = self.send('GET', '/api/version')
+        socket_before = self.conn.sock
+        second, _ = self.send('GET', '/style.css')
+        cookie, _ = self.login_cookie()
+        third, body = self.send('GET', '/api/state', headers={'Cookie': cookie})
+        self.assertEqual((first.status, second.status, third.status), (200, 200, 200))
+        self.assertIs(self.conn.sock, socket_before, 'the connection must be reused')
+        self.assertIsNone(third.getheader('Connection'))
+        self.assertEqual(self.server.SLOTS, 64)
+
+    def test_unread_request_body_closes_the_connection(self):
+        response, _ = self.send('POST', '/api/repo/upload?filename=x.elf', b'x' * 5000,
+                                {'Content-Type': 'application/octet-stream'})
+        self.assertEqual(response.status, 401)
+        self.assertEqual(response.getheader('Connection'), 'close')
+        # A body that was fully read keeps the connection open.
+        self.conn.close()
+        response, _ = self.send('POST', '/api/login', json.dumps({'password': 'wrong'}),
+                                {'Content-Type': 'application/json'})
+        self.assertEqual(response.status, 401)
+        self.assertIsNone(response.getheader('Connection'))
+
+    def test_chunked_bodies_are_refused_and_close(self):
+        self.conn.putrequest('POST', '/api/config')
+        self.conn.putheader('Transfer-Encoding', 'chunked')
+        self.conn.putheader('Content-Type', 'application/json')
+        self.conn.endheaders()
+        self.conn.send(b'2\r\n{}\r\n0\r\n\r\n')
+        response = self.conn.getresponse()
+        response.read()
+        self.assertEqual(response.status, 400)
+        self.assertEqual(response.getheader('Connection'), 'close')
+
+    def test_static_files_revalidate_with_etag(self):
+        response, body = self.send('GET', '/app.js')
+        etag = response.getheader('ETag')
+        self.assertRegex(etag, r'^"[0-9a-f]{16}"$')
+        self.assertEqual(response.getheader('Cache-Control'), 'no-cache')
+        self.assertEqual(response.getheader('Vary'), 'Accept-Encoding')
+        again, rest = self.send('GET', '/app.js', headers={'If-None-Match': etag})
+        self.assertEqual(again.status, 304)
+        self.assertEqual(rest, b'')
+        self.assertEqual(again.getheader('ETag'), etag)
+        # The connection survives a 304 and a changed file gets a new tag.
+        (self.static / 'app.js').write_text('// changed and longer')
+        changed, body = self.send('GET', '/app.js', headers={'If-None-Match': etag})
+        self.assertEqual(changed.status, 200)
+        self.assertNotEqual(changed.getheader('ETag'), etag)
+        self.assertEqual(body, b'// changed and longer')
+
+    def test_static_gzip_is_smaller_and_identical_after_decompression(self):
+        import gzip
+        plain, raw = self.send('GET', '/app.js')
+        packed, data = self.send('GET', '/app.js', headers={'Accept-Encoding': 'gzip, deflate, br'})
+        self.assertIsNone(plain.getheader('Content-Encoding'))
+        self.assertEqual(packed.getheader('Content-Encoding'), 'gzip')
+        self.assertEqual(gzip.decompress(data), raw)
+        self.assertLess(len(data) * 3, len(raw))
+        self.assertNotEqual(packed.getheader('ETag'), plain.getheader('ETag'))
+        refused, _ = self.send('GET', '/app.js', headers={'Accept-Encoding': 'gzip;q=0'})
+        self.assertIsNone(refused.getheader('Content-Encoding'))
+
+    def test_large_json_is_compressed_only_when_accepted(self):
+        import gzip
+        self.app.state = lambda: {'config': {}, 'logs': [{'n': i, 'text': 'x' * 20} for i in range(100)]}
+        cookie, _ = self.login_cookie()
+        plain, raw = self.send('GET', '/api/state', headers={'Cookie': cookie})
+        packed, data = self.send('GET', '/api/state', headers={'Cookie': cookie, 'Accept-Encoding': 'gzip'})
+        self.assertIsNone(plain.getheader('Content-Encoding'))
+        self.assertEqual(plain.getheader('Vary'), 'Accept-Encoding')
+        self.assertEqual(packed.getheader('Content-Encoding'), 'gzip')
+        self.assertEqual(json.loads(gzip.decompress(data)), json.loads(raw))
+        self.assertEqual(packed.getheader('Cache-Control'), 'no-store')
+        small, body = self.send('GET', '/api/version', headers={'Accept-Encoding': 'gzip'})
+        self.assertIsNone(small.getheader('Content-Encoding'), 'small JSON stays plain')
+        json.loads(body)
+
+    def test_not_modified_and_successful_reads_log_at_debug(self):
+        import logging
+        response, _ = self.send('GET', '/app.js')
+        with self.assertLogs('http', level='DEBUG') as logs:
+            self.send('GET', '/app.js', headers={'If-None-Match': response.getheader('ETag')})
+        self.assertTrue(all(line.startswith('DEBUG') for line in logs.output), logs.output)
+        self.assertIn('304', logs.output[-1])
+        del logging
+
+
 class StartupTests(unittest.TestCase):
     def test_firewall_failure_keeps_diagnostics_available_and_forwarding_off(self):
         import server

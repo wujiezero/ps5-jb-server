@@ -2,6 +2,7 @@
 """Authenticated PS5 DNS and IPv4 gateway policy service."""
 import argparse
 import datetime
+import gzip
 import hashlib
 import hmac
 import http.cookies
@@ -697,17 +698,104 @@ class Application(_ConsoleMixin):
             'logs': list(self.engine.logs), 'firewall': counters}
 
 
+class _RequestBody:
+    """The current request's body: reads stop at Content-Length.
+
+    remaining > 0 when a response is sent means the body was not consumed, so
+    the connection cannot carry another request and is closed after it.
+    """
+
+    def __init__(self, raw, length):
+        self.raw, self.remaining = raw, length
+
+    def read(self, size=-1):
+        if self.remaining <= 0:
+            return b''
+        if size is None or size < 0 or size > self.remaining:
+            size = self.remaining
+        data = self.raw.read(size)
+        self.remaining = self.remaining - len(data) if data else 0
+        return data
+
+    def readline(self, size=-1):
+        if self.remaining <= 0:
+            return b''
+        if size is None or size < 0 or size > self.remaining:
+            size = self.remaining
+        data = self.raw.readline(size)
+        self.remaining = self.remaining - len(data) if data else 0
+        return data
+
+
+def accepts_gzip(header):
+    for part in (header or '').split(','):
+        token, _, params = part.strip().partition(';')
+        if token.strip().lower() in ('gzip', '*'):
+            quality = params.strip().lower()
+            return not (quality.startswith('q=') and quality[2:].strip() in ('0', '0.0', '0.00', '0.000'))
+    return False
+
+
 class AdminHandler(BaseHTTPRequestHandler):
     server_version = 'PS5LocalManager/' + VERSION
-    protocol_version = 'HTTP/1.0'
+    # Keep-alive: the page polls every few seconds and should not redo TLS each time.
+    protocol_version = 'HTTP/1.1'
+    IDLE_TIMEOUT = 15
+    # JSON bodies above this size are gzip-compressed when the browser accepts it.
+    GZIP_MIN = 1024
 
     def setup(self):
         super().setup()
-        self.connection.settimeout(10)
+        self.connection.settimeout(self.IDLE_TIMEOUT)
+        self.socket_rfile = self.rfile
+
+    def handle_one_request(self):
+        # The previous request's body wrapper must not read the next request line.
+        self.rfile = self.socket_rfile
+        self.connection_header = False
+        super().handle_one_request()
+
+    def finish(self):
+        self.rfile = self.socket_rfile
+        super().finish()
+
+    def send_header(self, keyword, value):
+        if keyword.lower() == 'connection':
+            self.connection_header = True
+        super().send_header(keyword, value)
+
+    def parse_request(self):
+        if not super().parse_request():
+            return False
+        try:
+            length = int(self.headers.get('Content-Length') or 0)
+        except ValueError:
+            length = -1
+        if self.headers.get('Transfer-Encoding') or length < 0:
+            # Bodies we cannot delimit are refused by every handler; do not reuse the stream.
+            self.close_connection = True
+            length = 0
+        self.rfile = _RequestBody(self.socket_rfile, length)
+        return True
+
+    def end_headers(self):
+        if getattr(self.rfile, 'remaining', 0) > 0:
+            # Answered before the body was read (401, 413, 409…): the stream is out of sync.
+            self.close_connection = True
+        if self.close_connection and not getattr(self, 'connection_header', False):
+            self.send_header('Connection', 'close')
+        super().end_headers()
 
     def log_message(self, fmt, *args):
         # Never log request bodies, cookies, or credentials.
         logging.getLogger('http').info('%s %s', self.client_address[0], fmt % args)
+
+    def log_error(self, fmt, *args):
+        # An idle keep-alive connection timing out is routine, not an error.
+        if fmt.startswith('Request timed out'):
+            logging.getLogger('http').debug('%s %s', self.client_address[0], fmt % args)
+            return
+        self.log_message(fmt, *args)
 
     def log_request(self, code='-', size='-'):
         # The page polls every few seconds; successful reads would bury the
@@ -720,13 +808,24 @@ class AdminHandler(BaseHTTPRequestHandler):
         logging.getLogger('http').log(level, '%s "%s" %s', self.client_address[0],
                                       self.requestline, status or code)
 
-    def send_body(self, status, data, ctype='application/json; charset=utf-8', cookie=None):
+    def send_body(self, status, data, ctype='application/json; charset=utf-8', cookie=None,
+                  cache='no-store', etag=None, encoding=None, vary=False):
         if not isinstance(data, bytes):
             data = json.dumps(data, ensure_ascii=False).encode()
+        if (encoding is None and ctype.startswith('application/json') and len(data) > self.GZIP_MIN):
+            vary = True
+            if accepts_gzip(self.headers.get('Accept-Encoding')):
+                data, encoding = gzip.compress(data, compresslevel=5), 'gzip'
         self.send_response(status)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(data)))
-        self.send_header('Cache-Control', 'no-store')
+        if encoding:
+            self.send_header('Content-Encoding', encoding)
+        if vary:
+            self.send_header('Vary', 'Accept-Encoding')
+        if etag:
+            self.send_header('ETag', etag)
+        self.send_header('Cache-Control', cache)
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('X-Frame-Options', 'DENY')
@@ -860,14 +959,26 @@ class AdminHandler(BaseHTTPRequestHandler):
             self.send_body(404, {'error': '未找到页面'})
             return
         try:
-            data = (self.server.static_dir / name).read_bytes()
+            entry = static_cache(self.server.static_dir / name)
         except FileNotFoundError:
             self.send_body(404, {'error': '未找到页面'})
             return
         except OSError:
             self.send_body(503, {'error': '页面文件暂不可用'})
             return
-        self.send_body(200, data, STATIC_TYPES[name.rsplit('.', 1)[1]])
+        gzipped = accepts_gzip(self.headers.get('Accept-Encoding'))
+        etag = entry['etag_gzip'] if gzipped else entry['etag']
+        ctype = STATIC_TYPES[name.rsplit('.', 1)[1]]
+        known = {tag.strip() for tag in self.headers.get('If-None-Match', '').split(',')}
+        if etag in known or '*' in known:
+            self.send_response(304)
+            self.send_header('ETag', etag)
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Vary', 'Accept-Encoding')
+            self.end_headers()
+            return
+        self.send_body(200, entry['gzip'] if gzipped else entry['data'], ctype, cache='no-cache',
+                       etag=etag, encoding='gzip' if gzipped else None, vary=True)
 
     # ---------- GET handlers (session checked by the dispatcher) ----------
     def get_version(self):
@@ -1116,6 +1227,27 @@ STATIC_TYPES = {'html': 'text/html; charset=utf-8', 'js': 'text/javascript; char
 _STATIC_NAME = re.compile(WEB_FILE_PATTERN + r'\Z')
 
 
+_STATIC_CACHE = {}
+_STATIC_LOCK = threading.Lock()
+
+
+def static_cache(path):
+    """Content, gzip copy and ETags of a front-end file, recomputed when mtime or size change."""
+    info = path.stat()
+    key = (info.st_mtime_ns, info.st_size)
+    with _STATIC_LOCK:
+        cached = _STATIC_CACHE.get(path)
+        if cached and cached['key'] == key:
+            return cached
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()[:16]
+    entry = {'key': key, 'data': data, 'gzip': gzip.compress(data, compresslevel=9, mtime=0),
+             'etag': f'"{digest}"', 'etag_gzip': f'"{digest}-gz"'}
+    with _STATIC_LOCK:
+        _STATIC_CACHE[path] = entry
+    return entry
+
+
 def static_name(path):
     """File name under static_dir for a request path, or None. The pattern has no '/'."""
     name = path.split('?', 1)[0].removeprefix('/') or 'index.html'
@@ -1203,6 +1335,8 @@ def _lookup(routes, prefixes, raw_path):
 
 class AdminServer(LimitedThreads, HTTPServer):
     allow_reuse_address = True
+    # Idle keep-alive connections hold a slot (browsers open up to 6 per tab).
+    SLOTS = 64
     def get_request(self):
         conn, address = super().get_request()
         conn.settimeout(5)
