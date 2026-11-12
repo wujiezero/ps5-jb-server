@@ -14,7 +14,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1] / 'server'), str(Path(__
 import logbook  # noqa: E402
 import updates  # noqa: E402
 from plugin_updates import PluginUpdates  # noqa: E402
-from ps5 import HostManager, PldmgrClient, compare_installed, filename_version, guess_slot_key  # noqa: E402
+from ps5 import ConsoleError, HostManager, PldmgrClient, compare_installed, filename_version, guess_slot_key  # noqa: E402
 from server import RepoManager  # noqa: E402
 from test_pldmgr_upload import UploadHandler  # noqa: E402
 from test_plugin_updates import FakeOpener, index_entry  # noqa: E402
@@ -54,6 +54,13 @@ class CompareTests(unittest.TestCase):
     def test_newer_build_on_console_is_not_offered_as_update(self):
         info = compare_installed(self.item(), {'filename': 'zftpd-ps5-v1.8.elf'}, key='zftpd')
         self.assertEqual(info['state'], 'newer')
+
+    def test_trailing_zero_versions_are_the_same_build(self):
+        for repo_version, console in (('v1.7', 'zftpd-ps5-v1.7.0.elf'), ('v1.7.0', 'zftpd-ps5-v1.7.elf')):
+            info = compare_installed(self.item(version=repo_version), {'filename': console}, key='zftpd')
+            self.assertEqual(info['state'], 'current', (repo_version, console))
+        info = compare_installed(self.item(version='v1.7.1'), {'filename': 'zftpd-ps5-v1.7.elf'}, key='zftpd')
+        self.assertEqual(info['state'], 'outdated')
 
     def test_unversioned_file_name_is_only_a_possibility(self):
         info = compare_installed(self.item(), {'filename': 'zftpd.elf'}, key='zftpd')
@@ -157,6 +164,21 @@ class ConsoleUpgradeTests(unittest.TestCase):
         kill.assert_not_called()
         run.assert_not_called()
         self.assertFalse(result['ran'])
+
+    def test_upgrade_never_falls_back_to_elfldr(self):
+        # elfldr only runs a payload; the old file would stay in the slot while
+        # the page reported "updated".
+        host = {'ip': '127.0.0.1', 'pldmgr': True,
+                'updates': {'zftpd_v1.7.0.elf': {'state': 'outdated', 'running': 77}}}
+        with mock.patch.object(HostManager, 'host', return_value=host), \
+                mock.patch.object(PldmgrClient, 'kill'), mock.patch('ps5.time.sleep'), \
+                mock.patch.object(PldmgrClient, 'upload_payload', side_effect=ConsoleError('connection reset')), \
+                mock.patch('ps5._tcp_open', return_value=True), \
+                mock.patch('ps5.ElfldrClient') as elfldr:
+            with self.assertRaisesRegex(ConsoleError, '旧版本已停止'):
+                self.manager.upgrade('127.0.0.1', 'zftpd_v1.7.0.elf')
+        elfldr.assert_not_called()
+        self.assertIsNone(self.manager.progress('127.0.0.1'))
 
     def test_upgrade_refuses_plugin_not_on_console(self):
         with mock.patch.object(HostManager, 'host', return_value={'ip': '127.0.0.1', 'pldmgr': True, 'updates': {}}):

@@ -346,6 +346,14 @@ def _version_text(numbers):
     return '.'.join(map(str, numbers))
 
 
+def _version_key(numbers):
+    """Comparable form: 1.7 and 1.7.0 are the same build, so drop trailing zeros."""
+    numbers = list(numbers)
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    return tuple(numbers)
+
+
 def compare_installed(item, installed, record=None, key=''):
     """How the repository build relates to the file in the console's slot.
 
@@ -366,8 +374,8 @@ def compare_installed(item, installed, record=None, key=''):
         console_numbers = filename_version(on_console, key)
     if known and checksum and record.get('checksum') == checksum:
         state = 'current'
-    elif repo_numbers and console_numbers and repo_numbers != console_numbers:
-        state = 'outdated' if repo_numbers > console_numbers else 'newer'
+    elif repo_numbers and console_numbers and _version_key(repo_numbers) != _version_key(console_numbers):
+        state = 'outdated' if _version_key(repo_numbers) > _version_key(console_numbers) else 'newer'
     elif known and checksum and record.get('checksum'):
         state = 'outdated'          # same or unknown version, but the repository changed since
     elif on_console == filename:
@@ -856,7 +864,7 @@ class HostManager:
         return {'code': 0, 'state': state, 'name': '', 'host_id': '', 'firmware': '',
                 'host_type': '', 'running_app': '', 'payload': bool(payload_online)}
 
-    def install(self, ip, filename, run=False, keep_job=False):
+    def install(self, ip, filename, run=False, keep_job=False, allow_elfldr=True):
         ip = self.validate_ip(ip)
         items = self._load_manifest()
         if filename not in self.manifest:
@@ -864,12 +872,12 @@ class HostManager:
         version = next((str(item.get('version') or '') for item in items
                         if isinstance(item, dict) and item.get('filename') == filename), '')
         try:
-            return self._install(ip, filename, run, version)
+            return self._install(ip, filename, run, version, allow_elfldr)
         finally:
             if not keep_job:
                 self._job(ip, reset=True)
 
-    def _install(self, ip, filename, run, version):
+    def _install(self, ip, filename, run, version, allow_elfldr=True):
         self._job(ip, filename=filename, stage='reading', done=0, total=None)
         data = self._fetch_bytes(filename) if self._fetch_bytes else self._payload_bytes(filename)
         uploaded = False
@@ -894,8 +902,9 @@ class HostManager:
                     'path': path, 'host': self.host(ip)}
         except ConsoleError as exc:
             # elfldr cannot store a payload, it only runs it. Falling back is
-            # only honest when the user asked to run.
-            if not run or uploaded or exc.status is not None:
+            # only honest when the user asked to run, and never for an upgrade:
+            # the old file would stay in the slot while we reported success.
+            if not run or uploaded or exc.status is not None or not allow_elfldr:
                 raise ConsoleError(f'pldmgr 安装或运行确认失败：{exc}') from exc
             if not _tcp_open(ip, self.elf_port, 0.5):
                 raise ConsoleError(f'pldmgr 上传失败且 elfldr 不可用：{exc}') from exc
@@ -927,7 +936,7 @@ class HostManager:
                 time.sleep(0.8)   # let pldmgr release the old process before replacing its file
             start = stopped if run is None else bool(run)
             try:
-                result = self.install(ip, filename, run=start, keep_job=True)
+                result = self.install(ip, filename, run=start, keep_job=True, allow_elfldr=False)
             except ConsoleError as exc:
                 if stopped:
                     raise ConsoleError(f'旧版本已停止，但新版本未能完成更新：{exc}。可在「运行中」确认后手动重新运行',

@@ -131,6 +131,18 @@ class RepoHistoryTests(unittest.TestCase):
             self.repo.upgrade('ftpsrv_v0.21.elf', 'other.elf', b'new', version='x')
         self.assertEqual((self.root / 'payloads/other.elf').read_bytes(), b'other')
 
+    def test_new_upload_never_shares_history_with_an_upgraded_plugin(self):
+        # ftpsrv_v0.21.elf (id ftpsrv_v0.21) moved to ftpsrv_v0.22.elf; uploading
+        # the old name again is a different plugin and must get its own id.
+        self.repo.upgrade('ftpsrv_v0.21.elf', 'ftpsrv_v0.22.elf', b'new-ftp', version='v0.22')
+        added = self.repo.add('ftpsrv_v0.21.elf', b'side-ftp', name='FTP copy')
+        upgraded = self.item('ftpsrv_v0.22.elf')
+        self.assertNotEqual(added['id'], upgraded['id'])
+        self.assertEqual(self.item('ftpsrv_v0.21.elf')['history'], [])
+        self.repo.delete('ftpsrv_v0.21.elf')
+        self.assertEqual([r['version'] for r in self.item('ftpsrv_v0.22.elf')['history']], ['v0.21'])
+        self.assertTrue((self.root / 'versions' / sha(b'old-ftp')).exists(), 'other plugin keeps its history')
+
 
 class MatchingTests(unittest.TestCase):
     INDEX = [

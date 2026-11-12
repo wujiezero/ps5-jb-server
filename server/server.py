@@ -352,8 +352,9 @@ class RepoManager:
                 raise ValueError('插件名称不能为空')
             if target.exists():
                 raise FileExistsError('同名文件已存在，可勾选「替换同名文件」或先删除原文件')
+            document = self.catalog()
             entry = {
-                'id': self.entry_id({'filename': filename}),
+                'id': self._unique_id(document, self.entry_id({'filename': filename})),
                 'name': name.strip()[:120], 'filename': filename,
                 'url': self.base_url + filename,
                 'version': str(version)[:32], 'last_update': datetime.date.today().isoformat(),
@@ -362,13 +363,23 @@ class RepoManager:
                 'checksum': digest,
             }
             self._save_payload(filename, bytes(data))
-            document = self.catalog()
             # Replace the placeholder shipped with a fresh install.
             document['payloads'] = [p for p in document['payloads']
                                     if p.get('filename') != self._SEED_FILE]
             document['payloads'].append(entry)
             self._write_catalog(document)
             return entry
+
+    def _unique_id(self, document, key):
+        """An id no other entry uses: history is keyed by it, so two plugins must
+        not share one (zftpd upgraded to zftpd_1.7.elf, then zftpd.elf uploaded anew)."""
+        taken = {self.entry_id(item) for item in document['payloads']
+                 if item.get('filename') != self._SEED_FILE}
+        candidate, number = key, 2
+        while candidate in taken:
+            candidate = f'{key}-{number}'
+            number += 1
+        return candidate
 
     @staticmethod
     def _find(document, filename):
@@ -1106,6 +1117,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             self.send_body(403, {'error': str(exc)})
         except FileNotFoundError as exc:
             self.send_body(404, {'error': str(exc)})
+        except FileExistsError as exc:
+            self.send_body(409, {'error': str(exc)})
         except ValueError as exc:
             self.send_body(400, {'error': str(exc)})
         except Exception as exc:
