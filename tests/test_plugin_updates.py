@@ -217,6 +217,23 @@ class PluginUpdatesTests(unittest.TestCase):
         with self.assertRaisesRegex(PluginUpdateError, '最新'):
             self.updates.apply('ftpsrv_v0.22.elf')
 
+    def test_second_copy_of_an_updated_plugin_is_a_duplicate_not_an_update(self):
+        # The seeded build was updated to ftpsrv_v0.22.elf; a hand upload of the
+        # same plugin under another name must not offer an update that can only
+        # collide with that file name.
+        self.updates.check()
+        self.updates.apply('ftpsrv_v0.21.elf')
+        self.repo.add('ftpsrv-0.20.elf', b'hand-upload', name='FTP (manual)', version='0.20')
+        self.opener.requests.clear()
+        status = self.updates.status()
+        info = status['items']['ftpsrv-0.20.elf']
+        self.assertEqual((info['state'], info['owner_filename'], info['owner']),
+                         ('duplicate', 'ftpsrv_v0.22.elf', 'FTP Server'))
+        self.assertEqual(status['available'], 0)
+        with self.assertRaisesRegex(PluginUpdateError, '重复条目'):
+            self.updates.apply('ftpsrv-0.20.elf')
+        self.assertEqual(self.opener.requests, [], 'a duplicate is refused before downloading')
+
     def test_checksum_mismatch_changes_nothing(self):
         self.updates.check()
         self.opener.files['https://mirror.test/dl/ftpsrv_v0.22.elf'] = b'tampered'

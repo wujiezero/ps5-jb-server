@@ -1342,7 +1342,8 @@
     if (data.items && typeof data.items === 'object') {
       for (const [filename, entry] of Object.entries(data.items)) {
         if (!entry || typeof entry !== 'object') continue;
-        items[filename] = { state: str(entry.state), version: str(entry.version), filename: str(entry.filename), name: str(entry.name) };
+        items[filename] = { state: str(entry.state), version: str(entry.version), filename: str(entry.filename), name: str(entry.name),
+          owner: str(entry.owner), ownerFilename: str(entry.owner_filename) };
       }
     }
     return { checkedAt: str(data.checked_at), attemptedAt: str(data.attempted_at), error: str(data.error),
@@ -1427,6 +1428,13 @@
       const hint = document.createElement('span');
       hint.className = 'repo-update repo-update-muted';
       hint.textContent = `比上游 ${upstream.version} 新`;
+      versionCell.append(hint);
+    } else if (upstream && upstream.state === 'duplicate') {
+      // 另一条目已发布上游最新版：这里是同一插件的重复条目，更新只会撞文件名。
+      const hint = document.createElement('span');
+      hint.className = 'repo-update repo-update-muted';
+      hint.textContent = `重复 · 最新版在「${upstream.owner || upstream.ownerFilename}」`;
+      hint.title = `上游 ${upstream.version || upstream.filename} 已由 ${upstream.ownerFilename} 提供，这一条可以删除`;
       versionCell.append(hint);
     }
     const categoryCell = document.createElement('td');
@@ -2044,7 +2052,7 @@
       $('repo-upload-subtitle').textContent = `单个文件不超过 ${limit}。文件名取自所选文件，也是下载地址中的文件名。`;
       $('repo-upload-name').placeholder = '例如 etaHEN';
       $('repo-upload-version').placeholder = '例如 v1.8';
-      $('repo-upload-category').placeholder = '例如 载荷';
+      $('repo-upload-category').placeholder = '选择或输入新分类';
       $('repo-upload-author').placeholder = '可选';
       $('repo-upload-description').placeholder = '可选，简要说明用途';
     }
@@ -8056,6 +8064,130 @@
       ps5RestoreFocus();
     });
     $('repo-ps5-hint-go').addEventListener('click', (event) => goPs5Updates(event.currentTarget.dataset.ip));
+    initCategoryCombo('repo-upload');
+    initCategoryCombo('repo-edit');
+  }
+
+  /* ── 插件分类：下拉选择已有分类，或输入新分类 ───────────────────────── */
+
+  // 仓库里没有用过时也给出的常用分类（与安装器自带插件的分类一致）。
+  const DEFAULT_CATEGORIES = ['Loader', 'Kernel', 'System', 'Networking', 'Files', 'Diagnostics'];
+  const UNCATEGORIZED = 'uncategorized';
+
+  // 已用分类按插件数从多到少，其后补上常用分类；大小写不同视为同一分类。
+  function categoryChoices(query = '') {
+    const counts = new Map();
+    for (const item of repo.items) {
+      const name = str(item.category).trim();
+      const key = name.toLowerCase();
+      if (!name || key === UNCATEGORIZED || item.filename === 'ps5-payload-repository') continue;
+      const entry = counts.get(key) || { name, count: 0 };
+      entry.count += 1;
+      counts.set(key, entry);
+    }
+    const names = [...counts.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)).map((entry) => entry.name);
+    for (const name of DEFAULT_CATEGORIES) if (!counts.has(name.toLowerCase())) names.push(name);
+    const needle = str(query).trim().toLowerCase();
+    const options = needle ? names.filter((name) => name.toLowerCase().includes(needle)) : names;
+    const typed = str(query).trim();
+    const exists = names.some((name) => name.toLowerCase() === needle);
+    return { options, create: typed && !exists && needle !== UNCATEGORIZED ? typed.slice(0, 40) : '' };
+  }
+
+  function initCategoryCombo(prefix) {
+    const input = $(`${prefix}-category`);
+    const list = $(`${prefix}-category-list`);
+    const toggle = $(`${prefix}-category-toggle`);
+    let active = -1;
+
+    const items = () => [...list.children].filter((node) => node.dataset && node.dataset.value !== undefined);
+    const close = () => {
+      list.hidden = true;
+      active = -1;
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+    };
+    const highlight = (index) => {
+      const options = items();
+      if (!options.length) return;
+      active = (index + options.length) % options.length;
+      options.forEach((node, position) => node.setAttribute('aria-selected', String(position === active)));
+      input.setAttribute('aria-activedescendant', options[active].id);
+      options[active].scrollIntoView?.({ block: 'nearest' });
+    };
+    const open = (showAll) => {
+      const { options, create } = categoryChoices(showAll ? '' : input.value);
+      const nodes = options.map((name) => {
+        const node = makeElement('li', 'combo-option', name);
+        node.dataset.value = name;
+        if (name.toLowerCase() === input.value.trim().toLowerCase()) node.dataset.current = 'true';
+        return node;
+      });
+      if (create && !showAll) {
+        const node = makeElement('li', 'combo-option combo-create', `新建分类「${create}」`);
+        node.dataset.value = create;
+        nodes.push(node);
+      }
+      if (!nodes.length) { close(); return; }
+      nodes.forEach((node, index) => { node.id = `${prefix}-category-option-${index}`; node.setAttribute('role', 'option'); node.setAttribute('aria-selected', 'false'); });
+      list.replaceChildren(...nodes);
+      list.hidden = false;
+      // 对话框底部放不下时向上展开，避免被裁掉。
+      const box = input.closest?.('dialog')?.getBoundingClientRect?.();
+      const rect = input.getBoundingClientRect?.();
+      if (box && rect) {
+        // 下方要让出对话框底部的按钮栏；两边都不够时选空间大的一边并压低列表高度。
+        const below = box.bottom - rect.bottom - 76;
+        const above = rect.top - box.top - 12;
+        const wanted = Math.min(list.scrollHeight, 220);
+        const side = below >= wanted || below >= above ? 'below' : 'above';
+        list.dataset.side = side;
+        list.style.maxHeight = `${Math.max(112, Math.min(220, side === 'below' ? below : above))}px`;
+      }
+      active = -1;
+      input.setAttribute('aria-expanded', 'true');
+      input.removeAttribute('aria-activedescendant');
+    };
+    const choose = (value) => {
+      input.value = value;
+      close();
+      // 让上传表单把分类记为手动填写（不再被自动识别覆盖）。
+      if (typeof Event === 'function') input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+
+    input.addEventListener('input', (event) => { if (event && event.isTrusted !== false) open(false); });
+    input.addEventListener('focus', () => { if (!input.value.trim()) open(true); });
+    input.addEventListener('blur', () => {
+      // 输入了已有分类的不同大小写时，统一成已有写法。
+      const typed = input.value.trim().toLowerCase();
+      const same = typed && categoryChoices('').options.find((name) => name.toLowerCase() === typed);
+      if (same && same !== input.value.trim()) input.value = same;
+      setTimeout(close, 120);
+    });
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (list.hidden) open(!input.value.trim());
+        highlight(active + (event.key === 'ArrowDown' ? 1 : -1));
+      } else if (event.key === 'Enter' && !list.hidden && active >= 0) {
+        event.preventDefault();
+        choose(items()[active].dataset.value);
+      } else if (event.key === 'Escape' && !list.hidden) {
+        // 只收起列表，不关闭对话框。
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+      }
+    });
+    toggle.addEventListener('mousedown', (event) => event.preventDefault());
+    toggle.addEventListener('click', () => {
+      if (list.hidden) { open(true); input.focus(); } else close();
+    });
+    list.addEventListener('mousedown', (event) => event.preventDefault());
+    list.addEventListener('click', (event) => {
+      const option = event.target instanceof Element ? event.target.closest('[data-value]') : null;
+      if (option) choose(option.dataset.value);
+    });
   }
 
   function stopLogsTimer() {

@@ -31,6 +31,7 @@
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.8" y="8.8" width="11" height="11" rx="2"/><path d="M5.2 15.2H4.4a1 1 0 0 1-1-1V4.4a1 1 0 0 1 1-1h9.8a1 1 0 0 1 1 1v.8"/></symbol>
     <symbol id="i-move" viewBox="0 0 24 24"><path d="M3.4 12h12.8M11.6 7.4l4.6 4.6-4.6 4.6M20.4 5v14"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.2 7.2h15.6M9.8 10.8v6.4M14.2 10.8v6.4M6.2 7.2l.9 12.2h9.8l.9-12.2M9.2 7.2V4.4h5.6v2.8"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
     <symbol id="i-menu" viewBox="0 0 24 24"><circle cx="6.2" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="17.8" cy="12" r="1.3" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-off" viewBox="0 0 24 24"><path d="M12 3.4v8.2M7 7.2a7 7 0 1 0 10 0"/></symbol>
@@ -1090,7 +1091,11 @@
             </div>
             <div class="field-group">
               <label for="repo-upload-category">分类</label>
-              <input id="repo-upload-category" name="category" type="text" maxlength="40" autocomplete="off" placeholder="例如 载荷" aria-describedby="repo-upload-category-error">
+              <div class="combo" id="repo-upload-category-combo">
+                <input id="repo-upload-category" name="category" type="text" maxlength="40" autocomplete="off" placeholder="选择或输入新分类" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="repo-upload-category-list" aria-describedby="repo-upload-category-error">
+                <button type="button" class="combo-toggle" id="repo-upload-category-toggle" tabindex="-1" aria-label="展开分类列表"><svg class="icon" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+                <ul class="combo-list" id="repo-upload-category-list" role="listbox" aria-label="分类" hidden></ul>
+              </div>
               <p id="repo-upload-category-error" class="field-error" hidden></p>
             </div>
             <div class="field-group">
@@ -1138,7 +1143,11 @@
             </div>
             <div class="field-group">
               <label for="repo-edit-category">分类</label>
-              <input id="repo-edit-category" name="category" type="text" maxlength="40" autocomplete="off" aria-describedby="repo-edit-category-error">
+              <div class="combo" id="repo-edit-category-combo">
+                <input id="repo-edit-category" name="category" type="text" maxlength="40" autocomplete="off" placeholder="选择或输入新分类" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="repo-edit-category-list" aria-describedby="repo-edit-category-error">
+                <button type="button" class="combo-toggle" id="repo-edit-category-toggle" tabindex="-1" aria-label="展开分类列表"><svg class="icon" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+                <ul class="combo-list" id="repo-edit-category-list" role="listbox" aria-label="分类" hidden></ul>
+              </div>
               <p id="repo-edit-category-error" class="field-error" hidden></p>
             </div>
             <div class="field-group">

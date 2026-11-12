@@ -3114,3 +3114,31 @@ tbody[data-enter="true"] > tr:nth-child(n+6) { animation-delay: 60ms; }
   .logs-actions .button { flex: 1 1 0; }
 }
 .upstream-row label[for="upstream-dns"] { display: inline-block; }
+
+/* ── 分类下拉：选择已有分类或输入新分类 ─────────────────────────────── */
+
+.combo { position: relative; }
+.combo > input { padding-right: 40px; }
+.combo-toggle {
+  position: absolute; top: 1px; right: 1px; bottom: 1px; width: 38px;
+  display: grid; place-items: center; border: 0; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.combo-toggle:hover { color: var(--fg); }
+.combo > input[aria-expanded="true"] + .combo-toggle .icon { transform: rotate(180deg); }
+.combo-list {
+  position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; right: 0;
+  max-height: 220px; margin: 0; padding: 4px; overflow-y: auto; list-style: none;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel); box-shadow: var(--shadow-pop);
+}
+.combo-list[hidden] { display: none; }
+.combo-list[data-side="above"] { top: auto; bottom: calc(100% + 4px); }
+.combo-option {
+  padding: 8px 10px; border-radius: 6px; color: var(--fg); font-size: 0.875rem; line-height: 1.4;
+  cursor: pointer; overflow-wrap: anywhere;
+}
+.combo-option:hover, .combo-option[aria-selected="true"] { background: var(--accent-soft); }
+.combo-option[data-current="true"] { font-weight: 650; }
+.combo-create { color: var(--accent); border-top: 1px solid var(--line); border-radius: 0 0 6px 6px; margin-top: 2px; }
+.combo-create:first-child { border-top: 0; margin-top: 0; border-radius: 6px; }

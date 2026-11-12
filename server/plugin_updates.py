@@ -78,6 +78,22 @@ def _follows_name(filename, name):
     return bool(re.match(r'(?:v?\d|ps[45]\b)', rest))
 
 
+def _owner(item, entry, payloads):
+    """Another repository entry that already publishes this upstream build, or None.
+
+    Two entries can match one upstream plugin (a hand upload ps5upload-12.4.2.elf
+    next to the seeded ps5upload_v12.4.2.elf). Once one of them is updated the
+    other can never take the same file name, so it is a duplicate, not an update.
+    """
+    for other in payloads:
+        if other is item or not isinstance(other.get('filename'), str):
+            continue
+        if (other['filename'] == entry['filename']
+                or str(other.get('checksum') or '').lower() == entry['checksum']):
+            return other
+    return None
+
+
 def match_upstream(item, index):
     """The upstream entry describing this repository item, or None."""
     filename = str(item.get('filename') or '')
@@ -202,7 +218,8 @@ class PluginUpdates:
         index = [entry for entry in map(_clean_entry, cache.get('payloads') or []) if entry]
         items, available = {}, 0
         if index:
-            for item in self.repo.catalog()['payloads']:
+            payloads = self.repo.catalog()['payloads']
+            for item in payloads:
                 filename = item.get('filename')
                 if not isinstance(filename, str):
                     continue
@@ -210,18 +227,24 @@ class PluginUpdates:
                 if entry is None:
                     continue
                 local_sum = str(item.get('checksum') or '').lower()
+                owner = None
                 if entry['filename'] == filename and (not local_sum or local_sum == entry['checksum']):
                     state = 'current'
                 elif local_sum == entry['checksum']:
                     state = 'current'
                 elif local_is_newer(item.get('version'), entry['version']):
                     state = 'local_newer'
+                elif (owner := _owner(item, entry, payloads)) is not None:
+                    state = 'duplicate'
                 else:
                     state = 'available'
                     available += 1
                 items[filename] = {'state': state, 'name': entry['name'], 'version': entry['version'],
                                    'filename': entry['filename'], 'last_update': entry['last_update'],
                                    'source': entry['source']}
+                if owner is not None:
+                    items[filename].update(owner=str(owner.get('name') or owner['filename'])[:120],
+                                           owner_filename=owner['filename'])
         return {'source': cache.get('url') or self.url, 'checked_at': cache.get('checked_at'),
                 'attempted_at': cache.get('attempted_at'), 'error': cache.get('error') or '',
                 'indexed': len(index), 'available': available, 'items': items}
@@ -246,6 +269,11 @@ class PluginUpdates:
                 raise PluginUpdateError('上游没有这个插件')
             if str(item.get('checksum') or '').lower() == entry['checksum']:
                 raise PluginUpdateError('已经是上游最新版本')
+            owner = _owner(item, entry, self.repo.catalog()['payloads'])
+            if owner is not None:
+                raise PluginUpdateError(
+                    f'上游最新版 {entry["filename"]} 已由仓库里的「{owner.get("name") or owner["filename"]}」'
+                    f'（{owner["filename"]}）提供，这一条是同一插件的重复条目，可以删除')
             self._report(filename=filename, name=entry['name'], version=entry['version'],
                          stage='downloading', done=0, total=None, started=time.time())
             data = self._fetch(entry['url'], self.repo.MAX_UPLOAD, self.download_timeout,

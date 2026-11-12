@@ -68,7 +68,7 @@ function fixture(extra = {}) {
       nas, nasArchiveSelection, extractTask,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
-      normalizeRepo, renderUpstream,
+      normalizeRepo, renderUpstream, categoryChoices,
       inferUploadMetadata, autofillUploadMetadata, markUploadFieldEdited, bindUploadAutofill,
       resetUploadForm, openUploadDialog, closeUploadDialog,
       advanceEpoch() { epoch += 1; },
@@ -409,17 +409,37 @@ test('repository upstream status marks updatable plugins and keeps history for r
     ] },
     upstream: { checked_at: '2026-11-11T10:00:00', available: 1, items: {
       'ftpsrv_v0.21.elf': { state: 'available', version: 'v0.22', filename: 'ftpsrv_v0.22.elf' },
-      'zftpd_v1.8.0.elf': { state: 'local_newer', version: 'v1.7.0' } } }
+      'zftpd_v1.8.0.elf': { state: 'local_newer', version: 'v1.7.0' },
+      'mine.elf': { state: 'duplicate', version: 'v0.22', filename: 'ftpsrv_v0.22.elf', owner: 'FTP', owner_filename: 'ftpsrv_v0.22.elf' } } }
   });
+  assert.equal(data.upstream.items['mine.elf'].ownerFilename, 'ftpsrv_v0.22.elf', 'duplicate keeps the owning entry');
   assert.equal(data.items[0].history.map((record) => record.version).join(), 'v0.20', 'malformed records dropped');
   assert.equal(data.items[2].history.length, 0);
   Object.assign(ui.repo, data);
   ui.renderRepo();
   assert.match(ui.node('repo-upstream-line').textContent, /1 个插件有新版本/);
+  assert.match(textOf(ui.node('repo-body')), /重复 · 最新版在「FTP」/);
   assert.equal(ui.node('repo-upstream-all').hidden, true, 'batch button only for two or more');
   ui.repo.upstream = null;
   ui.renderUpstream();
   assert.match(ui.node('repo-upstream-line').textContent, /尚未检查/);
+});
+
+test('upload category offers used categories first, defaults after, and creating a new one', () => {
+  const ui = fixture();
+  ui.repo.items = [
+    { filename: 'a.elf', category: 'Files' }, { filename: 'b.elf', category: '工具' },
+    { filename: 'c.elf', category: '工具' }, { filename: 'd.elf', category: 'Uncategorized' },
+    { filename: 'ps5-payload-repository', category: '说明' }
+  ];
+  const all = ui.categoryChoices('');
+  assert.deepEqual([...all.options], ['工具', 'Files', 'Loader', 'Kernel', 'System', 'Networking', 'Diagnostics']);
+  assert.equal(all.create, '', 'nothing typed, nothing to create');
+  assert.deepEqual([...ui.categoryChoices('net').options], ['Networking']);
+  assert.equal(ui.categoryChoices('net').create, 'net', 'a partial match can still become a new category');
+  assert.equal(ui.categoryChoices(' files ').create, '', 'an existing category in another case is not created twice');
+  assert.equal(ui.categoryChoices('uncategorized').create, '', 'the server default is not offered as a category');
+  assert.equal(ui.categoryChoices('模拟器').create, '模拟器');
 });
 
 const updateStatus = (overrides = {}) => ({
