@@ -68,7 +68,7 @@ function fixture(extra = {}) {
       files, filesRow, nasRow, filesVisibleEntries, titleIdOf, titleNames, flushTitleNames, normalizeFilesEntries,
       nas, nasArchiveSelection, extractTask, filesTransferTasks, filesTransferCard, normalizePs5,
       setNasJobs(value) { nasJobs = value; },
-      renderRestoreResult, backupFilename,
+      renderRestoreResult, backupFilename, renderSelfcheck,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
       normalizeRepo, renderUpstream, categoryChoices,
@@ -748,6 +748,26 @@ test('restore results are listed as text with their state; backup names are sani
   assert.equal(ui.backupFilename('attachment; filename="ps5-jb-backup-1.tar.gz"', 'x'), 'ps5-jb-backup-1.tar.gz');
   assert.equal(ui.backupFilename('attachment; filename="../evil"', 'fallback.tar.gz'), 'fallback.tar.gz');
   ui.renderRestoreResult({});
+  assert.equal(list.hidden, true);
+});
+
+test('self-check results show a badge, detail and a fix only for problems', () => {
+  const ui = fixture();
+  ui.renderSelfcheck({ time: '2026-11-12T10:00:00+08:00', results: [
+    { id: 'dns', title: 'DNS 劫持', status: 'ok', detail: '3 个内置域名都解析到本机', fix: 'ignored' },
+    { id: 'gateway', title: '网关', status: 'fail', detail: 'ps5guard 规则表不存在', fix: '查看运行日志' },
+    { id: 'odd', title: '<i>x</i>', status: 'strange', detail: '', fix: '' }
+  ] });
+  const list = ui.node('selfcheck-list');
+  assert.equal(list.hidden, false);
+  assert.equal(list.children.length, 3);
+  assert.equal(list.children[0].dataset.status, 'ok');
+  assert.doesNotMatch(textOf(list.children[0]), /建议/);
+  assert.match(textOf(list.children[1]), /异常.*网关.*ps5guard.*建议：查看运行日志/);
+  assert.equal(list.children[2].dataset.status, 'fail', 'unknown status is shown as a failure');
+  assert.match(textOf(list.children[2]), /<i>x<\/i>/);
+  assert.match(ui.node('selfcheck-time').textContent, /1 项异常/);
+  ui.renderSelfcheck(null);
   assert.equal(list.hidden, true);
 });
 

@@ -137,6 +137,28 @@
 - 前端文件带 `ETag`（内容 SHA-256 前 16 位）与 `Cache-Control: no-cache`，再次加载命中则返回 304；
   浏览器支持 gzip 时发送内存里预压缩好的副本。接口响应仍是 `no-store`，超过 1 KiB 的 JSON 按需 gzip，下载不压缩。
 
+## 自检
+
+`server/selfcheck.py`。`POST /api/selfcheck`（会话 + CSRF，因为会主动发探测）跑一遍，`GET /api/selfcheck` 取最近一次结果
+（只在内存里，重启后为空）；导出日志的诊断摘要附上结果摘要。每项在线程池里并发，单项超时 3 秒，整体不超过 10 秒；
+单项抛异常或超时只把自己标为「异常」。同一时间只跑一次，第二个请求得到 409。
+
+| 项 | 怎么判断 |
+| --- | --- |
+| DNS 劫持 | 向本机 DNS 查询每个内置域名，应答必须是本机地址 |
+| 证书与用户手册站点 | 以 SNI `manuals.playstation.net` 连本机 443，读证书 SAN 与到期时间；读 `admin.crt` 到期时间；30 天内到期为「注意」 |
+| 插件仓库 | 不经代理 `GET http://<本机>:<repo>/repo.json`，并列出缺文件的条目 |
+| 网关 | `ip_forward`、`ps5guard` 表、网关错误、网卡存在且持有本机地址、IPv6 转发关闭 |
+| 上游 DNS | 向当前策略的上游查询 `example.com` |
+| conntrack | `conntrack -C` 能否执行 |
+| PS5 网络指向 | 每台已知 PS5：最近的 DNS 记录里有没有它（主 DNS 指向本机）、连接表里有没有它的出网连接（默认网关指向本机） |
+| IPv6 绕过风险 | `ip -6 route show default` 非空时提示「可能」绕过（启发式） |
+| 可选组件 | 解压引擎、unrar 引擎、SMB、电源引擎是否可用（未装为「跳过」并给出安装参数），代理配置是否有效 |
+| 资源与服务 | 数据目录剩余空间（低于 200 MB 提示）、日志目录可写、三个 systemd 服务状态 |
+
+结果里只有状态、说明和建议，代理地址按 `netproxy.masked()` 隐去账号。`install.sh doctor` 复用其中不依赖服务运行的四项
+（conntrack、IPv6、可选组件、资源），在原有输出后追加几行。
+
 ## 备份与恢复
 
 `server/backup.py`。备份是一个 `tar.gz`，成员只能是固定的几种名字：

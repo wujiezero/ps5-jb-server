@@ -887,6 +887,25 @@ def cmd_uninstall(layout, purge=False, runner=None):
         print(f'保留数据：{layout.data}、{layout.repo}、{layout.etc}（--purge 可一并删除）')
 
 
+CHECK_LABEL = {'ok': '正常', 'warn': '注意', 'fail': '异常', 'skip': '跳过'}
+
+
+def offline_checks(layout, probes=None):
+    """The self-check items that work without the running service (same code as the admin page)."""
+    sys.path.insert(0, str(REPO / 'server'))
+    import selfcheck
+    from types import SimpleNamespace
+    settings = SimpleNamespace(data_dir=layout.data, engine_url='http://127.0.0.1:19113')
+    if layout.config.exists():
+        from settings import Settings
+        settings = Settings.load(layout.config)
+    context = selfcheck.Context(settings, probes=probes or selfcheck.Probes())
+    try:
+        return selfcheck.run(context, [check for check in selfcheck.CHECKS if check.offline])
+    except Exception as exc:          # doctor must still print the rest
+        return [{'id': 'selfcheck', 'title': '自检', 'status': 'fail', 'detail': str(exc), 'fix': ''}]
+
+
 def cmd_doctor(layout):
     print('ps5-jb-server doctor\n')
     print(f'  仓库副本     {REPO}')
@@ -914,6 +933,10 @@ def cmd_doctor(layout):
     print(f'  解压引擎     libarchive {"可用" if engines["libarchive"] else "未安装"}，unrar '
           + ('可用' if engines['unrar'] else '缺 ' + '、'.join(engines['missing']))
           + f'，内存 {memory_total() / 1024 ** 3:.1f} GB')
+    for item in offline_checks(layout):
+        print(f'  {item["title"]:<12} {CHECK_LABEL.get(item["status"], item["status"])}  {item["detail"]}')
+        if item['status'] in ('warn', 'fail') and item.get('fix'):
+            print(f'  {"":<12} 建议：{item["fix"]}')
     if shutil.which('systemctl'):
         for unit in UNIT_FILES:
             state = subprocess.run(['systemctl', 'is-active', unit], capture_output=True, text=True)

@@ -848,6 +848,18 @@
             </div>
           </form>
 
+          <section id="selfcheck-card" class="card" aria-labelledby="selfcheck-title">
+            <header class="card-head">
+              <div><h2 id="selfcheck-title">自检 <button class="help-tip" type="button" data-help="selfcheck"></button></h2><p class="card-sub">逐项检查 DNS、证书、插件仓库、网关、上游 DNS 与 PS5 的网络指向，并给出修复建议。</p></div>
+              <button id="selfcheck-run" class="button button-secondary button-small" type="button">
+                <span class="spinner" aria-hidden="true" hidden></span>
+                <span class="button-label">开始自检</span>
+              </button>
+            </header>
+            <p id="selfcheck-time" class="secondary-note">本次启动后还没有运行过。</p>
+            <ul id="selfcheck-list" class="selfcheck-list" aria-live="polite" hidden></ul>
+          </section>
+
           <section id="backup-card" class="card" aria-labelledby="backup-title">
             <header class="card-head">
               <div><h2 id="backup-title">备份与恢复 <button class="help-tip" type="button" data-help="backup"></button></h2><p class="card-sub">导出访问策略、标签、NAS 连接与插件仓库，重装或换机后从备份恢复。</p></div>

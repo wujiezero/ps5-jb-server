@@ -3149,6 +3149,18 @@ tbody[data-enter="true"] > tr:nth-child(n+6) { animation-delay: 60ms; }
 .restore-list { margin: 8px 0 0; padding-left: 1.2em; display: grid; gap: 4px; font-size: 0.8125rem; }
 .restore-result { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 0.8125rem; }
 .restore-result[hidden] { display: none; }
-.restore-result li { padding: 6px 10px; border-radius: 8px; background: var(--surface-2, rgba(127, 127, 127, 0.08)); overflow-wrap: anywhere; }
-.restore-result li[data-state="failed"] { color: var(--danger, #c62828); }
+.restore-result li { padding: 6px 10px; border-radius: 8px; background: var(--surface-2); overflow-wrap: anywhere; }
+.restore-result li[data-state="failed"] { color: var(--danger); }
 .restore-result li[data-state="skipped"] { opacity: 0.8; }
+
+/* 自检 */
+.selfcheck-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.selfcheck-list[hidden] { display: none; }
+.selfcheck-item { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+.selfcheck-badge { grid-row: span 3; align-self: start; padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; background: var(--surface-3); }
+.selfcheck-item[data-status="ok"] .selfcheck-badge { color: var(--ok); background: var(--ok-soft); }
+.selfcheck-item[data-status="warn"] .selfcheck-badge { color: var(--warn); background: var(--warn-soft); }
+.selfcheck-item[data-status="fail"] .selfcheck-badge { color: var(--danger); background: var(--danger-soft); }
+.selfcheck-title { font-weight: 600; font-size: 0.875rem; }
+.selfcheck-detail, .selfcheck-fix { margin: 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.selfcheck-fix { opacity: 0.85; }

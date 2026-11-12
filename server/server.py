@@ -26,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from activity import Classifier, FlowObserver, LabelsStore, make_poller
 from backup import BackupError, BackupService
+from selfcheck import Context as CheckContext, SelfCheck
 from api_console import ConsoleAPI
 import logbook
 import netproxy
@@ -1222,6 +1223,29 @@ class AdminHandler(BaseHTTPRequestHandler):
     def post_console(self):
         self.server.app.console_post(self, self.path.split('?', 1)[0])
 
+    # ---------- self-check ----------
+    def _selfcheck(self):
+        service = getattr(self.server.app, 'selfcheck', None)
+        if service is None:
+            self.send_body(503, {'error': '自检未启用'})
+        return service
+
+    def get_selfcheck(self):
+        """GET /api/selfcheck: the latest result kept in memory (null before the first run)."""
+        service = self._selfcheck()
+        if service is not None:
+            self.send_body(200, {'last': service.last})
+
+    def post_selfcheck(self, body):
+        """POST /api/selfcheck: run every check now (it sends probes, so it needs CSRF)."""
+        service = self._selfcheck()
+        if service is None:
+            return
+        try:
+            self.send_body(200, {'last': service.run()})
+        except RuntimeError as exc:
+            self.send_body(409, {'error': str(exc)})
+
     # ---------- backup and restore ----------
     def _backup_service(self):
         service = getattr(self.server.app, 'backup', None)
@@ -1374,6 +1398,7 @@ GET_ROUTES = {
     '/api/logs/export': Route('handle_logs'),
     '/api/repo/upstream/progress': Route('get_upstream_progress', exact=True),
     '/api/backup': Route('get_backup'),
+    '/api/selfcheck': Route('get_selfcheck', exact=True),
 }
 # Checked in order after GET_ROUTES; a prefix also matches longer paths.
 GET_PREFIXES = (
@@ -1403,6 +1428,7 @@ POST_ROUTES = {
     # Raw body; the handler checks session and CSRF itself.
     '/api/repo/upload': Route('handle_upload', auth=None, tracked=True, body='raw'),
     '/api/backup': _json_route('post_backup'),
+    '/api/selfcheck': _json_route('post_selfcheck'),
     '/api/backup/restore': Route('post_backup_restore', auth=None, tracked=True, body='raw'),
 }
 POST_PREFIXES = (
@@ -1492,6 +1518,12 @@ def diagnostic_report(server):
             job = status.get('job') or {}
             lines.append('服务更新：最新 {} · 任务 {} {}'.format(
                 status.get('latest') or '未检查', job.get('state') or '无', job.get('error') or '').rstrip())
+        except Exception:
+            pass
+    checker = getattr(app, 'selfcheck', None)
+    if checker is not None:
+        try:
+            lines.extend(checker.report_lines())
         except Exception:
             pass
     plugin_updates = getattr(server, 'plugin_updates', None)
@@ -1595,6 +1627,8 @@ def main():
     admin.app.backup = BackupService(data, policy=store.snapshot, apply_policy=engine.change_config,
                                      labels=labels, console=admin.app.console, repo=admin.repo)
     admin.app.backup.cleanup()
+    admin.app.selfcheck = SelfCheck(lambda: CheckContext(settings, engine=engine, console=admin.app.console,
+                                                         repo=admin.repo, units=admin.app.units))
     admin.plugin_updates = PluginUpdates(admin.repo, data / 'plugin-upstream.json',
                                          url=settings.plugin_upstream)
     admin.app.updates = UpdateManager(data, busy=lambda: update_busy(admin.app.console))

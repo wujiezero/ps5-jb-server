@@ -452,6 +452,7 @@
     if (section === 'activity' && !activity.loaded) refreshActivity();
     if (section === 'repository' && !repo.loaded) refreshRepo();
     if (section === 'settings') {
+      if (!selfcheck.loaded) loadSelfcheck();
       if (!updates.current) loadVersion();
       refreshUpdates();
       startLogs();
@@ -7818,6 +7819,8 @@
       steps: ['升级包会校验 SHA-256，先备份再替换程序，配置、插件和数据都保留。', '升级中服务会重启，页面短暂断开后自动重连；新版本启动失败会自动回滚。', '有传输或解压任务时不能升级。'] },
     proxy: { title: '网络代理', body: '访问 GitHub 和插件官方源时使用的 HTTP 代理，来自服务的环境变量 PS5JB_PROXY 或 HTTPS_PROXY。PS5、NAS 和本机插件仓库始终直连。',
       steps: ['安装时用 install.sh --proxy 设置，或给 systemd 服务加 drop-in 设置环境变量后重启服务。'] },
+    selfcheck: { title: '自检', body: '一次检查 PS5 用到的各个环节：本机 DNS 是否劫持内置域名、用户手册与管理页证书、插件仓库、网关规则与网卡、上游 DNS、conntrack、每台已知 PS5 的 DNS 和网关是否指向本机、IPv6 绕过风险、可选组件和磁盘空间。',
+      steps: ['自检会主动发出 DNS 查询和连接，每项最多几秒，整体不超过 10 秒。', '「PS5 网络指向」看的是最近的 DNS 记录和连接表：PS5 待机或刚开机时可能显示「注意」，开机用一会儿后再检查。', '最近一次结果会附在「导出日志」的诊断摘要里。', '服务器上也可以运行 sudo ./install.sh doctor 查看其中不依赖服务运行的几项。'] },
     backup: { title: '备份与恢复', body: '把访问策略、活动标签、文件主机、已知主机、NAS 连接和插件仓库打包成一个文件，重装系统或换机器后从备份恢复。',
       steps: ['NAS 账号在备份里仍是密文；不勾选「包含 NAS 密钥」时，换机恢复后需要重新填写 NAS 用户名和密码。', '勾选「包含 NAS 密钥」时整个备份用口令加密（.ps5bak），口令不保存，请自己记好。', '「包含插件文件」会把仓库里的 .elf / .bin 和历史版本一起打包，文件会大很多。', '恢复时访问策略立即应用、当前策略成为「上一版」；插件仓库只补上当前没有的插件。', '不包含管理密码、登录会话、证书和活动历史。'] },
     password: { title: '修改管理密码', body: '修改登录本管理页的密码，至少 10 个字符。修改后所有设备上的登录都会失效，需要用新密码重新登录。' },
@@ -8090,6 +8093,68 @@
     }
   }
 
+  /* ── 自检 ───────────────────────────────────────────────────────────── */
+
+  const SELFCHECK_LABEL = { ok: '正常', warn: '注意', fail: '异常', skip: '跳过' };
+  const selfcheck = { loaded: false, last: null };
+
+  function selfcheckItem(item) {
+    const status = SELFCHECK_LABEL[item.status] ? item.status : 'fail';
+    const node = makeElement('li', 'selfcheck-item');
+    node.dataset.status = status;
+    node.append(makeElement('span', 'selfcheck-badge', SELFCHECK_LABEL[status]),
+      makeElement('span', 'selfcheck-title', str(item.title)),
+      makeElement('p', 'selfcheck-detail', str(item.detail)));
+    if (item.fix && status !== 'ok') node.append(makeElement('p', 'selfcheck-fix', `建议：${str(item.fix)}`));
+    return node;
+  }
+
+  function renderSelfcheck(last) {
+    selfcheck.last = last && typeof last === 'object' && Array.isArray(last.results) ? last : null;
+    const list = $('selfcheck-list');
+    if (!selfcheck.last) {
+      list.hidden = true;
+      list.replaceChildren();
+      $('selfcheck-time').textContent = '本次启动后还没有运行过。';
+      return;
+    }
+    const results = selfcheck.last.results;
+    list.replaceChildren(...results.map(selfcheckItem));
+    list.hidden = !results.length;
+    const failed = results.filter((item) => item.status === 'fail').length;
+    const warned = results.filter((item) => item.status === 'warn').length;
+    const when = new Date(str(selfcheck.last.time));
+    const stamp = Number.isNaN(when.getTime()) ? str(selfcheck.last.time) : when.toLocaleString('zh-CN', { hour12: false });
+    $('selfcheck-time').textContent = `${stamp} · ${failed ? `${failed} 项异常` : '没有异常'}${warned ? `，${warned} 项需要注意` : ''}`;
+  }
+
+  async function loadSelfcheck() {
+    if (!authenticated) return;
+    try {
+      const data = await api('/api/selfcheck');
+      selfcheck.loaded = true;
+      if (!selfcheck.last) renderSelfcheck(data.last);
+    } catch (error) {
+      if (error.status === 401) showLogin(error.message);
+    }
+  }
+
+  async function runSelfcheck() {
+    const button = $('selfcheck-run');
+    if (!authenticated || button.getAttribute('aria-busy') === 'true') return;
+    buttonBusy(button, true, '检查中…');
+    try {
+      const data = await api('/api/selfcheck', {}, 30000);
+      selfcheck.loaded = true;
+      renderSelfcheck(data.last);
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      toast(`自检失败：${error.message}`, 'error');
+    } finally {
+      buttonBusy(button, false, '开始自检');
+    }
+  }
+
   /* ── 备份与恢复 ─────────────────────────────────────────────────────── */
 
   const BACKUP_MAGIC = 'PS5JBBK1';
@@ -8239,6 +8304,7 @@
   }
 
   function bindBackupEvents() {
+    $('selfcheck-run').addEventListener('click', runSelfcheck);
     $('backup-key').addEventListener('change', () => {
       $('backup-passphrase-group').hidden = !$('backup-key').checked;
       showFieldMessage('backup-error', '');
