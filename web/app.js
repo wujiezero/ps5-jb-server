@@ -7818,6 +7818,8 @@
       steps: ['升级包会校验 SHA-256，先备份再替换程序，配置、插件和数据都保留。', '升级中服务会重启，页面短暂断开后自动重连；新版本启动失败会自动回滚。', '有传输或解压任务时不能升级。'] },
     proxy: { title: '网络代理', body: '访问 GitHub 和插件官方源时使用的 HTTP 代理，来自服务的环境变量 PS5JB_PROXY 或 HTTPS_PROXY。PS5、NAS 和本机插件仓库始终直连。',
       steps: ['安装时用 install.sh --proxy 设置，或给 systemd 服务加 drop-in 设置环境变量后重启服务。'] },
+    backup: { title: '备份与恢复', body: '把访问策略、活动标签、文件主机、已知主机、NAS 连接和插件仓库打包成一个文件，重装系统或换机器后从备份恢复。',
+      steps: ['NAS 账号在备份里仍是密文；不勾选「包含 NAS 密钥」时，换机恢复后需要重新填写 NAS 用户名和密码。', '勾选「包含 NAS 密钥」时整个备份用口令加密（.ps5bak），口令不保存，请自己记好。', '「包含插件文件」会把仓库里的 .elf / .bin 和历史版本一起打包，文件会大很多。', '恢复时访问策略立即应用、当前策略成为「上一版」；插件仓库只补上当前没有的插件。', '不包含管理密码、登录会话、证书和活动历史。'] },
     password: { title: '修改管理密码', body: '修改登录本管理页的密码，至少 10 个字符。修改后所有设备上的登录都会失效，需要用新密码重新登录。' },
     'service-info': { title: '服务信息', body: '本服务的端口、网段、数据目录和 systemd 服务名，排查问题或手动维护时使用。' },
     logs: { title: '运行日志', body: '管理服务的运行记录：警告与错误、主机 / 插件 / 文件操作、更新过程等。页面定时刷新这类成功的读取请求不会记录。',
@@ -8055,7 +8057,10 @@
   }
 
   function saveTextFile(text, filename) {
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    saveBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), filename);
+  }
+
+  function saveBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -8085,8 +8090,169 @@
     }
   }
 
+  /* ── 备份与恢复 ─────────────────────────────────────────────────────── */
+
+  const BACKUP_MAGIC = 'PS5JBBK1';
+  const RESTORE_STATE = { restored: '已恢复', skipped: '已跳过', failed: '失败' };
+  const backupState = { encrypted: false };
+
+  function showFieldMessage(id, message) {
+    const node = $(id);
+    node.textContent = message || '';
+    node.hidden = !message;
+  }
+
+  function backupFilename(header, fallback) {
+    const match = /filename="([\w.-]{1,120})"/.exec(str(header));
+    return match ? match[1] : fallback;
+  }
+
+  async function downloadBackup() {
+    if (!authenticated) return;
+    const button = $('backup-download');
+    if (button.getAttribute('aria-busy') === 'true') return;
+    const payloads = $('backup-payloads').checked;
+    const includeKey = $('backup-key').checked;
+    const passphrase = $('backup-passphrase').value;
+    if (includeKey && passphrase.length < 10) {
+      showFieldMessage('backup-error', '包含密钥时需要设置至少 10 个字符的备份口令。');
+      $('backup-passphrase').focus();
+      return;
+    }
+    showFieldMessage('backup-error', '');
+    buttonBusy(button, true, '正在打包…');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 600000);
+    try {
+      const options = { credentials: 'same-origin', cache: 'no-store', signal: controller.signal, headers: { Accept: 'application/octet-stream' } };
+      let url = `/api/backup?payloads=${payloads ? 1 : 0}`;
+      if (includeKey) {
+        url = '/api/backup';
+        options.method = 'POST';
+        options.headers['Content-Type'] = 'application/json';
+        options.headers['X-CSRF-Token'] = csrf;
+        options.body = JSON.stringify({ payloads, include_key: true, passphrase });
+      }
+      let response;
+      try {
+        response = await fetch(url, options);
+      } catch (error) {
+        throw new ApiError(error.name === 'AbortError' ? '打包超时，请稍后重试。' : '无法连接管理服务，请检查网络后重试。');
+      }
+      if (!response.ok) {
+        let data = null;
+        try { data = await response.json(); } catch { data = null; }
+        throw new ApiError(data && typeof data.error === 'string' ? data.error : '备份失败，请查看运行日志。', response.status);
+      }
+      const blob = await response.blob();
+      const name = backupFilename(response.headers.get('Content-Disposition'), includeKey ? 'ps5-jb-backup.ps5bak' : 'ps5-jb-backup.tar.gz');
+      saveBlob(blob, name);
+      $('backup-passphrase').value = '';
+      toast(`已下载 ${name}（${formatBytes(blob.size)}）。`, 'success');
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      showFieldMessage('backup-error', error.message);
+    } finally {
+      clearTimeout(timeout);
+      buttonBusy(button, false, '下载备份');
+    }
+  }
+
+  async function inspectRestoreFile() {
+    const file = $('restore-file').files?.[0] || null;
+    showFieldMessage('restore-error', '');
+    $('restore-result').hidden = true;
+    backupState.encrypted = false;
+    if (file) {
+      try {
+        const head = new Uint8Array(await file.slice(0, BACKUP_MAGIC.length).arrayBuffer());
+        backupState.encrypted = String.fromCharCode(...head) === BACKUP_MAGIC;
+      } catch {
+        backupState.encrypted = false;
+      }
+    }
+    $('restore-passphrase-group').hidden = !backupState.encrypted;
+    $('restore-start').disabled = !file;
+  }
+
+  function openRestoreDialog() {
+    const file = $('restore-file').files?.[0];
+    if (!authenticated || !file) return;
+    if (backupState.encrypted && !$('restore-passphrase').value) {
+      showFieldMessage('restore-error', '这个备份包含密钥，请输入备份口令。');
+      $('restore-passphrase').focus();
+      return;
+    }
+    $('restore-file-name').textContent = `${file.name} · ${formatBytes(file.size)}`;
+    $('restore-dialog').showModal();
+    $('restore-cancel').focus({ preventScroll: true });
+  }
+
+  function renderRestoreResult(data) {
+    const list = $('restore-result');
+    const items = Array.isArray(data && data.items) ? data.items : [];
+    list.replaceChildren(...items.map((item) => {
+      const state = RESTORE_STATE[item.state] ? item.state : 'failed';
+      const node = makeElement('li', '', `${str(item.title)}：${RESTORE_STATE[state]}${item.detail ? ` · ${str(item.detail)}` : ''}`);
+      node.dataset.state = state;
+      return node;
+    }));
+    list.hidden = !items.length;
+    return items;
+  }
+
+  async function confirmRestore() {
+    $('restore-dialog').close();
+    const file = $('restore-file').files?.[0];
+    const button = $('restore-start');
+    if (!authenticated || !file || button.getAttribute('aria-busy') === 'true') return;
+    if (!csrf) { showLogin('登录验证信息缺失，请重新登录。'); return; }
+    showFieldMessage('restore-error', '');
+    buttonBusy(button, true, '正在恢复…');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 600000);
+    try {
+      const headers = { Accept: 'application/json', 'Content-Type': 'application/octet-stream', 'X-CSRF-Token': csrf };
+      if (backupState.encrypted) headers['X-Backup-Passphrase'] = encodeURIComponent($('restore-passphrase').value);
+      let response;
+      try {
+        response = await fetch('/api/backup/restore', { method: 'POST', credentials: 'same-origin', cache: 'no-store', headers, body: file, signal: controller.signal });
+      } catch (error) {
+        throw new ApiError(error.name === 'AbortError' ? '恢复超时，请查看运行日志。' : '无法连接管理服务，请检查网络后重试。');
+      }
+      let data = null;
+      try { data = await response.json(); } catch { data = null; }
+      if (!response.ok) throw new ApiError(data && typeof data.error === 'string' ? data.error : '恢复失败，请查看运行日志。', response.status);
+      const items = renderRestoreResult(data);
+      $('restore-passphrase').value = '';
+      const failed = items.filter((item) => item.state === 'failed').length;
+      toast(failed ? `恢复完成，其中 ${failed} 项失败，详见卡片。` : '已从备份恢复。', failed ? 'warning' : 'success');
+      dirty = false;
+      refreshState({ forceConfig: true });
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      showFieldMessage('restore-error', error.message);
+    } finally {
+      clearTimeout(timeout);
+      buttonBusy(button, false, '恢复…');
+    }
+  }
+
+  function bindBackupEvents() {
+    $('backup-key').addEventListener('change', () => {
+      $('backup-passphrase-group').hidden = !$('backup-key').checked;
+      showFieldMessage('backup-error', '');
+    });
+    $('backup-download').addEventListener('click', downloadBackup);
+    $('restore-file').addEventListener('change', inspectRestoreFile);
+    $('restore-start').addEventListener('click', openRestoreDialog);
+    $('restore-cancel').addEventListener('click', () => $('restore-dialog').close());
+    $('restore-confirm').addEventListener('click', confirmRestore);
+  }
+
   function bindPolishEvents() {
     initHelpTips();
+    bindBackupEvents();
     window.addEventListener('error', (event) => {
       noteClient('error', `${event.message || '脚本错误'}${event.filename ? ` @ ${event.filename}:${event.lineno}` : ''}`);
     });

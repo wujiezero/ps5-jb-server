@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from activity import Classifier, FlowObserver, LabelsStore, make_poller
+from backup import BackupError, BackupService
 from api_console import ConsoleAPI
 import logbook
 import netproxy
@@ -1221,6 +1222,91 @@ class AdminHandler(BaseHTTPRequestHandler):
     def post_console(self):
         self.server.app.console_post(self, self.path.split('?', 1)[0])
 
+    # ---------- backup and restore ----------
+    def _backup_service(self):
+        service = getattr(self.server.app, 'backup', None)
+        if service is None:
+            self.send_body(503, {'error': '备份功能未启用'})
+        return service
+
+    def get_backup(self):
+        """GET /api/backup?payloads=0|1: an unencrypted backup (no NAS key)."""
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        payloads = (query.get('payloads') or [''])[0] in ('1', 'true')
+        try:
+            self._send_backup(payloads, False, '')
+        except BackupError as exc:
+            self.send_body(400, {'error': str(exc)})
+        except Exception as exc:
+            logging.exception('Backup failed')
+            self.send_body(500, {'error': '备份失败：' + diagnostic_error(exc)})
+
+    def post_backup(self, body):
+        """POST /api/backup {payloads, include_key, passphrase}: the binary backup."""
+        include_key = body.get('include_key') is True
+        passphrase = body.get('passphrase') if include_key else ''
+        self._send_backup(body.get('payloads') is True, include_key, passphrase if isinstance(passphrase, str) else '')
+
+    def _send_backup(self, payloads, include_key, passphrase):
+        service = self._backup_service()
+        if service is None:
+            return
+        path, name = service.create(payloads=payloads, include_key=include_key, passphrase=passphrase)
+        try:
+            self.send_file(path, name, 'application/octet-stream' if include_key else 'application/gzip')
+            logging.info('backup downloaded: %s (%d bytes, payloads=%s, key=%s)', name,
+                         path.stat().st_size, payloads, include_key)
+        finally:
+            service.discard(path)
+
+    def send_file(self, path, filename, ctype):
+        """Send a local file as an attachment with a known length."""
+        size = Path(path).stat().st_size
+        self.send_response(200)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(size))
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.end_headers()
+        with open(path, 'rb') as stream:
+            shutil.copyfileobj(stream, self.wfile, 1 << 20)
+
+    def post_backup_restore(self):
+        """POST /api/backup/restore: raw backup body, X-Backup-Passphrase (URL-encoded)."""
+        if not self.require_session(write=True):
+            return
+        service = self._backup_service()
+        if service is None:
+            return
+        console = getattr(self.server.app, 'console', None)
+        if console is not None and update_busy(console):
+            self.send_body(409, {'error': '有传输、解压或复制任务在进行，完成后再恢复'})
+            return
+        if self.headers.get('Transfer-Encoding'):
+            self.send_body(400, {'error': '不支持分块上传'})
+            return
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+        except ValueError:
+            length = 0
+        limit = restore_limit(getattr(self.server, 'repo', None))
+        if length <= 0:
+            self.send_body(400, {'error': '备份文件为空'})
+            return
+        if length > limit:
+            self.send_body(413, {'error': f'备份文件超过 {limit >> 20} MB 上限'})
+            return
+        passphrase = urllib.parse.unquote(self.headers.get('X-Backup-Passphrase', ''))
+        path = service.receive(self.rfile, length)
+        self.send_body(200, service.restore(path, passphrase))
+
+
+def restore_limit(repo):
+    """A restore upload may carry every plugin file: eight times the upload limit."""
+    return (getattr(repo, 'MAX_UPLOAD', None) or RepoManager.MAX_UPLOAD) * 8
+
 
 STATIC_TYPES = {'html': 'text/html; charset=utf-8', 'js': 'text/javascript; charset=utf-8',
                 'css': 'text/css; charset=utf-8'}
@@ -1287,6 +1373,7 @@ GET_ROUTES = {
     '/api/logs': Route('handle_logs'),
     '/api/logs/export': Route('handle_logs'),
     '/api/repo/upstream/progress': Route('get_upstream_progress', exact=True),
+    '/api/backup': Route('get_backup'),
 }
 # Checked in order after GET_ROUTES; a prefix also matches longer paths.
 GET_PREFIXES = (
@@ -1315,6 +1402,8 @@ POST_ROUTES = {
     **{route: _json_route('handle_repo_version', tracked=True) for route in REPO_VERSION_ROUTES},
     # Raw body; the handler checks session and CSRF itself.
     '/api/repo/upload': Route('handle_upload', auth=None, tracked=True, body='raw'),
+    '/api/backup': _json_route('post_backup'),
+    '/api/backup/restore': Route('post_backup_restore', auth=None, tracked=True, body='raw'),
 }
 POST_PREFIXES = (
     # The console API checks session, CSRF and the body itself.
@@ -1503,6 +1592,9 @@ def main():
                              base_url=f'http://{host_ip}:{settings.repo_port}/payloads/',
                              max_upload=settings.max_upload)
     admin.app.repo = admin.repo
+    admin.app.backup = BackupService(data, policy=store.snapshot, apply_policy=engine.change_config,
+                                     labels=labels, console=admin.app.console, repo=admin.repo)
+    admin.app.backup.cleanup()
     admin.plugin_updates = PluginUpdates(admin.repo, data / 'plugin-upstream.json',
                                          url=settings.plugin_upstream)
     admin.app.updates = UpdateManager(data, busy=lambda: update_busy(admin.app.console))

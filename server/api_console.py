@@ -60,6 +60,11 @@ class ConsoleAPI:
             except ValueError:
                 pass
 
+    def set_files_host(self, host):
+        """Select the PS5 file host (from a backup); must be an IPv4 address."""
+        self.files.host = str(ipaddress.IPv4Address(host))
+        self._remember()
+
     def _remember(self):
         payload = json.dumps({'files_host': self.files.host}).encode()
         tmp = self.state_path.with_suffix('.tmp')

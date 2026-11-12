@@ -150,6 +150,41 @@ class SecretBox:
                 continue      # e.g. /etc is read-only under ProtectSystem=strict
         raise NasError('无法创建 NAS 凭据密钥文件')
 
+    def existing(self):
+        """Path of the key file in use, without creating one."""
+        if self.location:
+            return self.location
+        return next((path for path in (self.key_path, self.fallback_path) if path and path.exists()), None)
+
+    def export(self):
+        """The key as stored on disk (base64 text), for an encrypted backup."""
+        return base64.b64encode(self.key()) + b'\n'
+
+    def install(self, raw):
+        """Replace the key with one restored from a backup."""
+        try:
+            key = base64.b64decode(bytes(raw).strip(), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ValueError('备份里的 NAS 密钥格式不正确') from exc
+        if len(key) != 32:
+            raise ValueError('备份里的 NAS 密钥长度不正确')
+        current = self.existing()
+        for path in [current] if current else [p for p in (self.key_path, self.fallback_path) if p]:
+            temporary = path.with_name('.' + path.name + '.tmp')
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(descriptor, 'wb') as stream:
+                    stream.write(base64.b64encode(key) + b'\n')
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, path)
+            except OSError:
+                continue
+            self._key, self.location = key, path
+            return path
+        raise NasError('无法写入 NAS 凭据密钥文件')
+
     def seal(self, ident, username, password):
         if not username and not password:
             return ''
@@ -316,6 +351,43 @@ class NasStore:
                 self.items.append(item)
             self._save()
             return self.public(item)
+
+    IDENT = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
+
+    def document(self):
+        """What nas.json holds (credentials stay sealed), for a backup."""
+        with self.lock:
+            return {'version': 2, 'connections': [{key: item.get(key) for key in self.STORED if key in item}
+                                                  for item in self.items]}
+
+    def restore(self, document, key=None):
+        """Replace the connections with a backup's.
+
+        With the backup's key the sealed credentials come back as they were.
+        Without it they cannot be opened here, so they are dropped: an entry
+        keeps its current credentials only when this host already has it.
+        Returns (connections, connections whose login must be entered again).
+        """
+        connections = document.get('connections') if isinstance(document, dict) else None
+        if not isinstance(connections, list):
+            raise ValueError('NAS 连接数据格式不正确')
+        items = []
+        for raw in connections[:20]:
+            if not (isinstance(raw, dict) and isinstance(raw.get('id'), str) and self.IDENT.match(raw['id'])
+                    and raw.get('protocol') in PROTOCOLS and isinstance(raw.get('host'), str)):
+                continue
+            items.append({k: raw[k] for k in self.STORED if k in raw})
+        with self.lock:
+            if key is not None:
+                self.box.install(key)
+            else:
+                current = {item['id']: item.get('credentials', '') for item in self.items}
+                for item in items:
+                    item['credentials'] = current.get(item['id'], '')
+            self.items = items
+            self._save()
+            blank = sum(1 for item in items if not item.get('credentials'))
+        return len(items), blank
 
     def delete(self, ident):
         with self.lock:

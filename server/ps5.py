@@ -152,6 +152,12 @@ class Discovery:
                              'firmware': str(record.get('firmware') or '')[:16], 'last_seen': seen}
         return dict(sorted(known.items(), key=lambda item: -item[1]['last_seen']))
 
+    def reload_known(self):
+        """Re-read hosts.json (restored from a backup) and probe those hosts first."""
+        with self.lock:
+            self.known = self._load_known()
+            self.extra = list(dict.fromkeys(list(self.known)[:32] + self.extra))[:64]
+
     def _save_known(self, found):
         """Record the hosts a scan found; caller holds self.lock."""
         now = self.clock()

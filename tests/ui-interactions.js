@@ -68,6 +68,7 @@ function fixture(extra = {}) {
       files, filesRow, nasRow, filesVisibleEntries, titleIdOf, titleNames, flushTitleNames, normalizeFilesEntries,
       nas, nasArchiveSelection, extractTask, filesTransferTasks, filesTransferCard, normalizePs5,
       setNasJobs(value) { nasJobs = value; },
+      renderRestoreResult, backupFilename,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
       normalizeRepo, renderUpstream, categoryChoices,
@@ -730,6 +731,24 @@ test('automatic retries and resumes are counted on the NAS task card', () => {
   const [retried, older] = ui.filesTransferTasks();
   assert.match(textOf(ui.filesTransferCard(retried)), /自动重试 2 次.*续传 1 次/);
   assert.doesNotMatch(textOf(ui.filesTransferCard(older)), /重试|续传/, 'older servers omit the fields');
+});
+
+test('restore results are listed as text with their state; backup names are sanitized', () => {
+  const ui = fixture();
+  const items = ui.renderRestoreResult({ items: [
+    { id: 'policy', title: '访问策略', state: 'restored', detail: '已应用' },
+    { id: 'nas', title: 'NAS 连接', state: 'weird', detail: '<b>x</b>' }
+  ] });
+  assert.equal(items.length, 2);
+  const list = ui.node('restore-result');
+  assert.equal(list.hidden, false);
+  assert.equal(list.children[0].textContent, '访问策略：已恢复 · 已应用');
+  assert.equal(list.children[1].dataset.state, 'failed', 'unknown states show as failures');
+  assert.match(list.children[1].textContent, /<b>x<\/b>/, 'server text stays text');
+  assert.equal(ui.backupFilename('attachment; filename="ps5-jb-backup-1.tar.gz"', 'x'), 'ps5-jb-backup-1.tar.gz');
+  assert.equal(ui.backupFilename('attachment; filename="../evil"', 'fallback.tar.gz'), 'fallback.tar.gz');
+  ui.renderRestoreResult({});
+  assert.equal(list.hidden, true);
 });
 
 test('hosts remembered from an earlier run are marked until the scan reaches them', () => {

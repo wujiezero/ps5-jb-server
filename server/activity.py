@@ -148,6 +148,29 @@ class LabelsStore:
         with self.lock:
             return {key: dict(value) for key, value in self.data.items()}
 
+    def replace(self, mapping):
+        """Swap in every label from a backup; returns (kept, dropped)."""
+        if not isinstance(mapping, dict):
+            raise ValueError('标签数据格式不正确')
+        data, dropped = {}, 0
+        for target, value in mapping.items():
+            try:
+                key = self.check_target(target)
+            except ValueError:
+                dropped += 1
+                continue
+            if not isinstance(value, dict):
+                dropped += 1
+                continue
+            name = str(value.get('name') or '').strip()[:_LABEL_MAX]
+            category = str(value.get('category') or '').strip()[:_CATEGORY_MAX]
+            if name or category:
+                data[key] = {'name': name, 'category': category}
+        with self.lock:
+            self.data = data
+            self._save()
+        return len(data), dropped
+
 
 SERVICE_PORTS = {53: '本机 DNS', 853: '本机 DNS', 80: '用户手册', 443: '用户手册',
                  8080: '插件仓库', 8443: '管理页', 9021: 'elfldr', 8084: 'pldmgr'}

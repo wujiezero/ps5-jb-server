@@ -3142,3 +3142,13 @@ tbody[data-enter="true"] > tr:nth-child(n+6) { animation-delay: 60ms; }
 .combo-option[data-current="true"] { font-weight: 650; }
 .combo-create { color: var(--accent); border-top: 1px solid var(--line); border-radius: 0 0 6px 6px; margin-top: 2px; }
 .combo-create:first-child { border-top: 0; margin-top: 0; border-radius: 6px; }
+
+/* 备份与恢复 */
+.backup-block { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.backup-subtitle { margin: 0; font-size: 0.875rem; font-weight: 600; }
+.restore-list { margin: 8px 0 0; padding-left: 1.2em; display: grid; gap: 4px; font-size: 0.8125rem; }
+.restore-result { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 0.8125rem; }
+.restore-result[hidden] { display: none; }
+.restore-result li { padding: 6px 10px; border-radius: 8px; background: var(--surface-2, rgba(127, 127, 127, 0.08)); overflow-wrap: anywhere; }
+.restore-result li[data-state="failed"] { color: var(--danger, #c62828); }
+.restore-result li[data-state="skipped"] { opacity: 0.8; }

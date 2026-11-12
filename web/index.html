@@ -848,6 +848,54 @@
             </div>
           </form>
 
+          <section id="backup-card" class="card" aria-labelledby="backup-title">
+            <header class="card-head">
+              <div><h2 id="backup-title">备份与恢复 <button class="help-tip" type="button" data-help="backup"></button></h2><p class="card-sub">导出访问策略、标签、NAS 连接与插件仓库，重装或换机后从备份恢复。</p></div>
+            </header>
+            <div class="field-grid two">
+              <div class="backup-block">
+                <h3 class="backup-subtitle">下载备份</h3>
+                <div class="nas-checks">
+                  <label class="nas-check" for="backup-payloads"><input id="backup-payloads" type="checkbox"> <span>包含插件文件</span></label>
+                  <label class="nas-check" for="backup-key"><input id="backup-key" type="checkbox"> <span>包含 NAS 密钥</span></label>
+                </div>
+                <div id="backup-passphrase-group" class="field-group" hidden>
+                  <label for="backup-passphrase">备份口令</label>
+                  <input id="backup-passphrase" type="password" autocomplete="new-password" minlength="10" maxlength="256" placeholder="至少 10 个字符" aria-describedby="backup-passphrase-help">
+                  <p id="backup-passphrase-help" class="field-help">含密钥的备份整体加密；口令不会保存，忘记就无法恢复。</p>
+                </div>
+                <p id="backup-error" class="field-error" role="alert" hidden></p>
+                <div class="form-actions">
+                  <button id="backup-download" class="button button-primary" type="button" data-label="下载备份">
+                    <svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg>
+                    <span class="spinner" aria-hidden="true" hidden></span>
+                    <span class="button-label">下载备份</span>
+                  </button>
+                </div>
+              </div>
+              <div class="backup-block">
+                <h3 class="backup-subtitle">从备份恢复</h3>
+                <div class="field-group">
+                  <label for="restore-file">备份文件（.tar.gz 或 .ps5bak）</label>
+                  <input id="restore-file" type="file" accept=".gz,.tgz,.ps5bak,application/gzip,application/octet-stream">
+                </div>
+                <div id="restore-passphrase-group" class="field-group" hidden>
+                  <label for="restore-passphrase">备份口令</label>
+                  <input id="restore-passphrase" type="password" autocomplete="off" maxlength="256" placeholder="这个备份包含密钥，需要口令">
+                </div>
+                <p id="restore-error" class="field-error" role="alert" hidden></p>
+                <div class="form-actions">
+                  <button id="restore-start" class="button button-secondary" type="button" data-label="恢复…" disabled>
+                    <span class="spinner" aria-hidden="true" hidden></span>
+                    <span class="button-label">恢复…</span>
+                  </button>
+                </div>
+                <ul id="restore-result" class="restore-result" aria-live="polite" hidden></ul>
+              </div>
+            </div>
+            <p class="footnote">不包含管理密码、登录会话、TLS 证书、活动历史与 PS5Upload 配对密钥。有传输、解压或复制任务时不能恢复。</p>
+          </section>
+
           <section class="card" aria-labelledby="service-title">
             <header class="card-head"><h2 id="service-title">服务信息 <button class="help-tip" type="button" data-help="service-info"></button></h2></header>
             <dl class="info-list">
@@ -1013,6 +1061,25 @@
     <div class="dialog-actions">
       <button id="rollback-cancel" class="button button-secondary" type="button">取消</button>
       <button id="rollback-confirm" class="button button-primary" type="button">确认回滚</button>
+    </div>
+  </dialog>
+
+  <dialog id="restore-dialog" class="dialog" aria-labelledby="restore-title" aria-describedby="restore-description">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="dialog-content">
+      <h2 id="restore-title">从备份恢复？</h2>
+      <p id="restore-description">备份里有的内容会替换当前设置：</p>
+      <ul class="restore-list">
+        <li>访问策略：立即应用，当前策略成为「上一版」，可回退</li>
+        <li>活动标签、文件主机、已知主机、通知渠道：整体替换</li>
+        <li>NAS 连接：整体替换；备份不含密钥时需要重新填写账号</li>
+        <li>插件仓库：只新增当前没有的插件，不删除、不覆盖</li>
+      </ul>
+      <p id="restore-file-name" class="secondary-note mono"></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="restore-cancel" class="button button-secondary" type="button">取消</button>
+      <button id="restore-confirm" class="button button-primary" type="button">确认恢复</button>
     </div>
   </dialog>
 
