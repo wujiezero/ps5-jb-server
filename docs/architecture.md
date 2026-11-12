@@ -260,5 +260,6 @@ Webhook 地址、Bark 设备密钥、ntfy 主题与令牌、Telegram 机器人�
   `repository.js` → `activity.js` → `ui.js`（底部面板、进度、功能说明等通用组件）→ `ps5.js` → `files.js` → `nas.js` → `library.js` →
   `app.js`（事件绑定与启动，最后加载）。加载时执行的顶层语句只能引用已加载文件里的声明；顶层函数不能重名（后加载的会覆盖前面的）。
 - 样式按 `<link>` 顺序层叠：`style.css`（变量、排版、表单）→ `shell.css` → `pages.css` → `ps5.css` → `adaptive.css` → `features.css`。
+- 发布包把上面的脚本按顺序合并成 `app.js`、样式合并成 `style.css`（`v1.9.0` 及更早的升级执行器只接受这三个前端文件），见 [版本与发布](releases.md)。
 - 无内联脚本/样式，无外部资源；服务端字符串一律 `textContent`。
 - 8 秒轮询受保护：不覆盖未保存的表单、打开的弹窗、进行中的上传与已选中的行。

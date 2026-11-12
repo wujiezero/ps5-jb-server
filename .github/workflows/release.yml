@@ -34,6 +34,11 @@ jobs:
           else
             python scripts/build_release.py
           fi
+      - name: Test the bundled front end
+        run: |
+          mkdir -p /tmp/bundle && tar -xzf dist/*.tar.gz -C /tmp/bundle
+          for file in /tmp/bundle/*/web/*.js; do node --check "$file"; done
+          UI_WEB_DIR="$(echo /tmp/bundle/*/web)" node --test tests/ui-interactions.js
       - uses: actions/upload-artifact@v4
         with:
           name: release-assets

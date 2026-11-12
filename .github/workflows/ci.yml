@@ -33,3 +33,9 @@ jobs:
         run: ./scripts/check-secrets.sh
       - name: Package
         run: python scripts/build_release.py --output /tmp/dist
+      - name: Test the bundled front end
+        # The package joins web/ into index.html + app.js + style.css (updaters up to v1.9.0 accept nothing else).
+        run: |
+          mkdir -p /tmp/bundle && tar -xzf /tmp/dist/*.tar.gz -C /tmp/bundle
+          for file in /tmp/bundle/*/web/*.js; do node --check "$file"; done
+          UI_WEB_DIR="$(echo /tmp/bundle/*/web)" node --test tests/ui-interactions.js
