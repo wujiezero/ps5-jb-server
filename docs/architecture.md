@@ -203,7 +203,7 @@ Webhook 地址、Bark 设备密钥、ntfy 主题与令牌、Telegram 机器人�
 `ps5jb-nas:notify:<渠道 ID>`，与 NAS 账号共用 `nas.key`（所以备份时一起处理）；接口只返回 `has_secret`。
 
 - 事件：`transfer.finished/failed`、`extract.finished/failed`（`TransferManager` 每个任务结束时通知监听者一次，取消不通知）、
-  `package.finished/failed`、`update.finished/failed`、`gateway.error`；`backup.*` 预留给 PS5 备份。每个渠道勾选订阅。
+  `package.finished/failed`、`backup.finished/failed`、`update.finished/failed`、`gateway.error`。每个渠道勾选订阅。
 - 发送：有界队列（100 条，满了丢最旧的）+ 一个后台线程，绝不阻塞传输线程。每次 5 秒超时，网络错误重试 2 次，
   4xx（除 408/429）不重试；同一事件键 60 秒内只发一次。只允许 http/https，拒绝改变协议的重定向。
 - 出口：目标解析到私有地址时直连，否则走 `netproxy.opener()`；渠道可关掉代理。日志只写渠道名、类型和失败类型
