@@ -66,7 +66,7 @@ function fixture(extra = {}) {
       normalizeActivity, activityRow, renderBuiltinDomains,
       setActivityFilter, renderRepo, renderPs5Catalog,
       files, filesRow, nasRow, filesVisibleEntries, titleIdOf, titleNames, flushTitleNames, normalizeFilesEntries,
-      nas, nasArchiveSelection, extractTask, filesTransferTasks, filesTransferCard, normalizePs5,
+      nas, nasArchiveSelection, extractTask, packageTask, filesTransferTasks, filesTransferCard, normalizePs5,
       setNasJobs(value) { nasJobs = value; },
       renderRestoreResult, backupFilename, renderSelfcheck, renderNotify, notifyState, normalizeNotify,
       actHistory, renderStats, renderHistory, setActivityMode,
@@ -732,6 +732,41 @@ test('automatic retries and resumes are counted on the NAS task card', () => {
   const [retried, older] = ui.filesTransferTasks();
   assert.match(textOf(ui.filesTransferCard(retried)), /自动重试 2 次.*续传 1 次/);
   assert.doesNotMatch(textOf(ui.filesTransferCard(older)), /重试|续传/, 'older servers omit the fields');
+});
+
+test('PKG and cheat ZIP rows get their own action; package jobs show steps and a retry', () => {
+  const ui = fixture();
+  ui.setAuthenticated(true);
+  ui.files.info = { reachable: true, host: '192.0.2.5' };
+  const find = (node, test) => (test(node) ? node : node.children.map((child) => find(child, test)).find(Boolean));
+  const action = (entry) => find(ui.nasRow({ dir: false, size: 1, mtime: 0, ...entry }),
+    (node) => node.tagName === 'button' && /nas-row-action/.test(node.className || ''));
+  assert.equal(action({ name: 'CUSA12345.pkg', path: '/g/CUSA12345.pkg' }).textContent, '安装 PKG');
+  assert.equal(action({ name: 'CUSA12345 金手指.zip', path: '/g/a.zip' }).textContent, '导入金手指');
+  assert.equal(action({ name: 'Trainer v2.ZIP', path: '/g/b.zip' }).textContent, '导入金手指');
+  assert.equal(action({ name: 'saves.zip', path: '/g/c.zip' }), undefined);
+  assert.equal(action({ name: '._CUSA12345.pkg', path: '/g/._x.pkg' }), undefined);
+
+  const base = { id: 'p', kind: 'package', name: 'CUSA12345.pkg', source: 'NAS', host: '192.0.2.5',
+    bytes_done: 10, bytes_total: 100, speed: 0, elapsed: 3, eta: null, errors: [] };
+  const running = ui.packageTask({ ...base, state: 'running', phase: 'install' });
+  assert.equal(running.kind, 'package');
+  assert.match(running.line, /准备 → 传输 → 【安装】 → 确认/);
+  assert.equal(running.retry, null);
+  const busy = ui.packageTask({ ...base, state: 'failed', error_code: 'busy', error: 'x' });
+  assert.equal(typeof busy.retry, 'function');
+  assert.match(busy.line, /引擎正忙/);
+  assert.match(ui.packageTask({ ...base, state: 'done_with_warnings', warning: '游戏可能无法启动' }).line, /可能无法启动/);
+  ui.setNasJobs([{ ...base, state: 'queued', phase: 'prepare' }]);
+  assert.match(textOf(ui.filesTransferCard(ui.filesTransferTasks()[0])), /CUSA12345\.pkg/);
+});
+
+test('extraction cards mention imported cheats and a failed cheat step', () => {
+  const ui = fixture();
+  const base = { id: 'e', kind: 'extract', name: 'Game.rar', source: 'NAS', dest: '/data', bytes_done: 1, bytes_total: 1,
+    files_done: 1, errors: [], state: 'done' };
+  assert.match(ui.extractTask({ ...base, cheat_result: { written: ['a', 'b'] } }).line, /已导入 2 个金手指文件.*重新加载/);
+  assert.match(ui.extractTask({ ...base, state: 'done_with_warnings', cheat_error: '金手指导入失败：坏 ZIP' }).line, /坏 ZIP/);
 });
 
 test('restore results are listed as text with their state; backup names are sanitized', () => {

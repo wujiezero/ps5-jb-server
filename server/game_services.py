@@ -25,8 +25,50 @@ class GameServiceError(ValueError):
 
 
 def _is_busy(result):
-    error = str(result.get('error') or result.get('message') or '').lower()
+    error = str(result.get('error') or result.get('message') or result.get('reason') or '').lower()
     return result.get('busy') is True or error == 'busy' or 'busy' in error
+
+
+# Engine phases -> the task card's steps (准备 → 传输 → 安装 → 确认).
+PACKAGE_PHASES = {'queued': 'prepare', 'resolve': 'prepare', 'deliver': 'transfer',
+                  'install': 'install', 'verify': 'verify', 'done': 'verify'}
+CHEAT_ROOT = '/data/etaHEN/cheats'
+
+
+def install_timeout(size):
+    """How long to wait for one PKG: at least 10 minutes, else ~2 MiB/s plus 5 minutes."""
+    return max(600.0, (int(size or 0) / (2 << 20)) + 300.0)
+
+
+def write_cheats(files, parsed):
+    """Write parse_cheat_zip() output to etaHEN's folders through FileProxy.
+
+    Returns {'written': [destination...], 'warnings': [...]}; one failed file
+    becomes a warning, the rest are still written.
+    """
+    written, warnings = [], list(parsed.get('warnings') or [])
+    made = set()
+    for item in parsed.get('files') or []:
+        fmt, name = item['format'], item['name']
+        if fmt not in _CHEAT_FORMATS or '/' in name or name in ('', '.', '..'):
+            continue
+        folder = f'{CHEAT_ROOT}/{fmt}'
+        for directory in ('/data/etaHEN', CHEAT_ROOT, folder):
+            if directory in made:
+                continue
+            try:
+                files.mkdir(directory)
+            except Exception:
+                pass            # usually "already exists"; a real problem shows on upload
+            made.add(directory)
+        data = item['data']
+        try:
+            files.upload(folder, name, iter((data,)), len(data), overwrite=True)
+            written.append(f'{folder}/{name}')
+        except Exception as exc:
+            warnings.append(f'写入 {folder}/{name} 失败：{str(exc)[:160]}')
+    return {'written': written, 'warnings': warnings,
+            'note': '需要在 etaHEN 里重新加载金手指（或重启 etaHEN）后才会生效' if written else ''}
 
 
 def _validate_local_source(path, extension=None):
@@ -217,18 +259,34 @@ class GameServices:
         return {'state': 'done', 'title': title, 'name': result.get('title_name') or game.get('name') or title,
                 'path': path, 'used_nullfs': bool(result.get('used_nullfs'))}
 
-    def package_install(self, host, source):
-        _validate_local_source(source, '.pkg')
+    def package_install(self, host, source, timeout=None, progress=None, cancel=None):
+        """Install one PKG through the engine and wait for its verdict.
+
+        source: a local absolute path (host_file) or {'url': 'http://...'}, the
+        form the NAS install uses: the console, or the engine as a fallback
+        proxy, reads the package with Range requests. timeout: seconds to wait
+        (default poll_timeout); progress(status) is called with every status;
+        cancel (threading.Event) stops the engine job.
+        """
+        if isinstance(source, dict) and set(source) == {'url'}:
+            url = source['url']
+            if not isinstance(url, str) or not re.fullmatch(r'http://[0-9.]+:\d+/[A-Za-z0-9_./-]+', url):
+                raise GameServiceError('安装源地址无效')
+            wire, proxy = {'url': url}, True
+        else:
+            _validate_local_source(source, '.pkg')
+            wire, proxy = {'host_file': source}, False
         started = self._request('POST', '/api/pkg/install', {
             'ps5_addr': host,
-            'source': {'host_file': source},
+            'source': wire,
             'content_id': '',
             'options': {
                 'delete_source_copy_after': False,
                 'allow_destructive_reinstall': False,
                 'force_stream': False,
                 'console_path_fallback': False,
-                'proxy_link': False,
+                # Lets the engine relay the URL when the console cannot reach it.
+                'proxy_link': proxy,
                 'insecure_tls': False,
             },
         }, timeout=75, allow_error=True)
@@ -241,8 +299,11 @@ class GameServices:
         job = started.get('job') or started.get('job_id') or started.get('id')
         if not job:
             return {'state': 'failed', 'error_code': 'missing_job', 'error': '引擎未返回安装任务编号'}
-        deadline = time.monotonic() + self.poll_timeout
+        deadline = time.monotonic() + (self.poll_timeout if timeout is None else max(0.0, float(timeout)))
         while True:
+            if cancel is not None and cancel.is_set():
+                self._stop(job)
+                return {'state': 'canceled', 'error_code': 'canceled', 'error': '已取消', 'job': job}
             status = self._request('GET', '/api/pkg/install/status?' + urllib.parse.urlencode({'job': job}),
                                    timeout=20, allow_error=True)
             if _is_busy(status):
@@ -252,6 +313,15 @@ class GameServices:
                         'error': str(status.get('error') or '无法读取安装状态'), 'job': job}
             phase = str(status.get('phase') or status.get('state') or '').lower()
             verdict = str(status.get('verdict') or '').lower()
+            if progress is not None:
+                try:
+                    progress(status)
+                except Exception:
+                    pass
+            if phase in ('failed', 'error') and _is_busy(status):
+                return {'state': 'conflict', 'error_code': 'busy', 'error': '安装任务冲突：引擎正忙', 'job': job}
+            if phase in ('cancelled', 'canceled'):
+                return {'state': 'canceled', 'error_code': 'canceled', 'error': '安装已取消', 'job': job}
             if phase in ('done', 'failed', 'error', 'cancelled', 'canceled'):
                 result = dict(status)
                 result['job'] = job
@@ -265,9 +335,19 @@ class GameServices:
                                   f'安装未验证成功（verdict={verdict or "missing"}）')
                 return result
             if time.monotonic() >= deadline:
-                return {'state': 'failed', 'error_code': 'timeout', 'error': '安装状态轮询超时', 'job': job}
+                self._stop(job)
+                return {'state': 'failed', 'error_code': 'timeout', 'error': '安装超时，已停止引擎任务', 'job': job}
             if self.poll_interval:
-                time.sleep(self.poll_interval)
+                if cancel is not None:
+                    cancel.wait(self.poll_interval)
+                else:
+                    time.sleep(self.poll_interval)
+
+    def _stop(self, job):
+        try:
+            self._request('POST', '/api/pkg/install/stop', {'job': job}, timeout=20, allow_error=True)
+        except GameServiceError:
+            pass
 
     def cheat_import(self, host, path):
         _validate_engine_cheat_path(path)

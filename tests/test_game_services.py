@@ -13,10 +13,10 @@ from power import EngineClient
 
 try:
     from game_services import (
-        GameServices, GameServiceError, parse_cheat_zip, plan_cheat_import,
+        GameServices, GameServiceError, install_timeout, parse_cheat_zip, plan_cheat_import, write_cheats,
     )
 except ImportError:
-    GameServices = GameServiceError = parse_cheat_zip = plan_cheat_import = None
+    GameServices = GameServiceError = install_timeout = parse_cheat_zip = plan_cheat_import = write_cheats = None
 
 
 class EngineHandler(BaseHTTPRequestHandler):
@@ -119,6 +119,87 @@ class GameServicesTests(unittest.TestCase):
         self.assertEqual(result['state'], 'conflict')
         self.assertEqual(result['error_code'], 'busy')
 
+    def test_package_install_from_url_lets_engine_relay_and_reports_progress(self):
+        engine = FakeEngine([
+            ('POST', '/api/pkg/install', {'job': 'j'}),
+            ('GET', '/api/pkg/install/status?job=j',
+             {'job': 'j', 'phase': 'deliver', 'metrics': {'served_bytes': 10}}),
+            ('GET', '/api/pkg/install/status?job=j', {'job': 'j', 'phase': 'done', 'verdict': 'installed'}),
+        ])
+        seen = []
+        url = 'http://192.0.2.1:8090/p/abcdefghijklmnopqrstuvwx.pkg'
+        result = GameServices(engine, poll_interval=0).package_install(
+            '192.0.2.5', {'url': url}, progress=lambda status: seen.append(status['phase']))
+        self.assertEqual(result['state'], 'done')
+        body = engine.calls[0][2]
+        self.assertEqual(body['source'], {'url': url})
+        self.assertTrue(body['options']['proxy_link'])
+        self.assertFalse(body['options']['allow_destructive_reinstall'])
+        self.assertEqual(seen, ['deliver', 'done'])
+
+    def test_package_install_refuses_odd_urls(self):
+        services = GameServices(FakeEngine([]), poll_interval=0)
+        for source in ({'url': 'file:///etc/passwd'}, {'url': 'http://evil.example/x.pkg'},
+                       {'url': 'http://1.2.3.4:1/a b'}, {'url': 'x', 'host_file': '/a.pkg'}):
+            with self.subTest(source=source), self.assertRaises(GameServiceError):
+                services.package_install('192.0.2.5', source)
+
+    def test_package_install_timeout_and_cancel_stop_the_engine_job(self):
+        engine = FakeEngine([
+            ('POST', '/api/pkg/install', {'job': 'j'}),
+            ('GET', '/api/pkg/install/status?job=j', {'job': 'j', 'phase': 'install'}),
+            ('POST', '/api/pkg/install/stop', {'ok': True}),
+        ])
+        result = GameServices(engine, poll_interval=0).package_install('192.0.2.5', '/tmp/game.pkg', timeout=0.0)
+        self.assertEqual((result['state'], result['error_code']), ('failed', 'timeout'))
+        self.assertEqual(engine.calls[-1][2], {'job': 'j'})
+        cancel = threading.Event()
+        cancel.set()
+        engine = FakeEngine([
+            ('POST', '/api/pkg/install', {'job': 'j'}),
+            ('POST', '/api/pkg/install/stop', {'ok': True}),
+        ])
+        result = GameServices(engine, poll_interval=0).package_install('192.0.2.5', '/tmp/game.pkg', cancel=cancel)
+        self.assertEqual(result['state'], 'canceled')
+
+    def test_package_install_busy_reason_during_status_is_a_conflict(self):
+        engine = FakeEngine([
+            ('POST', '/api/pkg/install', {'job': 'j'}),
+            ('GET', '/api/pkg/install/status?job=j', {'job': 'j', 'phase': 'failed', 'reason': 'busy'}),
+        ])
+        result = GameServices(engine, poll_interval=0).package_install('192.0.2.5', '/tmp/game.pkg')
+        self.assertEqual(result['state'], 'conflict')
+
+    def test_install_timeout_scales_with_size_with_a_ten_minute_floor(self):
+        self.assertEqual(install_timeout(0), 600)
+        self.assertEqual(install_timeout(100 << 20), 600)
+        self.assertGreater(install_timeout(50 << 30), 6 * 3600)
+
+    def test_write_cheats_creates_eta_hen_folders_and_skips_bad_members(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            archive.writestr('cheats/json/CUSA12345_01.00.json', '{"a": 1}')
+            archive.writestr('CUSA12345_01.00.shn', b'<xml/>')
+            archive.writestr('../../etc/CUSA12345.mc4', b'evil')
+            archive.writestr('readme.txt', b'x')
+        files = FakeFiles()
+        result = write_cheats(files, parse_cheat_zip(data.getvalue(), title='CUSA12345'))
+        self.assertEqual(sorted(result['written']), ['/data/etaHEN/cheats/json/CUSA12345_01.00.json',
+                                                     '/data/etaHEN/cheats/shn/CUSA12345_01.00.shn'])
+        self.assertEqual(files.uploads['/data/etaHEN/cheats/shn/CUSA12345_01.00.shn'], b'<xml/>')
+        self.assertIn('/data/etaHEN/cheats', files.dirs)
+        self.assertNotIn('/etc', ' '.join(files.uploads))
+        self.assertIn('重新加载', result['note'])
+        self.assertTrue(any('readme.txt' in warning or '..' in warning for warning in result['warnings']))
+
+    def test_write_cheats_keeps_going_after_one_upload_fails(self):
+        files = FakeFiles(fail='a')
+        parsed = {'files': [{'format': 'json', 'name': 'a', 'data': b'1'},
+                            {'format': 'json', 'name': 'b', 'data': b'2'}], 'warnings': []}
+        result = write_cheats(files, parsed)
+        self.assertEqual(result['written'], ['/data/etaHEN/cheats/json/b'])
+        self.assertTrue(any('失败' in warning for warning in result['warnings']))
+
     def test_cheat_zip_normalizes_eta_hen_wrapper_and_validates_identity(self):
         data = io.BytesIO()
         with zipfile.ZipFile(data, 'w') as archive:
@@ -147,6 +228,21 @@ class GameServicesTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaisesRegex(GameServiceError, 'JSON/XML'):
                 services.cheat_import('192.0.2.5', path)
         self.assertEqual(engine.calls, [])
+
+
+class FakeFiles:
+    def __init__(self, fail=None):
+        self.dirs, self.uploads, self.fail = set(), {}, fail
+
+    def mkdir(self, path):
+        if path in self.dirs:
+            raise OSError('exists')
+        self.dirs.add(path)
+
+    def upload(self, directory, name, chunks, length, overwrite=False):
+        if name == self.fail:
+            raise OSError('disk full')
+        self.uploads[f'{directory}/{name}'] = b''.join(chunks)
 
 
 class FakeEngine:

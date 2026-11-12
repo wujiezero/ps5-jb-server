@@ -15,8 +15,9 @@ from nas import NasError, NasStore, SecretBox, TransferManager, check_connection
     clean_path, smb_available, unrar_engine_available
 from notify import Notifier, NotifyStore
 from power import EngineClient, PowerError, PowerManager
-from game_services import GameServices
+from game_services import GameServices, parse_cheat_zip, write_cheats
 from game_sources import plan_sources
+from pkg_host import PkgHost
 from ps5 import ConsoleError, HostManager
 
 MAX_JSON = 32 * 1024
@@ -38,10 +39,14 @@ class ConsoleAPI:
                             getattr(settings, 'secret_key_path', None))
         self.engine = EngineClient(getattr(settings, 'engine_url', 'http://127.0.0.1:19113'))
         self.game_services = GameServices(self.engine)
+        # Started on the first PKG install; reachable only by the console and this host.
+        host_ip = getattr(settings, 'host_ip', '') or '127.0.0.1'
+        self.pkg_host = PkgHost(host_ip, getattr(settings, 'pkg_port', 8090), self.nas, client_for)
         self.transfers = TransferManager(self.nas, self.files, work_dir=settings.data_dir / 'extract',
                                          game_services=self.game_services, host=self.files.host,
                                          state_path=settings.data_dir / 'transfers.json',
-                                         retries=getattr(settings, 'transfer_retries', 3))
+                                         retries=getattr(settings, 'transfer_retries', 3),
+                                         pkg_host=self.pkg_host)
         self.power = PowerManager(self.engine, self.ps5.validate_ip)
         # Channel secrets share the NAS key (and its backup / restore).
         self.notify_store = NotifyStore(settings.data_dir / 'notify.json', self.nas.box)
@@ -143,6 +148,7 @@ class ConsoleAPI:
         '/api/files/job': '_get_job',
         '/api/nas': '_get_nas',
         '/api/nas/archive': '_get_nas_archive',
+        '/api/nas/plan': '_get_nas_plan',
         '/api/nas/list': '_get_nas_list',
         '/api/transfers': '_get_transfers',
         '/api/files/transfers': '_get_file_transfers',
@@ -217,6 +223,22 @@ class ConsoleAPI:
     def _get_nas_archive(self, handler):
         handler.send_body(200, self.transfers.inspect_archive(
             self._arg(handler, 'id'), self._arg(handler, 'path', '')))
+
+    def _plan(self, nas_id, paths):
+        config = self.nas.get(nas_id)
+        if not isinstance(paths, list) or not 0 < len(paths) <= 200:
+            raise ValueError('请选择 1–200 个 NAS 文件或文件夹')
+        client = client_for(config)
+        try:
+            return plan_sources(client, paths)
+        finally:
+            client.close()
+
+    def _get_nas_plan(self, handler):
+        query = self._query(handler)
+        plan = self._plan((query.get('id') or [''])[0], query.get('paths') or [])
+        plan['engine'] = {'package': self.pkg_host.enabled}
+        handler.send_body(200, plan)
 
     def _get_nas_list(self, handler):
         config = self.nas.get(self._arg(handler, 'id'))
@@ -299,13 +321,15 @@ class ConsoleAPI:
         '/api/nas/test': '_post_nas_test',
         '/api/nas/transfer': '_post_nas_transfer',
         '/api/nas/extract': '_post_nas_extract',
+        '/api/nas/install': '_post_nas_install',
+        '/api/nas/cheats': '_post_nas_cheats',
         '/api/transfers/cancel': '_post_transfers_cancel',
         '/api/transfers/clear': '_post_transfers_clear',
         '/api/transfers/retry': '_post_transfers_retry',
         '/api/files/bench': '_post_bench',
     }
     # Raw request bodies: the handler checks session and CSRF itself.
-    RAW_POST_ROUTES = {'/api/files/upload': '_upload'}
+    RAW_POST_ROUTES = {'/api/files/upload': '_upload', '/api/files/cheats': '_upload_cheats'}
 
     def handle_post(self, handler, route):
         path = route.rstrip('/')
@@ -426,13 +450,67 @@ class ConsoleAPI:
             if source_client is not None:
                 source_client.close()
         if plan.get('kind') != 'archive':
-            raise ValueError('所选源不是可流式解压的 RAR 分卷；PKG 请使用安装包流程')
+            raise ValueError('所选源不是 RAR 分卷；PKG 和已解压的游戏文件夹请用「安装」（/api/nas/install）')
         if auto_register:
             self.game_services.preflight(host)
         handler.send_body(200, {'ok': True, 'job': self.transfers.start_extract(
             body.get('id'), plan['path'], body.get('dest'), body.get('mode') or 'install',
             auto_register=auto_register, host=host,
-            title=body.get('title') or plan.get('title_hint') or '')})
+            title=body.get('title') or plan.get('title_hint') or '',
+            cheats=self._chosen_cheats(body, plan))})
+
+    @staticmethod
+    def _chosen_cheats(body, plan):
+        """Cheat ZIPs to import after extraction: only ones the plan found next to the game."""
+        wanted = body.get('cheats')
+        if wanted is True:
+            return list(plan.get('cheats') or [])
+        if not wanted:
+            return []
+        if not isinstance(wanted, list):
+            raise ValueError('cheats 必须是 ZIP 路径列表')
+        known = set(plan.get('cheats') or [])
+        cleaned = [clean_path(item) for item in wanted]
+        if any(item not in known for item in cleaned):
+            raise ValueError('只能导入与游戏同目录、名字含「金手指 / cheat / trainer」的 ZIP')
+        return cleaned
+
+    def _post_nas_install(self, handler, body, path):
+        """One entry for every game source: RAR -> extract, folder -> copy + register, PKG -> engine."""
+        host = body.get('host') or self.files.host
+        selected = body.get('paths') or ([body.get('path')] if body.get('path') else [])
+        plan = self._plan(body.get('id'), selected)
+        kind = plan.get('kind')
+        title = body.get('title') or plan.get('title_hint') or ''
+        auto_register = bool(body.get('auto_register', True))
+        if kind == 'package':
+            self.game_services.preflight(host)
+            job = self.transfers.start_package(body.get('id'), plan['path'], host=host, title=title)
+        elif kind == 'archive':
+            if auto_register:
+                self.game_services.preflight(host)
+            job = self.transfers.start_extract(body.get('id'), plan['path'], body.get('dest'),
+                                               body.get('mode') or 'install', auto_register=auto_register,
+                                               host=host, title=title, cheats=self._chosen_cheats(body, plan))
+        elif kind == 'folder':
+            if auto_register:
+                self.game_services.preflight(host)
+            job = self.transfers.start(body.get('id'), [plan['path']], body.get('dest'),
+                                       body.get('overwrite') or 'skip', auto_register=auto_register,
+                                       host=host, title=title)
+        else:
+            raise ValueError('未识别到可安装的游戏')
+        handler.send_body(200, {'ok': True, 'kind': kind, 'job': job})
+
+    def _post_nas_cheats(self, handler, body, path):
+        config = self.nas.get(body.get('id'))
+        client = client_for(config)
+        try:
+            result = self.transfers.import_cheats(client, [body.get('path')], title=body.get('title'),
+                                                  version=body.get('version') or None)
+        finally:
+            client.close()
+        handler.send_body(200, {'ok': bool(result['written']), **result})
 
     def _post_transfers_cancel(self, handler, body, path):
         handler.send_body(200, self.transfers.cancel(body.get('id')))
@@ -498,6 +576,41 @@ class ConsoleAPI:
         try:
             handler.send_body(200, self.files.upload(directory, name, chunks(), length,
                                                      overwrite=overwrite))
+        except Exception as exc:
+            self._fail(handler, exc)
+        return True
+
+
+    CHEAT_UPLOAD_LIMIT = 16 << 20
+
+    def _upload_cheats(self, handler):
+        """A cheat ZIP straight from the browser (raw body), written into etaHEN's folders."""
+        if not handler.require_session(write=True):
+            return True
+        if self._disabled(handler, '/api/files'):
+            return True
+        if handler.headers.get('Transfer-Encoding'):
+            handler.send_body(400, {'error': '不支持分块上传'})
+            return True
+        try:
+            length = int(handler.headers.get('Content-Length', '0'))
+        except ValueError:
+            length = 0
+        if length <= 0:
+            handler.send_body(400, {'error': '文件为空'})
+            return True
+        if length > self.CHEAT_UPLOAD_LIMIT:
+            handler.close_connection = True
+            handler.send_body(413, {'error': '金手指 ZIP 超过 16 MiB 上限'})
+            return True
+        data = handler.rfile.read(length)
+        try:
+            title = self._arg(handler, 'title') or None
+            parsed = parse_cheat_zip(data, title=title, version=self._arg(handler, 'version') or None)
+            result = write_cheats(self.files, parsed)
+            if not result['written']:
+                result['warnings'].append('没有写入任何金手指文件')
+            handler.send_body(200, {'ok': bool(result['written']), **result})
         except Exception as exc:
             self._fail(handler, exc)
         return True

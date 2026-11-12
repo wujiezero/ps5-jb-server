@@ -210,6 +210,19 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(bodies[2][1], 'NAS 传输完成：Movies')
         self.assertIn('3 个文件，3.0 GB，用时 2 分 0 秒，平均 25.6 MB/s', bodies[2][2])
 
+    def test_package_jobs_have_their_own_events(self):
+        self.store.save({'type': 'webhook', 'url': 'http://192.0.2.7/a', 'events': ['package.finished', 'package.failed']})
+        base = {'kind': 'package', 'name': 'CUSA12345.pkg', 'files_done': 1, 'bytes_done': 1 << 30,
+                'bytes_total': 1 << 30, 'elapsed': 60}
+        self.notifier.job_finished({**base, 'id': 'p1', 'state': 'done_with_warnings', 'warning': '游戏可能无法启动'})
+        self.notifier.job_finished({**base, 'id': 'p2', 'state': 'failed', 'error': '引擎正忙'})
+        self.notifier.job_finished({**base, 'id': 'p3', 'kind': 'nas', 'state': 'done'})
+        self.assertTrue(wait_for(lambda: len(self.opener.requests) == 2))
+        bodies = sorted((r['body']['event'], r['body']['title'], r['body']['body']) for r in self.opener.requests)
+        self.assertEqual(bodies[0], ('package.failed', 'PKG 安装失败：CUSA12345.pkg', '引擎正忙'))
+        self.assertEqual(bodies[1][1], 'PKG 安装完成（有提醒）：CUSA12345.pkg')
+        self.assertIn('可能无法启动', bodies[1][2])
+
     def test_update_result_is_announced_once_and_old_results_stay_quiet(self):
         self.store.save({'type': 'webhook', 'url': 'http://192.0.2.7/a', 'events': ['update.finished', 'update.failed']})
         job = {'id': 'u1', 'state': 'done', 'version': '1.11.0', 'updated_at': self.now[0] - 30}

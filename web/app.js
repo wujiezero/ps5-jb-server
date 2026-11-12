@@ -5531,6 +5531,7 @@
     files.destPath = files.path;
     $('files-dest-overwrite-row').hidden = true;
     $('files-dest-extract-row').hidden = true;
+    $('files-dest-cheats-row').hidden = true;
     $('files-dest-archive').hidden = true;
     $('files-dest-space').hidden = true;
     $('files-dest-title').textContent = mode === 'move' ? '移动到…' : '复制到…';
@@ -5777,13 +5778,17 @@
   const formatRate = (bytesPerSecond) => (bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : '—');
   const XFER_ACTIVE = new Set(['wait', 'run', 'sync', 'queued', 'scanning', 'running', 'copying', 'moving', 'active', 'pending', 'wait-confirm']);
   const XFER_LABEL = { wait: '等待', run: '传输中', sync: '正在落盘', queued: '排队中', scanning: '正在统计文件', running: '传输中', copying: '复制中', moving: '移动中', active: '进行中', pending: '等待', done: '完成', done_with_warnings: '完成（有提醒）', interrupted: '已中断', fail: '失败', failed: '失败', cancel: '已取消', canceled: '已取消', skip: '已跳过', 'wait-confirm': '等待确认' };
-  const XFER_KIND = { upload: '上传', copy: '复制', move: '移动', nas: 'NAS → PS5', extract: '解压安装', remote: 'PS5' };
+  const XFER_KIND = { upload: '上传', copy: '复制', move: '移动', nas: 'NAS → PS5', extract: '解压安装', package: 'PKG 安装', remote: 'PS5' };
 
   function filesTransferTasks() {
     const tasks = [];
     for (const job of nasJobs) {
       if (job.kind === 'extract') {
         tasks.push(extractTask(job));
+        continue;
+      }
+      if (job.kind === 'package') {
+        tasks.push(packageTask(job));
         continue;
       }
       tasks.push({
@@ -6570,6 +6575,8 @@
       wrap.append(withTitleLabel(open, entry.name));
     } else {
       wrap.append(withTitleLabel(makeElement('span', 'files-name-text', entry.name), entry.name));
+      const action = nasRowAction(entry);
+      if (action) wrap.append(action);
     }
     nameCell.append(wrap);
     row.append(check, nameCell,
@@ -6620,6 +6627,7 @@
     $('files-dest-confirm').setAttribute('aria-label', '开始把 NAS 文件传到所选的 PS5 文件夹');
     $('files-dest-overwrite-row').hidden = false;
     $('files-dest-extract-row').hidden = true;
+    $('files-dest-cheats-row').hidden = true;
     $('files-dest-archive').hidden = true;
     $('files-dest-error').textContent = '';
     $('files-dest-error').hidden = true;
@@ -6662,6 +6670,8 @@
     $('files-dest-confirm').setAttribute('aria-label', '开始把压缩包解压安装到所选的 PS5 文件夹');
     $('files-dest-overwrite-row').hidden = true;
     $('files-dest-extract-row').hidden = false;
+    $('files-dest-cheats-row').hidden = true;
+    $('files-dest-cheats').checked = false;
     $('files-dest-extract-mode').value = 'install';
     describeNasExtract();
     const info = $('files-dest-archive');
@@ -6691,6 +6701,7 @@
       $('files-dest-confirm').disabled = false;
       describeNasExtract();
       renderFilesDestSpace();
+      loadNasCheatPlan(item.id, entry.path, target);
     } catch (error) {
       if (files.destTarget !== target) return;
       if (error.status === 401) {
@@ -6701,6 +6712,23 @@
       info.hidden = true;
       $('files-dest-error').textContent = error.message;
       $('files-dest-error').hidden = false;
+    }
+  }
+
+  // Cheat ZIPs found next to the archive become an optional last step of the extraction.
+  async function loadNasCheatPlan(nasId, path, target) {
+    try {
+      const plan = await api(`/api/nas/plan?id=${encodeURIComponent(nasId)}&paths=${encodeURIComponent(path)}`);
+      if (files.destTarget !== target) return;
+      target.cheats = Array.isArray(plan.cheats) ? plan.cheats.filter((item) => typeof item === 'string') : [];
+      if (!target.cheats.length) return;
+      $('files-dest-cheats-label').textContent = target.cheats.length === 1
+        ? `同时导入金手指（${target.cheats[0].split('/').pop()}）`
+        : `同时导入金手指（${target.cheats.length} 个 ZIP）`;
+      $('files-dest-cheats').checked = true;
+      $('files-dest-cheats-row').hidden = false;
+    } catch (error) {
+      // Optional: the extraction works without it.
     }
   }
 
@@ -6717,7 +6745,8 @@
     try {
       const result = await api('/api/nas/extract', {
         id: target.nasId, path: target.path, dest: files.destPath,
-        mode: $('files-dest-extract-mode').value === 'merge' ? 'merge' : 'install'
+        mode: $('files-dest-extract-mode').value === 'merge' ? 'merge' : 'install',
+        cheats: !$('files-dest-cheats-row').hidden && $('files-dest-cheats').checked ? target.cheats || [] : []
       });
       if (result.job && result.job.id) nasJobs = [result.job, ...nasJobs.filter((job) => job.id !== result.job.id)];
       $('files-dest-dialog').close();
@@ -6748,6 +6777,10 @@
     if (job.files_done) line = job.files_total > job.files_done ? `已解出 ${job.files_done} / ${job.files_total} 个文件` : `已解出 ${job.files_done} 个文件`;
     if (job.state === 'running' && job.current) line += `${line ? ' · ' : ''}当前 ${job.current}`;
     if (done && job.note) line += `${line ? ' · ' : ''}${job.note}`;
+    if (done && job.cheat_result && Array.isArray(job.cheat_result.written) && job.cheat_result.written.length) {
+      line += `${line ? ' · ' : ''}已导入 ${job.cheat_result.written.length} 个金手指文件，需要在 etaHEN 里重新加载金手指`;
+    }
+    if (job.cheat_error) line += `${line ? ' · ' : ''}${job.cheat_error}`;
     // The hidden staging folder stays behind when the service restarted mid-way.
     if (job.interrupted && job.staging) line += `${line ? ' · ' : ''}可在 PS5 文件页手动删除临时文件夹 ${job.staging}`;
     return {
@@ -6758,6 +6791,101 @@
       interrupted: job.interrupted === true,
       cancel: XFER_ACTIVE.has(job.state) ? () => cancelNasJob(job.id) : null
     };
+  }
+
+  const PACKAGE_STEPS = [['prepare', '准备'], ['transfer', '传输'], ['install', '安装'], ['verify', '确认']];
+
+  function packageTask(job) {
+    const done = job.state === 'done' || job.state === 'done_with_warnings';
+    const index = PACKAGE_STEPS.findIndex(([key]) => key === job.phase);
+    let line = '';
+    if (XFER_ACTIVE.has(job.state)) {
+      line = PACKAGE_STEPS.map(([key, label], at) => (at === index ? `【${label}】` : label)).join(' → ');
+    }
+    if (done) line = job.warning || `已安装到 PS5 ${job.host || ''}`.trim();
+    if (job.state === 'failed' && job.error_code === 'busy') line = 'ps5upload 引擎正忙，等另一个安装结束后点「重试」';
+    return {
+      key: `nas:${job.id}`, kind: 'package', name: job.name, state: job.state,
+      sub: `${job.source} → PS5 ${job.host || ''}`.trim(),
+      done: job.bytes_done, total: job.bytes_total, speed: job.speed, elapsed: job.elapsed, eta: job.eta,
+      line, error: job.error, errors: job.errors || [],
+      interrupted: job.interrupted === true,
+      cancel: XFER_ACTIVE.has(job.state) ? () => cancelNasJob(job.id) : null,
+      retry: ['failed', 'canceled'].includes(job.state) ? () => retryNasJob(job.id) : null
+    };
+  }
+
+  const NAS_PACKAGE = /\.pkg$/i;
+  const NAS_CHEAT = /\.zip$/i;
+  const NAS_CHEAT_NAME = /金手指|cheat|trainer/i;
+
+  function nasRowAction(entry) {
+    if (entry.dir || entry.name.startsWith('._')) return null;
+    let label = '';
+    let handler = null;
+    if (NAS_PACKAGE.test(entry.name)) {
+      label = '安装 PKG';
+      handler = () => installNasPackage(entry);
+    } else if (NAS_CHEAT.test(entry.name) && NAS_CHEAT_NAME.test(entry.name)) {
+      label = '导入金手指';
+      handler = () => importNasCheats(entry);
+    } else {
+      return null;
+    }
+    const button = makeElement('button', 'button button-secondary button-small nas-row-action', label);
+    button.type = 'button';
+    button.setAttribute('aria-label', `${label}：${entry.name}`);
+    button.disabled = !authenticated || nas.busy || !(files.info && files.info.reachable);
+    button.addEventListener('click', handler);
+    return button;
+  }
+
+  async function installNasPackage(entry) {
+    const item = nasActive();
+    const host = files.info && files.info.host;
+    if (!authenticated || !item || !host) return;
+    if (!window.confirm(`把 ${entry.name}（${formatBytes(entry.size)}）安装到 PS5 ${host}？\n\n由 ps5upload 引擎安装，主机直接从 NAS 读取 PKG，不占服务器磁盘。需要 PS5 上正在运行 ps5upload 插件；安装期间请保持 PS5 开机。`)) return;
+    nas.busy = true;
+    renderNasPane();
+    try {
+      const result = await api('/api/nas/install', { id: item.id, paths: [entry.path], host }, 90000);
+      if (result.job && result.job.id) nasJobs = [result.job, ...nasJobs.filter((job) => job.id !== result.job.id)];
+      toast(`已开始安装 ${entry.name}，进度见传输任务。`, 'success');
+      files.drawer = true;
+      renderFilesTransfers();
+      ensureFilesPolling();
+      revealFilesTransfers();
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      toast(error.message, 'error');
+    } finally {
+      nas.busy = false;
+      renderNasPane();
+    }
+  }
+
+  async function importNasCheats(entry) {
+    const item = nasActive();
+    if (!authenticated || !item) return;
+    if (!window.confirm(`把 ${entry.name} 里的金手指写入 PS5 的 /data/etaHEN/cheats？同名文件会被覆盖。`)) return;
+    nas.busy = true;
+    renderNasPane();
+    try {
+      const result = await api('/api/nas/cheats', { id: item.id, path: entry.path, title: titleIdOf(entry.name) || '' }, 60000);
+      const written = Array.isArray(result.written) ? result.written.length : 0;
+      const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+      if (written) {
+        toast(`已导入 ${written} 个金手指文件。${str(result.note)}${warnings.length ? `（${warnings.length} 条提醒：${str(warnings[0])}）` : ''}`, warnings.length ? 'info' : 'success');
+      } else {
+        toast(`没有导入任何金手指：${str(warnings[0]) || 'ZIP 里没有 etaHEN 金手指文件'}`, 'error');
+      }
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      toast(error.message, 'error');
+    } finally {
+      nas.busy = false;
+      renderNasPane();
+    }
   }
 
   async function startNasTransfer() {
@@ -6816,7 +6944,7 @@
     try {
       const result = await api('/api/transfers/retry', { id });
       if (result.job && result.job.id) nasJobs = [result.job, ...nasJobs.filter((job) => job.id !== result.job.id)];
-      toast('已重新排队，PS5 上已有的同名文件会跳过。', 'success');
+      toast(result.job && result.job.kind === 'package' ? '已重新排队安装。' : '已重新排队，PS5 上已有的同名文件会跳过。', 'success');
       renderFilesTransfers();
       ensureFilesPolling();
     } catch (error) {
@@ -7808,7 +7936,7 @@
     nas: { title: 'NAS 存储', body: '把家里 NAS 的共享目录接进来，文件从 NAS 经本机中转直接写到 PS5，不落本机磁盘。',
       steps: ['点「＋ 添加」选择 SMB、WebDAV 或 FTP，填写地址、共享名与账号。', '账号密码用 AES-256-GCM 加密保存，页面和接口都不会回显密码。', '勾选文件后点「传到 PS5」，进度在「传输任务」查看。'] },
     'nas-extract': { title: '流式解压安装', body: '把 NAS 上的 RAR 压缩包（单个 .rar 或 *.partNN.rar 分卷）边读边解压，直接写进 PS5，不用先下载到电脑，也不占本机磁盘。',
-      steps: ['在 NAS 列表勾选压缩包（分卷任选一个即可），点「解压安装」；同组分卷会自动找齐，缺卷会提前提示。', '「安装」按包内 eboot.bin 与 param.json 找到游戏根目录，放到目标位置下以标题 ID 命名的文件夹，ShadowMount+ 可直接识别；「合并」用于把补丁覆盖进已有游戏文件夹。', '解压完成后默认在 PS5 主屏幕注册游戏图标（需要 ps5upload 引擎）。', '不支持带密码的包和 RAR4 旧格式；固实包或大字典包需要服务器装有 unrar 引擎。失败或取消会自动清理半成品。'] },
+      steps: ['在 NAS 列表勾选压缩包（分卷任选一个即可），点「解压安装」；同组分卷会自动找齐，缺卷会提前提示。', '「安装」按包内 eboot.bin 与 param.json 找到游戏根目录，放到目标位置下以标题 ID 命名的文件夹，ShadowMount+ 可直接识别；「合并」用于把补丁覆盖进已有游戏文件夹。', '解压完成后默认在 PS5 主屏幕注册游戏图标（需要 ps5upload 引擎）。', '不支持带密码的包和 RAR4 旧格式；固实包或大字典包需要服务器装有 unrar 引擎。失败或取消会自动清理半成品。', '压缩包旁边有名字含「金手指 / cheat / trainer」的 ZIP 时，可以勾选「同时导入金手指」，解压完成后写入 /data/etaHEN/cheats。', '.pkg 文件行有「安装 PKG」：由 ps5upload 引擎安装，主机经本服务直接读取 NAS 上的 PKG（需要 PS5 上运行 ps5upload 插件）；金手指 ZIP 行有「导入金手指」。导入后需要在 etaHEN 里重新加载金手指。'] },
     transfers: { title: '传输任务', body: '集中显示上传、复制 / 移动、NAS 传输和解压任务的进度、速度与剩余时间，可随时取消。',
       steps: ['NAS 传输与解压在服务器上执行，关闭页面不会中断。', '从浏览器上传的文件需要保持页面打开直到完成。'] },
     repo: { title: '插件载荷', body: 'PS5 能安装的插件载荷（.elf / .bin）。这里的文件同时发布到本机插件源，PS5 的 pldmgr 和「PS5 主机」页都从这里安装。',

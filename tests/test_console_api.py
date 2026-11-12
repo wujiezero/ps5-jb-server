@@ -193,6 +193,111 @@ class ConsoleAPITests(unittest.TestCase):
         self.api.files.host = '127.0.0.1'
         self.api.game_services = None
 
+    def _install(self, plan, body):
+        calls = []
+
+        class Services:
+            def preflight(self, host):
+                calls.append(host)
+
+        self.api.game_services = Services()
+        mocks = {name: mock.patch.object(self.api.transfers, name, return_value={'id': name})
+                 for name in ('start', 'start_extract', 'start_package')}
+        started = {name: patcher.start() for name, patcher in mocks.items()}
+        try:
+            with mock.patch.object(self.api, '_plan', return_value=plan):
+                data, headers = json_body(body)
+                handler = StubHandler('/api/nas/install', data, headers)
+                self.api.handle_post(handler, '/api/nas/install')
+        finally:
+            for patcher in mocks.values():
+                patcher.stop()
+            self.api.game_services = None
+        return handler, started, calls
+
+    def test_install_dispatches_by_source_kind(self):
+        base = {'id': 'nas', 'paths': ['/g/x'], 'dest': '/data', 'host': '192.0.2.5'}
+        handler, started, calls = self._install(
+            {'kind': 'package', 'path': '/g/CUSA12345.pkg', 'title_hint': 'CUSA12345', 'cheats': []}, base)
+        self.assertEqual((handler.status, handler.payload['kind']), (200, 'package'))
+        started['start_package'].assert_called_once_with('nas', '/g/CUSA12345.pkg', host='192.0.2.5',
+                                                         title='CUSA12345')
+        self.assertEqual(calls, ['192.0.2.5'])
+
+        handler, started, _ = self._install(
+            {'kind': 'archive', 'path': '/g/a.part1.rar', 'title_hint': '', 'cheats': ['/g/a cheat.zip']},
+            {**base, 'cheats': True})
+        self.assertEqual(handler.payload['kind'], 'archive')
+        self.assertEqual(started['start_extract'].call_args.kwargs['cheats'], ['/g/a cheat.zip'])
+
+        handler, started, _ = self._install(
+            {'kind': 'folder', 'path': '/g/CUSA12345', 'title_hint': 'CUSA12345', 'cheats': []}, base)
+        self.assertEqual(handler.payload['kind'], 'folder')
+        args = started['start'].call_args
+        self.assertEqual(args.args[:3], ('nas', ['/g/CUSA12345'], '/data'))
+        self.assertTrue(args.kwargs['auto_register'])
+
+    def test_install_refuses_cheats_the_plan_did_not_find(self):
+        handler, started, _ = self._install(
+            {'kind': 'archive', 'path': '/g/a.rar', 'title_hint': '', 'cheats': ['/g/a cheat.zip']},
+            {'id': 'nas', 'paths': ['/g/a.rar'], 'dest': '/data', 'cheats': ['/etc/other.zip']})
+        self.assertEqual(handler.status, 400)
+        started['start_extract'].assert_not_called()
+
+    def test_extract_error_for_other_sources_points_to_install(self):
+        with mock.patch('api_console.plan_sources', return_value={'kind': 'package', 'path': '/a.pkg'}):
+            data, headers = json_body({'id': 'nope', 'paths': ['/a.pkg'], 'dest': '/data'})
+            handler = StubHandler('/api/nas/extract', data, headers)
+            self.api.handle_post(handler, '/api/nas/extract')
+        self.assertEqual(handler.status, 400)
+        self.assertIn('/api/nas/install', handler.payload['error'])
+        self.assertNotIn('安装包流程', handler.payload['error'])
+
+    def test_plan_endpoint_passes_every_selected_path(self):
+        plan = {'kind': 'archive', 'path': '/g/a.rar', 'cheats': []}
+        with mock.patch.object(self.api, '_plan', return_value=dict(plan)) as planner:
+            handler = StubHandler('/api/nas/plan?id=n1&paths=%2Fg%2Fa.rar&paths=%2Fg%2Fb.zip')
+            self.api.handle_get(handler)
+        self.assertEqual(handler.status, 200)
+        planner.assert_called_once_with('n1', ['/g/a.rar', '/g/b.zip'])
+        self.assertIn('package', handler.payload['engine'])
+
+    def test_cheat_upload_writes_into_eta_hen_folders(self):
+        import zipfile
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            archive.writestr('json/CUSA12345_01.00.json', '{"x": 1}')
+            archive.writestr('../../CUSA12345.mc4', 'bad')
+        payload = data.getvalue()
+        TF.uploads.clear()
+        handler = StubHandler('/api/files/cheats?title=CUSA12345', payload, {'Content-Length': str(len(payload))})
+        self.assertTrue(self.api.handle_post(handler, '/api/files/cheats'))
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(handler.payload['written'], ['/data/etaHEN/cheats/json/CUSA12345_01.00.json'])
+        self.assertIn(('/data/etaHEN/cheats/json/CUSA12345_01.00.json', b'{"x": 1}'), TF.uploads)
+        self.assertIn('重新加载', handler.payload['note'])
+
+    def test_cheat_upload_limits(self):
+        handler = StubHandler('/api/files/cheats', b'', {'Content-Length': str((16 << 20) + 1)})
+        self.api.handle_post(handler, '/api/files/cheats')
+        self.assertEqual(handler.status, 413)
+        handler = StubHandler('/api/files/cheats', b'not a zip', {'Content-Length': '9'})
+        self.api.handle_post(handler, '/api/files/cheats')
+        self.assertEqual(handler.status, 400)
+
+    def test_nas_cheats_route_reads_from_the_nas(self):
+        result = {'written': ['/data/etaHEN/cheats/json/a.json'], 'warnings': [], 'note': 'n'}
+        with (mock.patch.object(self.api.nas, 'get', return_value={'protocol': 'ftp'}),
+              mock.patch('api_console.client_for') as factory,
+              mock.patch.object(self.api.transfers, 'import_cheats', return_value=result) as importer):
+            data, headers = json_body({'id': 'n1', 'path': '/g/a cheat.zip', 'title': 'CUSA12345'})
+            handler = StubHandler('/api/nas/cheats', data, headers)
+            self.api.handle_post(handler, '/api/nas/cheats')
+        self.assertEqual(handler.status, 200)
+        self.assertTrue(handler.payload['ok'])
+        self.assertEqual(importer.call_args.args[1], ['/g/a cheat.zip'])
+        factory.return_value.close.assert_called_once()
+
     def test_retry_route_queues_the_failed_job_again(self):
         with mock.patch.object(self.api.transfers, 'retry', return_value={'id': 'new', 'retry_of': 'old'}) as retry:
             body, headers = json_body({'id': 'old'})

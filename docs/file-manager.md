@@ -175,6 +175,41 @@ CUSA36464.rar（32 MB 字典，libarchive）64 MB/s；CUSA20499（4 GB 字典，
 无 libarchive 时解压类用例跳过。2026-11-10 在 Debian 12 容器（libarchive 3.6.2、python3-libarchive-c 2.9）里
 用 rclone WebDAV 作 NAS、rclone FTP 作 PS5 做过端到端：7 卷 32 MB 包解出 204 个文件，与源目录逐字节一致（含中文名、空目录）。
 
+## PKG 安装与金手指导入
+
+**调研结论（2026-11-12，PS5Upload 引擎 v12.4.2 源码，未在运行中的引擎上探测）**：
+`engine/crates/ps5upload-engine/src/install/deliver.rs` 的安装源是
+`enum Source { ConsolePath, HostFile, Remote { connection, path }, Url }`，按 snake_case 序列化，
+所以 `POST /api/pkg/install` 的 `source` 可以写成 `{"url": "http://…"}`，即计划里的**方案 A**，
+不需要把 PKG 先落到本机或 PS5 上。
+
+- 引擎先用 `Range: bytes=0-0` 探测，要求 206 + `Content-Range` 里的总长度，之后带 `If-Range` /
+  `Last-Modified` 分段读；地址超过 127 个字符时引擎会自己做短链。
+- 主机能直接访问该地址时由主机自己拉取；不行时（`options.proxy_link = true`）由引擎中转。
+- 状态：`GET /api/pkg/install/status?job=` 返回 `phase`（resolve / deliver / install / verify / done / failed）、
+  `verdict`（installed / may_not_launch / failed / unverified）、`metrics.served_bytes` 和 `reason`（如 busy）。
+  取消：`POST /api/pkg/install/stop {job}`。
+
+**实现**：`server/pkg_host.py` 在 `[ps5] pkg_port`（默认 8090，0 关闭）上开一个只读端点，
+首次安装时才开始监听。每个任务一个随机令牌（`/p/<令牌>.pkg`），任务结束立即作废，最长 24 小时；
+只接受目标 PS5、本机回环和本机地址（引擎中转时的来源）；只有 GET / HEAD 和单段 Range，
+每个请求按偏移从 NAS 重新打开（WebDAV 用 Range，SMB 用 seek，FTP 用 REST），不占本机磁盘。
+任务卡片显示「准备 → 传输 → 安装 → 确认」：resolve → 准备，deliver → 传输，install → 安装，verify → 确认。
+`may_not_launch` 记为「完成（有提醒）」，引擎正忙记为可重试的失败。超时按大小估算（约 2 MiB/s 加 5 分钟，至少 10 分钟），
+超时或取消都会请求引擎停止。
+
+接口：`GET /api/nas/plan?id=&paths=` 预览选中项的类型（archive / folder / package）和同目录金手指；
+`POST /api/nas/install {id, paths, dest, mode, host, cheats}` 按类型分发：RAR 走流式解压，
+已解压文件夹走传输 + 注册，PKG 走引擎安装。`/api/nas/extract` 保持不变。
+
+**金手指**不经过引擎：`POST /api/nas/cheats {id, path, title?, version?}` 从 NAS 读 ZIP（≤16 MiB）进内存，
+`POST /api/files/cheats?title=&version=` 直接收浏览器上传的 ZIP（原始请求体，≤16 MiB）。两者都按
+etaHEN 的布局（`json` / `shn` / `mc4`）把文件写到 `/data/etaHEN/cheats/<格式>/<文件名>`，逐级建目录、同名覆盖；
+路径穿越、缺少标题 ID、标题 ID 与所选游戏不符的成员只记提醒。解压安装时可勾选「同时导入金手指」，
+失败只把任务标成「完成（有提醒）」。导入后要在 etaHEN 里重新加载金手指才会生效。
+
+**需真机验证**：装一个真实 PKG 并能启动（主机直连与引擎中转两种情况）；导入一份金手指后 etaHEN 能识别。
+
 ## 游戏名称（标题 ID → 游戏名）
 
 「PS5 文件」和 NAS 列表里，名称中带 PS4/PS5 标题 ID 的条目（`CUSA36464`、`PPSA03671`、

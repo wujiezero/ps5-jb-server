@@ -758,6 +758,162 @@ class FtpResumeTests(unittest.TestCase):
                 proxy.upload('/data', 'a.bin', iter([b'x']), 2, offset=1)
 
 
+def cheat_zip(entries):
+    import io
+    import zipfile
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, 'w') as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+    return data.getvalue()
+
+
+class FakePkgHost:
+    enabled = True
+
+    def __init__(self):
+        self.published, self.revoked = [], []
+
+    def publish(self, job, nas_id, path, size, mtime, allowed):
+        self.published.append((job, nas_id, path, size, set(allowed)))
+        return 'tok', 'http://192.0.2.1:8090/p/tok.pkg'
+
+    def revoke(self, token):
+        self.revoked.append(token)
+
+    def served(self, token):
+        return 0
+
+
+class FakeInstaller:
+    """GameServices stand-in: replays statuses through progress, then returns a result."""
+
+    def __init__(self, result, statuses=(), wait_for_cancel=False):
+        self.result, self.statuses, self.wait_for_cancel = result, statuses, wait_for_cancel
+        self.calls = []
+
+    def package_install(self, host, source, timeout=None, progress=None, cancel=None):
+        self.calls.append((host, source, timeout))
+        for status in self.statuses:
+            progress(status)
+        if self.wait_for_cancel:
+            cancel.wait(5)
+            return {'state': 'canceled', 'job': 'e1'}
+        return dict(self.result)
+
+
+class PackageJobTests(unittest.TestCase):
+    TREE = {'/': None, '/games': None, '/games/CUSA12345.pkg': b'P' * 4096,
+            '/games/CUSA12345 cheat.zip': cheat_zip({'json/CUSA12345_01.00.json': '{}',
+                                                     'shn/CUSA12345_01.00.shn': '<x/>',
+                                                     '../evil/CUSA12345.mc4': 'x'}),
+            '/games/huge cheat.zip': b'Z' * 100}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = NasStore(Path(self.tmp.name) / 'nas.json')
+        self.ident = self.store.save({'protocol': 'ftp', 'host': '192.0.2.9'})['id']
+        self.ps5 = FakePs5()
+        self.pkg = FakePkgHost()
+
+    def manager(self, installer, **extra):
+        return TransferManager(self.store, self.ps5, client_factory=lambda config: FakeClient(self.TREE),
+                               game_services=installer, pkg_host=self.pkg, host='192.0.2.5', **extra)
+
+    def test_installed_package_is_done_and_token_revoked(self):
+        installer = FakeInstaller({'state': 'done', 'verdict': 'installed', 'job': 'e1'},
+                                  statuses=[{'phase': 'deliver', 'job': 'e1', 'metrics': {'served_bytes': 2048}},
+                                            {'phase': 'install', 'job': 'e1'}])
+        manager = self.manager(installer)
+        job = wait(manager, manager.start_package(self.ident, '/games/CUSA12345.pkg')['id'])
+        self.assertEqual((job['kind'], job['state'], job['phase'], job['percent']), ('package', 'done', 'done', 100))
+        self.assertEqual(job['bytes_done'], 4096)
+        self.assertEqual(job['engine_job'], 'e1')
+        self.assertEqual(self.pkg.published[0][2:], ('/games/CUSA12345.pkg', 4096, {'192.0.2.5'}))
+        self.assertEqual(self.pkg.revoked, ['tok'])
+        host, source, timeout = installer.calls[0]
+        self.assertEqual((host, source), ('192.0.2.5', {'url': 'http://192.0.2.1:8090/p/tok.pkg'}))
+        self.assertGreaterEqual(timeout, 600)
+
+    def test_may_not_launch_is_done_with_warnings(self):
+        manager = self.manager(FakeInstaller({'state': 'warning', 'verdict': 'may_not_launch',
+                                              'warning': '可能无法启动'}))
+        job = wait(manager, manager.start_package(self.ident, '/games/CUSA12345.pkg')['id'])
+        self.assertEqual(job['state'], 'done_with_warnings')
+        self.assertEqual(job['verdict'], 'may_not_launch')
+        self.assertIn('无法启动', job['warning'])
+
+    def test_busy_engine_fails_retryably(self):
+        installer = FakeInstaller({'state': 'conflict', 'error_code': 'busy'})
+        manager = self.manager(installer)
+        job = wait(manager, manager.start_package(self.ident, '/games/CUSA12345.pkg')['id'])
+        self.assertEqual((job['state'], job['error_code']), ('failed', 'busy'))
+        self.assertIn('正忙', job['error'])
+        self.assertEqual(self.pkg.revoked, ['tok'])
+        installer.result = {'state': 'done', 'verdict': 'installed'}
+        again = wait(manager, manager.retry(job['id'])['id'])
+        self.assertEqual((again['state'], again['retry_of'], again['kind']), ('done', job['id'], 'package'))
+
+    def test_failed_install_reports_the_engine_reason(self):
+        manager = self.manager(FakeInstaller({'state': 'failed', 'error_code': 'status_failed',
+                                              'reason': 'content id mismatch'}))
+        job = wait(manager, manager.start_package(self.ident, '/games/CUSA12345.pkg')['id'])
+        self.assertEqual(job['state'], 'failed')
+        self.assertIn('content id mismatch', job['error'])
+
+    def test_cancel_stops_the_install(self):
+        manager = self.manager(FakeInstaller({}, wait_for_cancel=True))
+        ident = manager.start_package(self.ident, '/games/CUSA12345.pkg')['id']
+        deadline = time.time() + 5
+        while manager.snapshot_one(ident)['state'] != 'running' and time.time() < deadline:
+            time.sleep(0.01)
+        manager.cancel(ident)
+        self.assertEqual(wait(manager, ident)['state'], 'canceled')
+        self.assertEqual(self.pkg.revoked, ['tok'])
+
+    def test_bad_package_requests(self):
+        manager = self.manager(FakeInstaller({}))
+        for path in ('/games/CUSA12345 cheat.zip', '/games'):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                manager.start_package(self.ident, path)
+        with self.assertRaises(NasError):
+            manager.start_package(self.ident, '/games/missing.pkg')
+        with self.assertRaisesRegex(ValueError, 'ps5upload'):
+            TransferManager(self.store, self.ps5).start_package(self.ident, '/games/CUSA12345.pkg')
+
+    def test_cheat_import_writes_eta_hen_layout_and_ignores_traversal(self):
+        manager = self.manager(None)
+        result = manager.import_cheats(FakeClient(self.TREE), ['/games/CUSA12345 cheat.zip'], title='CUSA12345')
+        self.assertEqual(sorted(result['written']), ['/data/etaHEN/cheats/json/CUSA12345_01.00.json',
+                                                     '/data/etaHEN/cheats/shn/CUSA12345_01.00.shn'])
+        self.assertEqual(self.ps5.files['/data/etaHEN/cheats/shn/CUSA12345_01.00.shn'], b'<x/>')
+        self.assertFalse([path for path in self.ps5.files if 'evil' in path])
+        self.assertIn('重新加载', result['note'])
+
+    def test_cheat_zip_size_limit(self):
+        manager = self.manager(None)
+        manager.CHEAT_ZIP_LIMIT = 50
+        with self.assertRaisesRegex(ValueError, '16 MiB'):
+            manager.import_cheats(FakeClient(self.TREE), ['/games/huge cheat.zip'])
+
+    def test_failed_cheat_step_only_warns(self):
+        manager = self.manager(None)
+        job = {'id': 'x', 'state': 'running', 'cheats': ['/games/huge cheat.zip']}
+        manager._import_cheats(job, FakeClient(self.TREE), 'CUSA12345')
+        self.assertEqual(job['state'], 'done_with_warnings')
+        self.assertIn('金手指导入失败', job['cheat_error'])
+        job = {'id': 'y', 'state': 'running', 'cheats': ['/games/CUSA12345 cheat.zip']}
+        manager._import_cheats(job, FakeClient(self.TREE), 'CUSA12345')
+        self.assertEqual(job['state'], 'running')
+        self.assertEqual(len(job['cheat_result']['written']), 2)
+
+    def test_extract_accepts_only_zip_cheats(self):
+        manager = self.manager(None)
+        with self.assertRaisesRegex(ValueError, 'ZIP'):
+            manager.start_extract(self.ident, '/games/a.rar', '/data', cheats=['/games/a.txt'])
+
+
 class FtpHelpersTests(unittest.TestCase):
     def test_list_fallback_parses_unix_listing(self):
         conn = mock.Mock()

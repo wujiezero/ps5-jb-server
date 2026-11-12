@@ -1997,6 +1997,7 @@ tbody tr { transition: background var(--dur) var(--ease); }
 .files-table td.files-time-col { color: var(--mut); font-size: 0.75rem; text-align: right; font-variant-numeric: tabular-nums; }
 .files-name { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .files-name .icon { flex: 0 0 auto; color: var(--faint); }
+.nas-row-action { flex: 0 0 auto; margin-left: auto; }
 .files-name .icon.folder,
 .files-dest-item .icon.folder { color: var(--warn); fill: var(--warn-soft); stroke: currentColor; }
 .files-name-button {

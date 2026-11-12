@@ -34,6 +34,7 @@ import subprocess
 import sys
 import unrar
 from files import FileServiceError, VOLUME_PATTERN
+from game_services import PACKAGE_PHASES, TITLE, install_timeout, parse_cheat_zip, write_cheats
 from ftp_files import listing
 
 PROTOCOLS = ('webdav', 'smb', 'ftp')
@@ -867,13 +868,16 @@ class TransferManager:
     # Progress is written to the state file at most this often; state changes at once.
     PERSIST_EVERY = 5.0
     # Kinds that /api/transfers/retry can queue again (extraction needs a fresh preflight).
-    RETRYABLE = ('nas',)
+    RETRYABLE = ('nas', 'package')
+    # Largest cheat ZIP read from the NAS into memory.
+    CHEAT_ZIP_LIMIT = 16 << 20
 
     # Waits before the 1st, 2nd, 3rd… automatic retry of one file (seconds).
     RETRY_DELAYS = (2, 5, 15)
 
     def __init__(self, store, files, client_factory=client_for, work_dir=None, runner=None,
-                 engines=None, game_services=None, host=None, state_path=None, retries=3):
+                 engines=None, game_services=None, host=None, state_path=None, retries=3,
+                 pkg_host=None):
         """work_dir: where unrar jobs keep their spec and status files; runner
         starts the worker unit (SystemdRunner by default); engines overrides
         engine detection (tests); state_path keeps the job list across restarts."""
@@ -887,6 +891,8 @@ class TransferManager:
         # transfer-only behavior and keeps fake engines out of old tests.
         self.game_services = game_services
         self.host = host
+        # pkg_host.PkgHost: serves a NAS PKG to the console for 'package' jobs.
+        self.pkg_host = pkg_host
         self.lock = threading.RLock()
         self.jobs = collections.OrderedDict()
         self.queue = collections.deque()
@@ -982,6 +988,13 @@ class TransferManager:
             raise ValueError('解压任务不支持重试：请重新在 NAS 里选择压缩包，开始前会重新检查分卷与空间')
         if job['state'] not in ('failed', 'canceled'):
             raise ValueError('只能重试失败或已取消的任务')
+        if job['kind'] == 'package':
+            created = self.start_package(job['nas_id'], job['paths'][0], host=job.get('host'),
+                                         title=job.get('title') or '')
+            with self.lock:
+                self.jobs[created['id']]['retry_of'] = ident
+            self._persist(force=True)
+            return self.snapshot_one(created['id'])
         created = self.start(job['nas_id'], job['paths'], job['dest'], 'skip',
                              auto_register=job.get('auto_register', False),
                              host=job.get('host'), title=job.get('title') or '')
@@ -1016,6 +1029,90 @@ class TransferManager:
                 'retries': 0, 'resumed': 0}
         self._enqueue(job)
         return self.snapshot_one(ident)
+
+    def start_package(self, nas_id, path, host=None, title=''):
+        """Queue a PKG install: the engine reads the file from the NAS through pkg_host."""
+        if self.game_services is None or self.pkg_host is None:
+            raise ValueError('PKG 安装不可用：需要本机 ps5upload 引擎')
+        if not getattr(self.pkg_host, 'enabled', True):
+            raise ValueError('PKG 安装已关闭（[ps5] pkg_port = 0）')
+        config = self.store.get(nas_id)
+        path = clean_path(path)
+        if not path.lower().endswith('.pkg'):
+            raise ValueError('请选择一个 .pkg 文件')
+        host = host or self.host
+        if not host:
+            raise ValueError('请先选择 PS5 主机')
+        client = self.client_factory(config)
+        try:
+            info = client.stat(path)
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+        if info.get('dir') or not info.get('size'):
+            raise ValueError('所选 PKG 不存在或是空文件')
+        ident = uuid.uuid4().hex[:10]
+        name = path.rsplit('/', 1)[-1]
+        job = {'id': ident, 'kind': 'package', 'source': config['name'], 'nas_id': nas_id,
+               'protocol': config['protocol'], 'name': name, 'paths': [path], 'dest': '',
+               'overwrite': 'skip', 'state': 'queued', 'phase': 'prepare',
+               'files_total': 1, 'files_done': 0, 'files_skipped': 0, 'files_failed': 0,
+               'bytes_total': int(info['size']), 'bytes_done': 0, 'current': name,
+               'current_size': int(info['size']), 'current_done': 0, 'mtime': info.get('mtime') or 0,
+               'created': time.time(), 'started': None, 'finished': None, 'elapsed': 0, 'speed': 0,
+               'eta': None, 'percent': 0, 'error': '', 'error_code': '', 'errors': [], 'warning': '',
+               'verdict': '', 'engine_job': '', 'host': host, 'title': str(title or ''),
+               'retries': 0, 'resumed': 0}
+        self._enqueue(job)
+        return self.snapshot_one(ident)
+
+    def _execute_package(self, job, cancel):
+        self._set(job, state='running', started=time.time(), phase='prepare')
+        token, url = self.pkg_host.publish(job['id'], job['nas_id'], job['paths'][0], job['bytes_total'],
+                                           job.get('mtime') or 0, {job['host']})
+        samples = collections.deque(maxlen=80)
+        seen = [0]
+
+        def progress(status):
+            phase = str(status.get('phase') or '').lower()
+            metrics = status.get('metrics') if isinstance(status.get('metrics'), dict) else {}
+            served = metrics.get('served_bytes')
+            if not isinstance(served, (int, float)) or served <= 0:
+                served = self.pkg_host.served(token)
+            served = int(min(served, job['bytes_total']))
+            if served > seen[0]:
+                self._progress(job, served - seen[0], served, samples)
+                seen[0] = served
+            self._set(job, phase=PACKAGE_PHASES.get(phase, job.get('phase') or 'prepare'),
+                      engine_job=str(status.get('job') or job.get('engine_job') or ''))
+
+        try:
+            result = self.game_services.package_install(job['host'], {'url': url},
+                                                        timeout=install_timeout(job['bytes_total']),
+                                                        progress=progress, cancel=cancel)
+        finally:
+            self.pkg_host.revoke(token)
+        state = result.get('state')
+        self._set(job, engine_job=str(result.get('job') or job.get('engine_job') or ''),
+                  verdict=str(result.get('verdict') or ''))
+        if state == 'canceled' or cancel.is_set():
+            raise _Canceled()
+        if state == 'conflict':
+            self._set(job, error_code='busy')
+            raise NasError('ps5upload 引擎正忙（另一个安装任务在进行），稍后点「重试」')
+        if state == 'failed':
+            self._set(job, error_code=str(result.get('error_code') or 'failed'))
+            reason = result.get('reason') or result.get('error') or '安装失败'
+            raise NasError(f'PKG 安装失败：{str(reason)[:200]}')
+        done = {'phase': 'done', 'percent': 100, 'files_done': 1, 'current_done': job['bytes_total'],
+                'bytes_done': job['bytes_total']}
+        if state == 'warning':
+            self._set(job, state='done_with_warnings',
+                      warning=result.get('warning') or '安装完成但主机报告 may_not_launch，游戏可能无法启动', **done)
+        else:
+            self._set(job, state='done', **done)
 
     def engines(self):
         if self._engines is not None:
@@ -1055,9 +1152,12 @@ class TransferManager:
                 'memory': archive.unrar_memory(info['dictionary']) if info['engine'] == 'unrar' else 0}
 
     def start_extract(self, nas_id, path, dest, mode='install', auto_register=False,
-                      host=None, title=''):
+                      host=None, title='', cheats=None):
         if mode not in ('install', 'merge'):
             raise ValueError('安装方式只能是新建游戏文件夹或合并到已有文件夹')
+        cheats = [clean_path(item) for item in (cheats or [])]
+        if len(cheats) > 10 or any(not item.lower().endswith('.zip') for item in cheats):
+            raise ValueError('金手指只能是 1–10 个 ZIP 文件')
         if not isinstance(dest, str) or not dest.startswith('/'):
             raise ValueError('请选择 PS5 上的目标文件夹')
         dest = dest.rstrip('/') or '/'
@@ -1094,7 +1194,8 @@ class TransferManager:
                'error': '', 'errors': [], 'result_path': '', 'title': title or info['title'], 'note': '',
                'engine': info['engine'], 'memory': info['memory'], 'folder': info['folder'],
                 'auto_register': bool(auto_register), 'registration_error': '',
-                'registration': None, 'host': host or self.host}
+                'registration': None, 'host': host or self.host,
+                'cheats': cheats, 'cheat_result': None, 'cheat_error': ''}
         self._enqueue(job)
         return self.snapshot_one(ident)
 
@@ -1191,6 +1292,8 @@ class TransferManager:
                     self._execute_unrar(job, self.cancels[ident])
                 elif job['kind'] == 'extract':
                     self._execute_extract(job, self.cancels[ident])
+                elif job['kind'] == 'package':
+                    self._execute_package(job, self.cancels[ident])
                 else:
                     self._execute(job, self.cancels[ident])
             except _Canceled:
@@ -1302,6 +1405,56 @@ class TransferManager:
         except Exception as exc:
             self._set(job, state='done_with_warnings', registration_error=str(exc)[:300])
 
+    def read_cheat_zip(self, client, path):
+        """Bytes of one cheat ZIP on the NAS, refusing anything over CHEAT_ZIP_LIMIT."""
+        path = clean_path(path)
+        if not path.lower().endswith('.zip'):
+            raise ValueError('金手指必须是 ZIP 文件')
+        info = client.stat(path)
+        if info.get('dir'):
+            raise ValueError('所选金手指不是文件')
+        if int(info.get('size') or 0) > self.CHEAT_ZIP_LIMIT:
+            raise ValueError('金手指 ZIP 超过 16 MiB 上限')
+        reader = client.open(path)
+        try:
+            data = reader.read(self.CHEAT_ZIP_LIMIT + 1)
+            while len(data) <= self.CHEAT_ZIP_LIMIT:
+                more = reader.read(self.CHEAT_ZIP_LIMIT + 1 - len(data))
+                if not more:
+                    break
+                data += more
+        finally:
+            reader.close()
+        if len(data) > self.CHEAT_ZIP_LIMIT:
+            raise ValueError('金手指 ZIP 超过 16 MiB 上限')
+        return data
+
+    def import_cheats(self, client, paths, title=None, version=None):
+        """Read cheat ZIPs from the NAS and write them into etaHEN's folders."""
+        title = title if title and TITLE.fullmatch(str(title)) else None
+        written, warnings = [], []
+        for path in paths:
+            parsed = parse_cheat_zip(self.read_cheat_zip(client, path), title=title, version=version)
+            result = write_cheats(self.files, parsed)
+            written += result['written']
+            warnings += result['warnings']
+        if not written:
+            warnings.append('没有写入任何金手指文件')
+        return {'written': written, 'warnings': warnings,
+                'note': '需要在 etaHEN 里重新加载金手指（或重启 etaHEN）后才会生效' if written else ''}
+
+    def _import_cheats(self, job, client, title):
+        """Optional last step of an extraction; problems only add a warning."""
+        if not job.get('cheats'):
+            return
+        try:
+            result = self.import_cheats(client, job['cheats'], title=title)
+            self._set(job, cheat_result=result)
+            if not result['written']:
+                raise ValueError('；'.join(result['warnings'][-3:]) or '没有可导入的金手指')
+        except Exception as exc:
+            self._set(job, state='done_with_warnings', cheat_error=f'金手指导入失败：{str(exc)[:200]}')
+
     def _execute_extract(self, job, cancel):
         config = self.store.get(job['nas_id'])
         client = self.client_factory(config)
@@ -1334,6 +1487,7 @@ class TransferManager:
                                           job['mode'], job['id'], Hooks)
             result = installer.run(job['base'])
             self._finish_registration(job, result)
+            self._import_cheats(job, client, result.get('title') or job['title'])
             self._set(job, state=self._final_state(job), percent=100, current='', current_done=0, current_size=0,
                       result_path=result['path'], title=result['title'] or job['title'],
                       note=result['note'], game=result.get('game'), packages=result.get('packages', []),
@@ -1414,6 +1568,15 @@ class TransferManager:
                   'note': status.get('note') or '', 'game': status.get('game'),
                   'packages': status.get('packages') or [], 'sidecars': status.get('sidecars') or []}
         self._finish_registration(job, result)
+        if job.get('cheats'):
+            client = self.client_factory(self.store.get(job['nas_id']))
+            try:
+                self._import_cheats(job, client, result['title'])
+            finally:
+                try:
+                    client.close()
+                except Exception:
+                    pass
         self._set(job, state=self._final_state(job), percent=100, current='', current_done=0, current_size=0,
                   result_path=result['path'], title=result['title'], note=result['note'],
                   game=result['game'], packages=result['packages'], sidecars=result['sidecars'],

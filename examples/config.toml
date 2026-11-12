@@ -26,6 +26,7 @@ elf_port = 9021        # elfldr on the console
 file_port = 80         # HTTP file service (tom-ps5-usbnet payload, on its USB adapter address)
 ftp_port = 2120        # FTP fallback (zftpd); 0 disables the fallback
 space_port = 8888      # free/total for the FTP mode, read from web-file-mgr; 0 disables
+pkg_port = 8090        # PKG install: serves the NAS file to the console while a job runs; 0 disables
 engine_url = "http://127.0.0.1:19113"  # PS5Upload engine for wake / standby (optional)
 control = true         # enable the PS5 host page
 file_manager = true    # enable the PS5 file page
