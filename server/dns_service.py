@@ -91,6 +91,11 @@ class DNSPolicy:
         self.on_apply = None
         self.lan = ipaddress.ip_network(lan, strict=False)
         self.log_seq = 0
+        # Bumped on every successful policy change; answers started under an
+        # older generation are re-checked before they grant anything.
+        self.generation = 0
+        # name -> Event for upstream queries in progress (guarded by store.lock).
+        self.inflight = {}
 
     def apply_rules(self, config, leases):
         self.firewall.apply(config, leases)
@@ -169,13 +174,26 @@ class DNSPolicy:
                             logging.exception('Unable to disable forwarding')
                     logging.exception('Unable to restore previous leases')
                 raise
+            self.generation += 1
             self.cache.clear()
             self.leases = {}
             self.ip_domains.clear()
             self.last_applied = datetime.datetime.now(datetime.timezone.utc).isoformat()
             self.last_error = None
 
+    # A later query for a name already being resolved waits this long for the
+    # first one to fill the cache, then asks upstream itself.
+    INFLIGHT_WAIT = 4.0
+
     def answer(self, query, client):
+        """Answer one query; the upstream round trip runs without the policy lock.
+
+        1. Locked: snapshot policy and generation; refuse, answer local names
+           and cache hits directly.
+        2. Unlocked: ask upstream (one request per name at a time).
+        3. Locked again: if the policy changed meanwhile, re-check the name under
+           the new policy; only then grant leases, fill the cache and log.
+        """
         answer = dns.message.make_response(query)
         answer.flags |= dns.flags.RA
         try:
@@ -195,6 +213,7 @@ class DNSPolicy:
         qtype = dns.rdatatype.to_text(question.rdtype)
         with self.store.lock:
             cfg = self.store.snapshot()
+            generation = self.generation
             if name not in LOCAL_DOMAINS and not domain_allowed(name, cfg['domains']):
                 answer.set_rcode(dns.rcode.NXDOMAIN)
                 self.log(client, name, qtype, 'blocked', '不在域名白名单')
@@ -210,61 +229,113 @@ class DNSPolicy:
                 answer.answer.append(dns.rrset.from_text(question.name, 30, 'IN', 'A', self.host_ip))
                 self.log(client, name, qtype, 'local', self.host_ip)
                 return answer
-            now = self.clock()
-            cached = self.cache.get(name)
-            if cached and cached[0] > now:
-                expiry, records = cached
-                answer.answer = copy.deepcopy(records)
-                for rr in answer.answer:
-                    rr.ttl = max(0, math.floor(expiry - now))
-                self.log(client, name, qtype, 'allowed', 'DNS 缓存')
+            if self._from_cache(answer, client, name, qtype):
+                return answer
+            waiting = self.inflight.get(name)
+            if waiting is None:
+                leader = self.inflight[name] = threading.Event()
+        if waiting is not None:
+            # Someone is already asking upstream for this name: reuse their answer.
+            waiting.wait(self.INFLIGHT_WAIT)
+            with self.store.lock:
+                if self._from_cache(answer, client, name, qtype):
+                    return answer
+                cfg = self.store.snapshot()
+                generation = self.generation
+            leader = None
+        try:
+            return self._resolve(answer, client, name, qtype, question, cfg, generation)
+        finally:
+            if leader is not None:
+                with self.store.lock:
+                    if self.inflight.get(name) is leader:
+                        del self.inflight[name]
+                leader.set()
+
+    def _from_cache(self, answer, client, name, qtype):
+        """Caller holds the store lock. Cache entries exist only under the current policy."""
+        now = self.clock()
+        cached = self.cache.get(name)
+        if not (cached and cached[0] > now):
+            return False
+        expiry, records = cached
+        answer.answer = copy.deepcopy(records)
+        for rr in answer.answer:
+            rr.ttl = max(0, math.floor(expiry - now))
+        self.log(client, name, qtype, 'allowed', 'DNS 缓存')
+        return True
+
+    def _resolve(self, answer, client, name, qtype, question, cfg, generation):
+        try:
+            forwarded = dns.message.make_query(question.name, 'A', use_edns=0, payload=1232)
+            response = self.resolver(forwarded, cfg['upstream_dns'])
+            # DNS TTL begins at receipt of the upstream response. Time spent
+            # waiting upstream must not consume a lease before it is returned.
+            received = self.clock()
+            if response.rcode() == dns.rcode.NOERROR:
+                records, ips, ttl = authorized_answers(response, question.name)
+        except Exception as exc:
+            with self.store.lock:
+                return self._fail(answer, client, name, qtype, exc)
+        with self.store.lock:
+            if self.generation != generation:
+                # The policy changed while upstream was answering: decide again.
+                cfg = self.store.snapshot()
+                if not domain_allowed(name, cfg['domains']):
+                    answer.set_rcode(dns.rcode.NXDOMAIN)
+                    self.log(client, name, qtype, 'blocked', '查询期间已移出域名白名单')
+                    return answer
+            if response.rcode() != dns.rcode.NOERROR:
+                answer.set_rcode(response.rcode())
+                self.log(client, name, qtype, 'upstream', dns.rcode.to_text(response.rcode()))
                 return answer
             try:
-                forwarded = dns.message.make_query(question.name, 'A', use_edns=0, payload=1232)
-                response = self.resolver(forwarded, cfg['upstream_dns'])
-                if response.rcode() != dns.rcode.NOERROR:
-                    answer.set_rcode(response.rcode())
-                    self.log(client, name, qtype, 'upstream', dns.rcode.to_text(response.rcode()))
-                    return answer
-                records, ips, ttl = authorized_answers(response, question.name)
-                # DNS TTL begins at receipt of the upstream response. Time spent
-                # waiting upstream must not consume a lease before it is returned.
-                now = self.clock()
-                pending = {ip: expiry for ip, expiry in self.leases.items() if expiry > now}
-                if len(pending) + len(ips) > 2048:
-                    raise ValueError('动态地址授权数量超过限制')
-                for ip in ips:
-                    pending[ip] = max(pending.get(ip, 0), now + ttl)
-                if ips:
-                    # Keep absolute expiry times: rounding on unrelated queries must
-                    # never extend an existing authorization. Kernel timeouts may
-                    # outlast fractional TTL by at most one second, without drift.
-                    leases = {ip: max(1, math.ceil(expiry - self.clock()))
-                              for ip, expiry in pending.items() if expiry > self.clock()}
-                    self.firewall.apply(cfg, leases)
-                    self.leases = pending
-                for rr in records:
-                    rr.ttl = min(rr.ttl, ttl)
-                if len(self.cache) >= 512:
-                    self.cache = {key: value for key, value in self.cache.items() if value[0] > now}
-                    if len(self.cache) >= 512:
-                        self.cache.pop(next(iter(self.cache)))
-                self.cache[name] = (now + ttl, copy.deepcopy(records))
-                for ip in ips:
-                    self.ip_domains[ip] = (name, now)
-                if len(self.ip_domains) > 4096:
-                    keep = sorted(self.ip_domains.items(), key=lambda kv: kv[1][1])[-2048:]
-                    self.ip_domains = dict(keep)
-                answer.answer = records
-                self.last_error = None
-                self.log(client, name, qtype, 'allowed', ', '.join(ips) or '无 A 记录')
+                self._grant(cfg, ips, received + ttl)
             except Exception as exc:
-                answer.answer = []
-                answer.set_rcode(dns.rcode.SERVFAIL)
-                self.last_error = str(exc)[:240]
-                self.log(client, name, qtype, 'error', self.last_error)
-                logging.warning('DNS %s failed: %s', name, exc)
+                return self._fail(answer, client, name, qtype, exc)
+            for rr in records:
+                rr.ttl = min(rr.ttl, ttl)
+            now = received
+            if len(self.cache) >= 512:
+                self.cache = {key: value for key, value in self.cache.items() if value[0] > now}
+                if len(self.cache) >= 512:
+                    self.cache.pop(next(iter(self.cache)))
+            self.cache[name] = (now + ttl, copy.deepcopy(records))
+            for ip in ips:
+                self.ip_domains[ip] = (name, now)
+            if len(self.ip_domains) > 4096:
+                keep = sorted(self.ip_domains.items(), key=lambda kv: kv[1][1])[-2048:]
+                self.ip_domains = dict(keep)
+            answer.answer = records
+            self.last_error = None
+            self.log(client, name, qtype, 'allowed', ', '.join(ips) or '无 A 记录')
             return answer
+
+    def _fail(self, answer, client, name, qtype, exc):
+        """Caller holds the store lock."""
+        answer.answer = []
+        answer.set_rcode(dns.rcode.SERVFAIL)
+        self.last_error = str(exc)[:240]
+        self.log(client, name, qtype, 'error', self.last_error)
+        logging.warning('DNS %s failed: %s', name, exc)
+        return answer
+
+    def _grant(self, cfg, ips, expiry):
+        """Caller holds the store lock. Authorize ips until expiry before answering."""
+        now = self.clock()
+        pending = {ip: until for ip, until in self.leases.items() if until > now}
+        if len(pending) + len(ips) > 2048:
+            raise ValueError('动态地址授权数量超过限制')
+        for ip in ips:
+            pending[ip] = max(pending.get(ip, 0), expiry)
+        if ips:
+            # Keep absolute expiry times: rounding on unrelated queries must
+            # never extend an existing authorization. Kernel timeouts may
+            # outlast fractional TTL by at most one second, without drift.
+            leases = {ip: max(1, math.ceil(until - self.clock()))
+                      for ip, until in pending.items() if until > self.clock()}
+            self.firewall.apply(cfg, leases)
+            self.leases = pending
 
 
 class LimitedThreads(socketserver.ThreadingMixIn):

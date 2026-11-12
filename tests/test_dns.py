@@ -144,6 +144,124 @@ class DNSBehavior(unittest.TestCase):
             authorized_answers(response, query.question[0].name)
 
 
+class LockFreeUpstreamTests(unittest.TestCase):
+    """The upstream round trip must not hold the policy lock (A2)."""
+
+    def setUp(self):
+        import threading
+        self.threading = threading
+        self.fw = Firewall()
+        self.store = Store(['example.com', 'slow.example', 'cached.example'])
+        self.release = threading.Event()
+        self.entered = threading.Event()
+        self.calls = []
+
+        def resolve(query, upstream):
+            name = query.question[0].name.to_text(omit_final_dot=True)
+            self.calls.append(name)
+            if name == 'slow.example':
+                self.entered.set()
+                assert self.release.wait(5), 'test never released the upstream'
+            response = dns.message.make_response(query)
+            response.answer.append(dns.rrset.from_text(query.question[0].name, 60, 'IN', 'A', '93.184.215.14'))
+            return response
+        self.engine = DNSPolicy(self.store, self.fw, host_ip=HOST_IP, resolver=resolve)
+
+    def tearDown(self):
+        self.release.set()
+
+    def ask(self, name, results):
+        results.append(self.engine.answer(dns.message.make_query(name, 'A'), CLIENT))
+
+    def start(self, name, results):
+        thread = self.threading.Thread(target=self.ask, args=(name, results), daemon=True)
+        thread.start()
+        return thread
+
+    def test_local_and_cached_names_answer_while_upstream_hangs(self):
+        import time
+        self.ask('cached.example', [])
+        slow = []
+        thread = self.start('slow.example', slow)
+        self.assertTrue(self.entered.wait(2))
+        started = time.monotonic()
+        local = self.engine.answer(dns.message.make_query('manuals.playstation.net', 'A'), CLIENT)
+        cached = self.engine.answer(dns.message.make_query('cached.example', 'A'), CLIENT)
+        blocked = self.engine.answer(dns.message.make_query('nope.example', 'A'), CLIENT)
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(local.answer[0][0].address, HOST_IP)
+        self.assertEqual(cached.answer[0][0].address, '93.184.215.14')
+        self.assertEqual(blocked.rcode(), dns.rcode.NXDOMAIN)
+        self.release.set()
+        thread.join(5)
+        self.assertEqual(slow[0].rcode(), dns.rcode.NOERROR)
+
+    def test_policy_change_during_upstream_wait_denies_the_answer(self):
+        slow = []
+        thread = self.start('slow.example', slow)
+        self.assertTrue(self.entered.wait(2))
+        with self.store.lock:
+            self.store.config['domains'] = ['example.com']
+            self.engine.generation += 1
+            self.engine.cache.clear()
+            self.engine.leases = {}
+        self.release.set()
+        thread.join(5)
+        self.assertEqual(slow[0].rcode(), dns.rcode.NXDOMAIN)
+        self.assertEqual(self.fw.calls, [], 'no lease may be granted for a removed name')
+        self.assertNotIn('slow.example', self.engine.cache)
+        self.assertEqual(self.engine.live_leases(), {})
+
+    def test_policy_change_that_keeps_the_name_still_answers(self):
+        slow = []
+        thread = self.start('slow.example', slow)
+        self.assertTrue(self.entered.wait(2))
+        with self.store.lock:
+            self.engine.generation += 1
+        self.release.set()
+        thread.join(5)
+        self.assertEqual(slow[0].rcode(), dns.rcode.NOERROR)
+        self.assertIn('93.184.215.14', self.engine.live_leases())
+
+    def test_concurrent_queries_for_one_name_share_one_upstream_request(self):
+        first, second = [], []
+        one = self.start('slow.example', first)
+        self.assertTrue(self.entered.wait(2))
+        two = self.start('slow.example', second)
+        import time
+        time.sleep(0.1)  # let the second query reach the in-flight wait
+        self.release.set()
+        one.join(5)
+        two.join(5)
+        self.assertEqual(self.calls, ['slow.example'])
+        self.assertEqual(first[0].answer[0][0].address, '93.184.215.14')
+        self.assertEqual(second[0].answer[0][0].address, '93.184.215.14')
+        self.assertEqual(self.engine.inflight, {})
+
+    def test_waiter_queries_itself_after_the_wait_limit(self):
+        self.engine.INFLIGHT_WAIT = 0.05
+        first, second = [], []
+        one = self.start('slow.example', first)
+        self.assertTrue(self.entered.wait(2))
+        two = self.start('slow.example', second)
+        import time
+        time.sleep(0.3)
+        self.release.set()
+        one.join(5)
+        two.join(5)
+        self.assertEqual(self.calls.count('slow.example'), 2)
+        self.assertEqual(second[0].rcode(), dns.rcode.NOERROR)
+
+    def test_upstream_error_is_servfail_and_recorded(self):
+        def broken(query, upstream):
+            raise TimeoutError('upstream timeout')
+        self.engine.resolver = broken
+        answer = self.engine.answer(dns.message.make_query('example.com', 'A'), CLIENT)
+        self.assertEqual(answer.rcode(), dns.rcode.SERVFAIL)
+        self.assertIn('upstream timeout', self.engine.last_error)
+        self.assertEqual(self.engine.inflight, {})
+
+
 class TransportTests(unittest.TestCase):
     def test_real_udp_and_tcp_reply(self):
         from dns_service import start_dns
