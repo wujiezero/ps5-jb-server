@@ -3177,3 +3177,22 @@ tbody[data-enter="true"] > tr:nth-child(n+6) { animation-delay: 60ms; }
 .notify-type-group[hidden] { display: none; }
 .notify-events { margin: 12px 0; padding: 0; border: 0; min-width: 0; }
 .notify-events legend { font-size: 0.8125rem; font-weight: 600; margin-bottom: 8px; }
+
+/* 网络活动：历史与统计 */
+.activity-modes { margin-bottom: 12px; }
+.activity-panel[hidden], #activity-live[hidden] { display: none; }
+.stats-chart { margin: 8px 0 16px; }
+.stats-chart svg { width: 100%; height: 160px; display: block; }
+.stats-chart .bar-allowed { fill: var(--ok); }
+.stats-chart .bar-blocked { fill: var(--danger); }
+.stats-chart .axis-label { fill: var(--mut); font-size: 10px; }
+.stats-legend { display: flex; gap: 12px; font-size: 0.75rem; color: var(--mut); }
+.legend-allowed::before, .legend-blocked::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 4px; border-radius: 2px; vertical-align: -1px; }
+.legend-allowed::before { background: var(--ok); }
+.legend-blocked::before { background: var(--danger); }
+.stats-list { margin: 0 0 16px; padding: 0; list-style: none; display: grid; gap: 6px; }
+.stats-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); font-size: 0.8125rem; }
+.stats-item-main { flex: 1 1 auto; min-width: 0; display: grid; }
+.stats-item-target { font-family: var(--mono, monospace); overflow-wrap: anywhere; }
+.stats-item-meta { color: var(--mut); font-size: 0.75rem; }
+.stats-empty { color: var(--mut); font-size: 0.8125rem; }

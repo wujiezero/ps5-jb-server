@@ -52,6 +52,7 @@ class Settings:
     plugin_upstream: str = 'https://itsplk.github.io/ps5-payloads-mirror/payloads_v2.json'
     max_file_upload: int = 0            # PS5 file manager uploads (streamed); 0 = no limit
     transfer_retries: int = 3           # automatic retries per file in NAS transfers; 0 = off
+    activity_retention_days: int = 30   # activity history kept in <data>/activity.db
     data_dir: Path = Path('/var/lib/ps5-jb-server')
     repo_dir: Path = Path('/srv/ps5-jb-server')
     static_dir: Path = Path('/opt/ps5-jb-server/web')
@@ -120,6 +121,8 @@ class Settings:
                                             'PS5JB_MAX_FILE_UPLOAD', 0))),
             transfer_retries=max(0, min(10, int(pick('limits', 'transfer_retries',
                                                      'PS5JB_TRANSFER_RETRIES', 3)))),
+            activity_retention_days=max(1, min(365, int(pick('activity', 'retention_days',
+                                                             'PS5JB_ACTIVITY_RETENTION_DAYS', 30)))),
             data_dir=Path(pick('paths', 'data', 'PS5JB_DATA', DEFAULTS['paths']['data'])),
             repo_dir=Path(pick('paths', 'repo', 'PS5JB_REPO', DEFAULTS['paths']['repo'])),
             static_dir=Path(pick('paths', 'static', 'PS5JB_STATIC', DEFAULTS['paths']['static'])),

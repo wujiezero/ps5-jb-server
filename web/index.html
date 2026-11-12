@@ -347,6 +347,12 @@
               <div><h2 id="activity-title">网络活动 <button class="help-tip" type="button" data-help="activity"></button></h2><p class="card-sub">网关连接、DNS 查询与本机服务事件；勾选目标后可批量放行或命名。</p></div>
               <span id="activity-updated" class="tag" hidden></span>
             </header>
+            <div class="segmented activity-modes" role="group" aria-label="网络活动视图">
+              <button class="segment" type="button" data-activity-mode="live" aria-pressed="true">实时</button>
+              <button class="segment" type="button" data-activity-mode="history" aria-pressed="false">历史</button>
+              <button class="segment" type="button" data-activity-mode="stats" aria-pressed="false">统计</button>
+            </div>
+            <div id="activity-live">
             <p id="activity-summary" class="summary-line" aria-live="polite">正在读取网络活动…</p>
             <p id="activity-warning" class="banner banner-warning" role="status" hidden></p>
 
@@ -419,6 +425,101 @@
               </table>
             </div>
             <p class="footnote">包含经过本机网关的 IPv4 连接、DNS 查询与本机服务事件；本机服务事件不可批量放行。分类自动推断，自定义命名与分类优先。</p>
+            </div>
+
+            <div id="activity-history" class="activity-panel" hidden>
+              <div class="filter-row search-toolbar">
+                <label class="search-field" for="history-search">
+                  <span class="visually-hidden">搜索历史</span>
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-search"></use></svg>
+                  <input id="history-search" type="search" placeholder="搜索域名、IP 或客户端" autocomplete="off" spellcheck="false">
+                </label>
+                <label class="filter-select" for="history-range">时间
+                  <select id="history-range">
+                    <option value="86400">最近 24 小时</option>
+                    <option value="604800" selected>最近 7 天</option>
+                    <option value="2592000">最近 30 天</option>
+                    <option value="0">全部</option>
+                  </select>
+                </label>
+                <label class="filter-select" for="history-verdict">结果
+                  <select id="history-verdict">
+                    <option value="">全部</option>
+                    <option value="blocked">仅未放行</option>
+                    <option value="allowed">仅允许</option>
+                  </select>
+                </label>
+                <label class="filter-select" for="history-kind">来源
+                  <select id="history-kind">
+                    <option value="">全部来源</option>
+                    <option value="flow">网关连接</option>
+                    <option value="dns">DNS 查询</option>
+                    <option value="service">本机服务</option>
+                    <option value="external">隐藏本机服务</option>
+                  </select>
+                </label>
+                <button id="history-export" class="button button-secondary button-small" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg>
+                  <span class="button-label">导出 CSV</span>
+                </button>
+              </div>
+              <p id="history-summary" class="summary-line" aria-live="polite">切换到「历史」后读取。</p>
+              <div class="table-wrap activity-table-wrap" role="region" aria-label="网络活动历史" tabindex="0">
+                <table class="activity-table">
+                  <thead>
+                    <tr>
+                      <th scope="col" class="check-cell"><span class="visually-hidden">勾选</span></th>
+                      <th scope="col">时间</th>
+                      <th scope="col">客户端</th>
+                      <th scope="col">域名</th>
+                      <th scope="col">IP</th>
+                      <th scope="col">端口</th>
+                      <th scope="col">结果</th>
+                      <th scope="col">分类</th>
+                      <th scope="col">名称</th>
+                    </tr>
+                  </thead>
+                  <tbody id="history-body"></tbody>
+                </table>
+              </div>
+              <div class="form-actions">
+                <button id="history-more" class="button button-secondary button-small" type="button" hidden>
+                  <span class="spinner" aria-hidden="true" hidden></span>
+                  <span class="button-label">加载更多</span>
+                </button>
+              </div>
+            </div>
+
+            <div id="activity-stats" class="activity-panel" hidden>
+              <div class="filter-row">
+                <div class="segmented" role="group" aria-label="统计范围">
+                  <button class="segment" type="button" data-stats-days="7" aria-pressed="true">最近 7 天</button>
+                  <button class="segment" type="button" data-stats-days="30" aria-pressed="false">最近 30 天</button>
+                </div>
+              </div>
+              <p id="stats-summary" class="summary-line" aria-live="polite">切换到「统计」后读取。</p>
+              <figure class="stats-chart">
+                <svg id="stats-chart" role="img" aria-labelledby="stats-chart-caption"></svg>
+                <figcaption id="stats-chart-caption" class="stats-legend"><span class="legend-allowed">允许</span><span class="legend-blocked">未放行</span>（按天）</figcaption>
+              </figure>
+              <div class="field-grid two">
+                <section aria-labelledby="stats-blocked-title">
+                  <h3 id="stats-blocked-title" class="backup-subtitle">未放行最多的目标</h3>
+                  <ol id="stats-top-blocked" class="stats-list"></ol>
+                </section>
+                <section aria-labelledby="stats-allowed-title">
+                  <h3 id="stats-allowed-title" class="backup-subtitle">允许最多的目标</h3>
+                  <ol id="stats-top-allowed" class="stats-list"></ol>
+                </section>
+              </div>
+              <h3 class="backup-subtitle">按客户端</h3>
+              <div class="table-wrap" role="region" aria-label="按客户端统计" tabindex="0">
+                <table class="activity-table stats-clients">
+                  <thead><tr><th scope="col">客户端</th><th scope="col">允许</th><th scope="col">未放行</th><th scope="col">最近</th></tr></thead>
+                  <tbody id="stats-clients"></tbody>
+                </table>
+              </div>
+            </div>
           </section>
         </section>
 
@@ -918,6 +1019,12 @@
               </div>
             </div>
             <p class="footnote">不包含管理密码、登录会话、TLS 证书、活动历史与 PS5Upload 配对密钥。有传输、解压或复制任务时不能恢复。</p>
+            <div class="form-actions">
+              <button id="history-clear" class="button button-secondary button-small" type="button">
+                <span class="spinner" aria-hidden="true" hidden></span>
+                <span class="button-label">清空活动历史</span>
+              </button>
+            </div>
           </section>
 
           <section class="card" aria-labelledby="service-title">

@@ -7791,7 +7791,7 @@
     'upstream-dns': { title: '上游 DNS', body: '本机解析白名单域名时转发到的 DNS 服务器，只支持 IPv4 地址，一般填路由器地址或公共 DNS（例如 223.5.5.5）。' },
     apply: { title: '应用与回退', body: '「保存并应用」立即重写 DNS 白名单和网关规则；服务器保留上一版配置，改错时用「回退上一版」一键恢复。' },
     activity: { title: '网络活动', body: '实时记录经过本机网关的 IPv4 连接、PS5 的 DNS 查询，以及访问本机服务（管理页、插件仓库、pldmgr 等）的事件。',
-      steps: ['勾选「未放行」的目标后点「放行选中」，域名或 IP 加入白名单并立即生效。', '「命名选中」给目标起名、指定分类，以后更容易辨认。', '标「本机劫持」的 DNS 记录来自内置域名，由本机直接应答，不是白名单放行。', '本机服务事件只作记录，不能放行。'] },
+      steps: ['勾选「未放行」的目标后点「放行选中」，域名或 IP 加入白名单并立即生效。', '「命名选中」给目标起名、指定分类，以后更容易辨认。', '标「本机劫持」的 DNS 记录来自内置域名，由本机直接应答，不是白名单放行。', '本机服务事件只作记录，不能放行。', '「历史」按时间、结果、来源和关键字查以前的记录（默认保留 30 天，可在 config.toml 的 [activity] retention_days 修改），可导出 CSV。', '「统计」按天汇总，并列出被拦截最多的目标，可直接放行。'] },
     discovery: { title: '主机发现', body: '扫描本机所在的 IPv4 网段，找出运行 pldmgr（8084）或 elfldr（9021）的 PS5；处于待机的主机也会通过 DDP 协议被发现。扫描不访问互联网。',
       steps: ['扫不到时手动输入 PS5 的 IP 添加。', '越狱后先在 PS5 上运行 Payload Manager，管理功能才完整。'] },
     hosts: { title: '发现的主机', body: '每张卡片是一台 PS5：在线状态、pldmgr / elfldr 是否可用、是否已接入本服务仓库，以及可安装、运行中、可更新的插件数。',
@@ -8093,6 +8093,243 @@
       toast(`导出日志失败：${error.message}`, 'error');
     } finally {
       buttonBusy(button, false, '导出日志');
+    }
+  }
+
+  /* ── 网络活动：历史与统计 ───────────────────────────────────────────── */
+
+  const actHistory = { mode: 'live', loaded: false, events: [], next: null, busy: false, stats: null, days: 7, searchTimer: null };
+
+  function setActivityMode(mode) {
+    actHistory.mode = ['live', 'history', 'stats'].includes(mode) ? mode : 'live';
+    for (const button of $$('[data-activity-mode]')) button.setAttribute('aria-pressed', String(button.dataset.activityMode === actHistory.mode));
+    $('activity-live').hidden = actHistory.mode !== 'live';
+    $('activity-history').hidden = actHistory.mode !== 'history';
+    $('activity-stats').hidden = actHistory.mode !== 'stats';
+    if (actHistory.mode === 'history' && !actHistory.loaded) loadHistory(true);
+    if (actHistory.mode === 'stats') loadStats();
+  }
+
+  function historyQuery() {
+    const params = new URLSearchParams();
+    const range = Number($('history-range').value);
+    if (range > 0) params.set('from', String(Math.floor(Date.now() / 1000) - range));
+    for (const [id, key] of [['history-verdict', 'verdict'], ['history-kind', 'kind']]) {
+      if ($(id).value) params.set(key, $(id).value);
+    }
+    const text = $('history-search').value.trim();
+    if (text) params.set('q', text.slice(0, 200));
+    return params;
+  }
+
+  function renderHistory() {
+    const body = $('history-body');
+    const rows = normalizeActivity({ events: actHistory.events }).events.map((event) => activityRow({ ...event, selectable: false }));
+    body.replaceChildren(...(rows.length ? rows : [emptyHistoryRow(actHistory.loaded ? '这个时间范围内没有符合条件的记录。' : '正在读取…')]));
+    $('history-more').hidden = !actHistory.next;
+    $('history-summary').textContent = actHistory.loaded
+      ? `已显示 ${actHistory.events.length} 条${actHistory.next ? '，还有更早的记录' : ''}。`
+      : '正在读取历史…';
+  }
+
+  function emptyHistoryRow(text) {
+    const row = document.createElement('tr');
+    const cell = makeElement('td', 'empty-state', text);
+    cell.colSpan = 9;
+    row.append(cell);
+    return row;
+  }
+
+  async function loadHistory(reset) {
+    if (!authenticated || actHistory.busy) return;
+    actHistory.busy = true;
+    if (!reset) buttonBusy('history-more', true);
+    try {
+      const params = historyQuery();
+      params.set('limit', '200');
+      if (!reset && actHistory.next) params.set('before_id', String(actHistory.next));
+      const data = await api(`/api/activity/history?${params}`);
+      const events = Array.isArray(data.events) ? data.events : [];
+      actHistory.events = reset ? events : actHistory.events.concat(events);
+      actHistory.next = Number.isInteger(data.next_before) ? data.next_before : null;
+      actHistory.loaded = true;
+      renderHistory();
+      if (data.error) toast(str(data.error), 'warning');
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      $('history-summary').textContent = `读取历史失败：${error.message}`;
+    } finally {
+      actHistory.busy = false;
+      buttonBusy('history-more', false);
+    }
+  }
+
+  function svgNode(tag, attributes = {}) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
+    return node;
+  }
+
+  function renderStatsChart(days) {
+    const svg = $('stats-chart');
+    const width = 600;
+    const height = 160;
+    const top = 8;
+    const bottom = 20;
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    const max = Math.max(1, ...days.map((day) => day.allowed + day.blocked));
+    const slot = width / Math.max(days.length, 1);
+    const barWidth = Math.max(2, slot * 0.7);
+    const nodes = [];
+    days.forEach((day, index) => {
+      const x = index * slot + (slot - barWidth) / 2;
+      const scale = (height - top - bottom) / max;
+      const allowedHeight = day.allowed * scale;
+      const blockedHeight = day.blocked * scale;
+      const base = height - bottom;
+      const allowed = svgNode('rect', { class: 'bar-allowed', x: x.toFixed(1), y: (base - allowedHeight).toFixed(1), width: barWidth.toFixed(1), height: allowedHeight.toFixed(1) });
+      const blocked = svgNode('rect', { class: 'bar-blocked', x: x.toFixed(1), y: (base - allowedHeight - blockedHeight).toFixed(1), width: barWidth.toFixed(1), height: blockedHeight.toFixed(1) });
+      const title = svgNode('title');
+      title.textContent = `${day.day}：允许 ${day.allowed}，未放行 ${day.blocked}`;
+      allowed.append(title);
+      nodes.push(allowed, blocked);
+      if (days.length <= 7 || index % 5 === 0) {
+        const label = svgNode('text', { class: 'axis-label', x: (index * slot + slot / 2).toFixed(1), y: height - 6, 'text-anchor': 'middle' });
+        label.textContent = day.day.slice(5);
+        nodes.push(label);
+      }
+    });
+    svg.replaceChildren(...nodes);
+  }
+
+  function statsTarget(item, allowable) {
+    const node = makeElement('li', 'stats-item');
+    const main = makeElement('div', 'stats-item-main');
+    const [kind, ...rest] = str(item.target).split(':');
+    main.append(makeElement('span', 'stats-item-target', rest.join(':')));
+    const meta = [`${item.hits} 次`, `${item.clients} 个客户端`];
+    if (item.name) meta.unshift(str(item.name));
+    if (item.category) meta.push(str(item.category));
+    if (item.allowed_now && allowable) meta.push('已放行（现在）');
+    main.append(makeElement('span', 'stats-item-meta', meta.join(' · ')));
+    node.append(main);
+    if (allowable && !item.allowed_now && ['domain', 'ip'].includes(kind)) {
+      const button = makeElement('button', 'button button-secondary button-small', '放行');
+      button.type = 'button';
+      button.addEventListener('click', () => allowStatsTarget(str(item.target), button));
+      node.append(button);
+    }
+    return node;
+  }
+
+  function renderStats() {
+    const stats = actHistory.stats;
+    if (!stats) return;
+    const days = (Array.isArray(stats.per_day) ? stats.per_day : []).map((day) => ({ day: str(day.day), allowed: Number(day.allowed) || 0, blocked: Number(day.blocked) || 0 }));
+    renderStatsChart(days);
+    const total = days.reduce((sum, day) => sum + day.allowed + day.blocked, 0);
+    const blocked = days.reduce((sum, day) => sum + day.blocked, 0);
+    $('stats-summary').textContent = total
+      ? `最近 ${stats.days} 天共 ${total} 条记录，其中未放行 ${blocked} 条；历史库共 ${Number(stats.rows) || 0} 条。`
+      : `最近 ${stats.days} 天还没有记录。`;
+    const fill = (id, list, allowable) => {
+      const items = Array.isArray(list) ? list : [];
+      $(id).replaceChildren(...(items.length ? items.map((item) => statsTarget(item, allowable)) : [makeElement('li', 'stats-empty', '暂无')]));
+    };
+    fill('stats-top-blocked', stats.top_blocked, true);
+    fill('stats-top-allowed', stats.top_allowed, false);
+    const clients = Array.isArray(stats.clients) ? stats.clients : [];
+    $('stats-clients').replaceChildren(...clients.map((item) => {
+      const row = document.createElement('tr');
+      const last = Number(item.last) ? new Date(Number(item.last) * 1000).toLocaleString('zh-CN', { hour12: false }) : '—';
+      for (const [text, mono] of [[str(item.client) || '—', true], [String(item.allowed || 0), false], [String(item.blocked || 0), false], [last, false]]) {
+        row.append(makeElement('td', mono ? 'mono' : '', text));
+      }
+      return row;
+    }));
+    if (stats.error) toast(str(stats.error), 'warning');
+  }
+
+  async function loadStats() {
+    if (!authenticated) return;
+    try {
+      actHistory.stats = await api(`/api/activity/stats?days=${actHistory.days}`);
+      renderStats();
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      $('stats-summary').textContent = `读取统计失败：${error.message}`;
+    }
+  }
+
+  async function allowStatsTarget(target, button) {
+    if (!authenticated) return;
+    buttonBusy(button, true);
+    try {
+      await api('/api/allow', { targets: [target] });
+      toast(`已放行 ${target.split(':').slice(1).join(':')}。`, 'success');
+      await loadStats();
+      refreshState({ forceConfig: !dirty });
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      toast(error.message, 'error');
+      buttonBusy(button, false);
+    }
+  }
+
+  async function exportHistory() {
+    if (!authenticated) return;
+    const params = historyQuery();
+    const button = $('history-export');
+    buttonBusy(button, true);
+    try {
+      const response = await fetch(`/api/activity/export?${new URLSearchParams({ ...(params.get('from') ? { from: params.get('from') } : {}) })}`,
+        { credentials: 'same-origin', cache: 'no-store' });
+      if (!response.ok) throw new ApiError(response.status === 401 ? '登录已失效，请重新输入管理密码。' : '导出失败，请稍后重试。', response.status);
+      const blob = await response.blob();
+      saveBlob(blob, backupFilename(response.headers.get('Content-Disposition'), 'ps5-activity.csv'));
+      toast(response.headers.get('X-Export-Truncated') === '1' ? '已导出最早的 50 000 条；缩小时间范围可导出其余记录。' : '已导出 CSV。', 'success');
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      toast(error.message || '导出失败。', 'error');
+    } finally {
+      buttonBusy(button, false);
+    }
+  }
+
+  async function clearHistory() {
+    if (!authenticated || !window.confirm('清空全部活动历史？实时列表不受影响，这个操作不能撤销。')) return;
+    buttonBusy('history-clear', true);
+    try {
+      const data = await api('/api/activity/history/clear', {});
+      actHistory.loaded = false;
+      actHistory.events = [];
+      actHistory.next = null;
+      toast(`已清空 ${Number(data.removed) || 0} 条活动历史。`, 'success');
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      toast(error.message, 'error');
+    } finally {
+      buttonBusy('history-clear', false);
+    }
+  }
+
+  function bindHistoryEvents() {
+    for (const button of $$('[data-activity-mode]')) button.addEventListener('click', () => setActivityMode(button.dataset.activityMode));
+    for (const id of ['history-range', 'history-verdict', 'history-kind']) $(id).addEventListener('change', () => loadHistory(true));
+    $('history-search').addEventListener('input', () => {
+      clearTimeout(actHistory.searchTimer);
+      actHistory.searchTimer = setTimeout(() => loadHistory(true), 300);
+    });
+    $('history-more').addEventListener('click', () => loadHistory(false));
+    $('history-export').addEventListener('click', exportHistory);
+    $('history-clear').addEventListener('click', clearHistory);
+    for (const button of $$('[data-stats-days]')) {
+      button.addEventListener('click', () => {
+        actHistory.days = Number(button.dataset.statsDays) === 30 ? 30 : 7;
+        for (const other of $$('[data-stats-days]')) other.setAttribute('aria-pressed', String(other === button));
+        loadStats();
+      });
     }
   }
 
@@ -8456,6 +8693,7 @@
   }
 
   function bindBackupEvents() {
+    bindHistoryEvents();
     $('selfcheck-run').addEventListener('click', runSelfcheck);
     $('notify-add').addEventListener('click', () => openNotifyDialog(null));
     $('notify-type').addEventListener('change', () => showNotifyType($('notify-type').value));

@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from activity import Classifier, FlowObserver, LabelsStore, make_poller
+from history import History
 from backup import BackupError, BackupService
 from selfcheck import Context as CheckContext, SelfCheck
 from notify import EVENTS as NOTIFY_EVENTS, TYPES as NOTIFY_TYPES, NotifyError
@@ -812,7 +813,7 @@ class AdminHandler(BaseHTTPRequestHandler):
                                       self.requestline, status or code)
 
     def send_body(self, status, data, ctype='application/json; charset=utf-8', cookie=None,
-                  cache='no-store', etag=None, encoding=None, vary=False):
+                  cache='no-store', etag=None, encoding=None, vary=False, headers=None):
         if not isinstance(data, bytes):
             data = json.dumps(data, ensure_ascii=False).encode()
         if (encoding is None and ctype.startswith('application/json') and len(data) > self.GZIP_MIN):
@@ -835,6 +836,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         if cookie:
             self.send_header('Set-Cookie', cookie)
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
 
@@ -1014,6 +1017,87 @@ class AdminHandler(BaseHTTPRequestHandler):
         except Exception:
             logging.exception('Read activity failed')
             self.send_body(500, {'error': '读取网络活动失败，请检查服务日志'})
+
+    # ---------- activity history ----------
+    def _history_args(self):
+        """(History, observer, query) or None after answering."""
+        app = self.server.app
+        history = getattr(app, 'history', None)
+        if history is None:
+            self.send_body(503, {'error': '活动历史未启用'})
+            return None
+        query = {key: values[0] for key, values in
+                 urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).items()}
+        return history, app.activity, query
+
+    @staticmethod
+    def _seconds(value):
+        return None if value in (None, '') else float(value)
+
+    def get_activity_history(self):
+        """GET /api/activity/history?from=&to=&verdict=&kind=&client=&q=&before_id=&limit="""
+        parts = self._history_args()
+        if parts is None:
+            return
+        history, observer, query = parts
+        try:
+            page = history.query(start=self._seconds(query.get('from')), end=self._seconds(query.get('to')),
+                                 verdict=query.get('verdict', ''), kind=query.get('kind', ''),
+                                 client=query.get('client', '')[:64], text=query.get('q', ''),
+                                 before_id=int(query['before_id']) if query.get('before_id') else None,
+                                 limit=int(query.get('limit') or 200))
+        except ValueError:
+            self.send_body(400, {'error': '查询参数不正确'})
+            return
+        page['events'] = [observer.present(row) for row in page['events']]
+        page['error'] = history.error
+        self.send_body(200, page)
+
+    def get_activity_stats(self):
+        """GET /api/activity/stats?days=7|30"""
+        parts = self._history_args()
+        if parts is None:
+            return
+        history, observer, query = parts
+        try:
+            days = int(query.get('days') or 7)
+        except ValueError:
+            days = 7
+        stats = history.stats(days)
+        for key in ('top_blocked', 'top_allowed'):
+            for item in stats[key]:
+                label = observer.labels.get(item['target']) if observer.labels else {}
+                kind, _, value = item['target'].partition(':')
+                item['name'] = label.get('name', '')
+                item['category'] = label.get('category') or (observer.classifier.category(value) if kind == 'domain' else '直连 IP')
+                item['allowed_now'] = bool(observer.domain_allowed(value) if kind == 'domain' and observer.domain_allowed
+                                           else observer.is_allowed(value) if kind == 'ip' else False)
+        self.send_body(200, stats)
+
+    def get_activity_export(self):
+        """GET /api/activity/export?from=&to= : CSV, at most 50 000 rows."""
+        parts = self._history_args()
+        if parts is None:
+            return
+        history, _, query = parts
+        try:
+            text, cut = history.export_csv(self._seconds(query.get('from')), self._seconds(query.get('to')))
+        except ValueError:
+            self.send_body(400, {'error': '查询参数不正确'})
+            return
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        headers = {'Content-Disposition': f'attachment; filename="ps5-activity-{stamp}.csv"',
+                   'X-Export-Truncated': '1' if cut else '0'}
+        # The BOM lets spreadsheet programs open the UTF-8 file correctly.
+        self.send_body(200, ('\ufeff' + text).encode('utf-8'), 'text/csv; charset=utf-8', headers=headers)
+
+    def post_activity_clear(self, body):
+        parts = self._history_args()
+        if parts is None:
+            return
+        removed = parts[0].clear()
+        logging.info('activity history cleared (%d rows)', removed)
+        self.send_body(200, {'ok': True, 'removed': removed})
 
     def get_repo(self):
         try:
@@ -1434,6 +1518,9 @@ GET_ROUTES = {
     '/api/backup': Route('get_backup'),
     '/api/selfcheck': Route('get_selfcheck', exact=True),
     '/api/notify': Route('get_notify', exact=True),
+    '/api/activity/history': Route('get_activity_history'),
+    '/api/activity/stats': Route('get_activity_stats'),
+    '/api/activity/export': Route('get_activity_export'),
 }
 # Checked in order after GET_ROUTES; a prefix also matches longer paths.
 GET_PREFIXES = (
@@ -1464,6 +1551,7 @@ POST_ROUTES = {
     '/api/repo/upload': Route('handle_upload', auth=None, tracked=True, body='raw'),
     '/api/backup': _json_route('post_backup'),
     '/api/selfcheck': _json_route('post_selfcheck'),
+    '/api/activity/history/clear': _json_route('post_activity_clear'),
     **{f'/api/notify/{action}': _json_route('post_notify') for action in ('save', 'delete', 'test')},
     '/api/backup/restore': Route('post_backup_restore', auth=None, tracked=True, body='raw'),
 }
@@ -1648,9 +1736,13 @@ def main():
         lan=lan, host_ip=host_ip,
         dns_events=lambda: list(engine.logs),
         domain_allowed=engine.domain_allowed_now)
+    history = History(data / 'activity.db', retention_days=settings.activity_retention_days)
+    observer.history = history
+    logging.info('Activity history: %d events restored to the live list', observer.warm(history))
     stop_event = threading.Event()
     threading.Thread(target=make_poller(observer), args=(stop_event,), daemon=True).start()
     admin.app, admin.auth = Application(engine, observer), auth
+    admin.app.history = history
     admin.app.settings = settings
     admin.app.console = ConsoleAPI(settings, _catalog_reader(repo_dir / 'repo.json'),
                                    autoscan=True)

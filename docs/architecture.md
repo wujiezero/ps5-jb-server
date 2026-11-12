@@ -48,6 +48,23 @@
 - 上限 500 条，重启清空；
 - 标签（命名/分类）与 `allowed_now` 在**读取时**套用，因此改名对历史记录立即生效。
 
+
+### 活动历史
+
+`server/history.py`：`<data>/activity.db`（SQLite，WAL，`synchronous=NORMAL`，单连接加锁，文件 0600）。
+`FlowObserver.poll_once()` 把每轮新出现的连接和 DNS 事件批量写入表
+`events(id, ts, kind, client, dst, port, proto, domain, verdict, local)`，索引 `ts`、`(verdict, ts)`、`domain`。
+名称、分类和「现在是否已放行」不入库，读取时按当前标签和白名单套用。写库失败只记日志，不影响内存环形列表和实时页面。
+
+- 保留：`[activity] retention_days`（默认 30，1–365），另有 50 万行上限；写入时最多每小时清理一次。
+- 数据库损坏（打不开、`quick_check` 不过、读写报 malformed）时把文件改名为 `activity.db.corrupt-<时间>` 留存并重建；
+  磁盘满、加锁等其它错误只记日志、下次再试，不当作损坏。
+- 启动时用最近 500 行预热内存环，重启后「实时」页不再是空的（计数仍从本次启动算起）。
+- 接口：`GET /api/activity/history?from=&to=&verdict=&kind=&client=&q=&before_id=&limit=`（按 `id` 游标翻页，每页最多 500）；
+  `GET /api/activity/stats?days=7|30`（按天的允许 / 未放行、被拦截最多与允许最多的目标各 20 个、按客户端汇总；
+  本机服务事件不进 Top 列表）；`GET /api/activity/export?from=&to=`（CSV，UTF-8 带 BOM，最多 5 万行，
+  以 `= + - @` 开头的单元格前加 `'` 防止表格软件当公式执行）；`POST /api/activity/history/clear`。
+- 配置备份不包含这个数据库。
 ## PS5 控制通道
 
 | 组件 | 端口 | 协议 |

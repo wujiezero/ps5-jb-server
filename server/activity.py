@@ -205,6 +205,8 @@ class FlowObserver:
         self._dns_seen = {}
         self._dns_last_seq = 0
         self.counts_by_kind = {'flow': 0, 'service': 0, 'dns': 0}
+        # Optional history.History: every new event is also written there.
+        self.history = None
 
     @property
     def max_events(self):
@@ -299,8 +301,13 @@ class FlowObserver:
                 kind = event.get('kind', 'flow')
                 self.counts_by_kind[kind] = self.counts_by_kind.get(kind, 0) + 1
                 fresh.append(event)
-            self._collect_dns(now)
+            dns = self._collect_dns(now)
             self.updated = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+        if self.history is not None and (fresh or dns):
+            try:
+                self.history.add(fresh + dns)
+            except Exception:  # history must never break the live page
+                logging.exception('activity history write failed')
         return fresh
 
     # DNS log actions: allowed/local/upstream/error mean the name passed the
@@ -310,13 +317,14 @@ class FlowObserver:
     _DNS_SKIP = ('nodata',)
 
     def _collect_dns(self, now):
+        added = []
         if not self.dns_events:
-            return
+            return added
         try:
             rows = self.dns_events() or []
         except Exception as exc:  # never let DNS logging break flow capture
             logging.debug('dns event collection failed: %s', exc)
-            return
+            return added
         self._dns_seen = {key: stamp for key, stamp in self._dns_seen.items()
                           if now - stamp < _DEDUPE_WINDOW}
         newest = self._dns_last_seq
@@ -362,9 +370,50 @@ class FlowObserver:
                 'allowed_now': verdict == 'allowed',
             }
             self.events.appendleft(event)
+            added.append(event)
             self.counts[verdict] = self.counts.get(verdict, 0) + 1
             self.counts_by_kind['dns'] = self.counts_by_kind.get('dns', 0) + 1
         self._dns_last_seq = newest
+        return added
+
+    def hydrate(self, row):
+        """A stored history row in the shape of a live event (labels applied at read time)."""
+        kind, port = row.get('kind') or 'flow', int(row.get('port') or 0)
+        domain, dst = str(row.get('domain') or ''), str(row.get('dst') or '')
+        if kind == 'service':
+            name, category, target = SERVICE_PORTS.get(port, '本机服务'), '本机服务', f'service:{port}'
+        elif kind == 'dns':
+            name, category, target = '', self.classifier.category(domain) or '未识别', 'domain:' + domain
+        else:
+            name, target = '', 'ip:' + dst
+            category = self.classifier.category(domain)
+            if category == UNKNOWN and not domain:
+                category = '直连 IP'
+        stamp = float(row.get('ts') or 0)
+        event = {'time': datetime.datetime.fromtimestamp(stamp).astimezone().isoformat(timespec='seconds'),
+                 'epoch': round(stamp, 3), 'client': row.get('client') or '', 'dst': dst, 'port': port,
+                 'proto': row.get('proto') or '', 'domain': domain, 'domain_age': None, 'name': name,
+                 'category': category, 'verdict': row.get('verdict') or 'blocked', 'replied': True,
+                 'target': target, 'kind': kind, 'local': bool(row.get('local')),
+                 'allowed_now': row.get('verdict') == 'allowed'}
+        if 'id' in row:
+            event['id'] = row['id']
+        return event
+
+    def present(self, row):
+        return self._with_labels(self.hydrate(row))
+
+    def warm(self, history, limit=500):
+        """Refill the live ring from history after a restart (newest first)."""
+        rows = history.recent(min(limit, self._max_events))
+        with self.lock:
+            if self.events:
+                return 0
+            for row in rows:
+                event = self.hydrate(row)
+                event.pop('id', None)
+                self.events.append(event)
+        return len(rows)
 
     def _interesting(self, flow):
         try:

@@ -69,6 +69,7 @@ function fixture(extra = {}) {
       nas, nasArchiveSelection, extractTask, filesTransferTasks, filesTransferCard, normalizePs5,
       setNasJobs(value) { nasJobs = value; },
       renderRestoreResult, backupFilename, renderSelfcheck, renderNotify, notifyState, normalizeNotify,
+      actHistory, renderStats, renderHistory, setActivityMode,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
       normalizeRepo, renderUpstream, categoryChoices,
@@ -790,6 +791,40 @@ test('notification channels list type, events and a missing secret, never a secr
   ui.renderNotify();
   assert.equal(ui.node('notify-empty').hidden, false);
   assert.deepEqual(Object.keys(ui.notifyState.events), ['transfer.finished'], 'event labels are kept');
+});
+
+test('activity stats draw SVG bars by attribute and offer 放行 only for blocked targets not yet allowed', () => {
+  const ui = fixture();
+  ui.actHistory.stats = { days: 7, rows: 12, per_day: [{ day: '2026-11-11', allowed: 3, blocked: 1 }, { day: '2026-11-12', allowed: 0, blocked: 5 }],
+    top_blocked: [{ target: 'domain:ads.example', hits: 5, clients: 1, last: 1, name: '', category: '广告', allowed_now: false },
+      { target: 'ip:203.0.113.9', hits: 1, clients: 1, last: 1, allowed_now: true }],
+    top_allowed: [{ target: 'domain:ok.example', hits: 3, clients: 2, last: 1 }], clients: [{ client: '192.0.2.142', allowed: 3, blocked: 6, last: 1800000000 }] };
+  ui.renderStats();
+  const chart = ui.node('stats-chart');
+  const bars = chart.children.filter((node) => node.tagName === 'rect');
+  assert.equal(bars.length, 4);
+  assert.ok(bars.every((bar) => bar.attributes.height !== undefined && bar.attributes.style === undefined), 'sizes are attributes, never inline style');
+  assert.equal(bars[3].attributes.class, 'bar-blocked');
+  const blocked = ui.node('stats-top-blocked').children;
+  assert.match(textOf(blocked[0]), /ads\.example.*5 次.*广告.*放行/);
+  assert.doesNotMatch(textOf(blocked[1]), /放行$/);
+  assert.match(textOf(blocked[1]), /已放行（现在）/);
+  assert.doesNotMatch(textOf(ui.node('stats-top-allowed').children[0]), /放行$/);
+  assert.match(ui.node('stats-summary').textContent, /共 9 条记录，其中未放行 6 条/);
+  assert.equal(ui.node('stats-clients').children.length, 1);
+});
+
+test('activity history rows reuse the live row without checkboxes', () => {
+  const ui = fixture();
+  ui.actHistory.loaded = true;
+  ui.actHistory.events = [{ id: 3, kind: 'dns', domain: 'ads.example', client: '192.0.2.142', verdict: 'blocked', time: '2026-11-12T10:00:00+08:00', target: 'domain:ads.example', allowed_now: false }];
+  ui.actHistory.next = 3;
+  ui.renderHistory();
+  const body = ui.node('history-body');
+  assert.equal(body.children.length, 1);
+  assert.match(textOf(body.children[0]), /ads\.example.*未放行/);
+  assert.equal(ui.node('history-more').hidden, false);
+  assert.match(ui.node('history-summary').textContent, /已显示 1 条，还有更早的记录/);
 });
 
 test('hosts remembered from an earlier run are marked until the scan reaches them', () => {
