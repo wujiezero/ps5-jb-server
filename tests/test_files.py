@@ -6,7 +6,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
-from files import FileProxy, FileServiceError, _check_path, normalize_entries
+from files import FileProxy, FileServiceError, _check_path
 
 VOLUMES = {'volumes': [{'path': '/data', 'kind': 'internal', 'format': 'ufs',
                         'total': 1000, 'free': 400}]}
@@ -31,8 +31,6 @@ class FakeFiles(BaseHTTPRequestHandler):
 
     def do_GET(self):
         split = urllib.parse.urlsplit(self.path)
-        query = dict(urllib.parse.parse_qsl(split.query))
-        path = query.get('path', '')
         if split.path == '/fs/volumes':
             return self._send(VOLUMES)
         if split.path == '/fs/list':

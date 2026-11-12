@@ -1,8 +1,6 @@
 """Policy tests: python3 -m unittest discover -s ps5-jb-server/tests -p test_policy.py."""
 import importlib.util
-import inspect
 import pathlib
-import re
 import unittest
 import json
 import subprocess

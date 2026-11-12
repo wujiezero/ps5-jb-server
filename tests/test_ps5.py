@@ -1,5 +1,4 @@
 import json
-import socket
 import socketserver
 import sys
 import threading
@@ -8,7 +7,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
-from ps5 import ConsoleError, Discovery, ElfldrClient, HostManager, PldmgrClient
+from ps5 import ConsoleError, ElfldrClient, HostManager, PldmgrClient
 
 
 class FakeConfig:

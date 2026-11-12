@@ -1,7 +1,5 @@
 import http.client
 import json
-import ssl
-import subprocess
 import sys
 import tempfile
 import threading

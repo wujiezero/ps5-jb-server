@@ -4,7 +4,6 @@ import datetime
 import ipaddress
 import logging
 import math
-import socket
 import socketserver
 import struct
 import threading

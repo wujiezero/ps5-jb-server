@@ -1,7 +1,7 @@
 # 内置域名说明 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-> 用户已批准设计（见 `docs/superpowers/specs/2026-11-11-builtin-domains-explanation-design.md`），本轮只改仓库 + 测试，不部署到 192.168.5.35。
+> 用户已批准设计（见 `docs/superpowers/specs/2026-11-11-builtin-domains-explanation-design.md`），本轮只改仓库 + 测试，不部署到真机。
 
 **Goal:** 在页面上说明 `LOCAL_DOMAINS` 这 3 个内置域名，使「网络活动」里的「允许」不再被误读成白名单放行。
 

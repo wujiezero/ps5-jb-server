@@ -124,7 +124,6 @@ def _archive_result(client, rar_entry, parent_entries, explicit_zips=(), hint_te
     except Exception as exc:
         raise SourceError(str(exc)) from exc
     volume_paths = [entry['path'] for entry in volumes]
-    parent = posixpath.dirname(volume_paths[0])
     auto = [entry['path'] for entry in parent_entries
             if not entry['dir'] and entry['path'].lower().endswith('.zip')
             and _CHEAT.search(entry['name'])]

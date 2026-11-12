@@ -657,14 +657,12 @@ class Installer:
         if resolved is not None:
             root_relative = resolved['root']
             title = resolved['title']
-            playable = True
             note = install_note(True, self.packages, playable=True)
         else:
             # Preserve the historical extraction behavior for patches, PKGs,
             # and ordinary folders which do not form a runnable game.
             root_relative = top
             title = self._metadata_title()
-            playable = False
             note = install_note(bool(self.metadata), self.packages, playable=False)
 
         root = (posixpath.join(self.staging, root_relative)

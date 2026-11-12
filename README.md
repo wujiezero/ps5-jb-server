@@ -265,12 +265,16 @@ dig @<本机> manuals.playstation.net  # 应返回本机地址
 ## 开发
 
 ```sh
-python3 -m unittest discover -s tests          # 227 项单测（需要 python3-dnspython 与 python3-cryptography）
+python3 -m unittest discover -s tests          # 服务端单测（需要 python3-dnspython 与 python3-cryptography）
 node --check web/app.js
 node --test tests/ui-interactions.js           # 前端交互测试
+ruff check --select E9,F63,F7,F82,F401,F811,F841 server installer scripts tests   # 只查 pyflakes 级别问题
 ./scripts/check-secrets.sh                     # 提交前隐私扫描
 sudo ./install.sh --dry-run --prefix /tmp/x    # 安装器演练
 ```
+
+每次推送到 `main` 和每个 PR 都会由 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 跑上面这些检查并试打一次发布包；
+打 tag 时 `release.yml` 再跑一遍测试后发布。
 
 目录：`server/`（服务端）、`web/`（前端）、`installer/`（安装器）、`tests/`、`systemd/`、
 `rulesets/`、`titledb/`、`scripts/`、`docs/`。设计与接口细节见 [`docs/architecture.md`](docs/architecture.md)

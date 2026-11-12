@@ -1,6 +1,5 @@
 """Versioned runtime release contract."""
 import importlib.util
-import io
 import sys
 import tarfile
 import tempfile

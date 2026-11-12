@@ -187,8 +187,8 @@ class StoreTests(unittest.TestCase):
         store = NasStore(Path(self.tmp.name) / 'data.json', key)
         first = store.save({'protocol': 'smb', 'host': '192.0.2.9', 'username': 'alice-user',
                             'password': 'S3cret-Pass-123'})
-        second = store.save({'protocol': 'ftp', 'host': '192.0.2.10', 'username': 'bob-user',
-                             'password': 'Other-Pass-456'})
+        store.save({'protocol': 'ftp', 'host': '192.0.2.10', 'username': 'bob-user',
+                    'password': 'Other-Pass-456'})
         raw = (Path(self.tmp.name) / 'data.json').read_text()
         for secret in ('alice-user', 'S3cret-Pass-123', 'bob-user', 'Other-Pass-456'):
             self.assertNotIn(secret, raw)

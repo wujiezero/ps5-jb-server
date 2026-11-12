@@ -4,7 +4,6 @@ import sys
 import tempfile
 import threading
 import unittest
-import urllib.parse
 from unittest import mock
 from http.server import ThreadingHTTPServer
 from pathlib import Path

@@ -1,7 +1,6 @@
 """Installer safety: dry-run must print a plan and touch nothing."""
 import ast
 import importlib.util
-import os
 import subprocess
 import sys
 import tempfile
