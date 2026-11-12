@@ -2971,9 +2971,15 @@
         state: str(powerRaw.job.state), message: str(powerRaw.job.message), error: str(powerRaw.job.error)
       } : null
     };
+    const lastSeen = Number(entry.last_seen);
     return {
       ip,
       power,
+      // Listed from hosts.json until this start's scan reaches it (older servers omit it).
+      remembered: entry.remembered === true,
+      lastSeen: Number.isFinite(lastSeen) && lastSeen > 0 ? lastSeen * 1000 : null,
+      rememberedName: str(entry.name),
+      rememberedFirmware: str(entry.firmware),
       online: entry.online === true,
       elfldr: entry.elfldr === true,
       pldmgr: entry.pldmgr === true,
@@ -3353,15 +3359,18 @@
     const meta = card.querySelector('[data-field="meta"]');
     if (meta) {
       const parts = [];
-      if (host.power.name) parts.push(host.power.name);
-      if (host.power.firmware) parts.push(`固件 ${host.power.firmware}`);
+      const name = host.power.name || host.rememberedName;
+      const firmware = host.power.firmware || host.rememberedFirmware;
+      if (name) parts.push(name);
+      if (firmware) parts.push(`固件 ${firmware}`);
+      if (host.remembered && !host.online) parts.push(host.lastSeen ? `上次发现于 ${new Date(host.lastSeen).toLocaleString()}` : '上次发现');
       parts.push(host.sourceUrl ? `仓库源 ${host.sourceUrl}` : '仓库源地址未知');
       meta.textContent = parts.join(' · ');
     }
 
     const online = card.querySelector('[data-field="online"]');
     const powerLabel = { on: host.online ? '在线' : '已开机 · 未运行载荷', standby: '待机中', off: '离线' }[host.power.state] || '离线';
-    online.textContent = powerLabel;
+    online.textContent = host.remembered && !host.online && host.power.state === 'off' ? '上次发现 · 扫描中' : powerLabel;
     online.dataset.tone = host.power.state === 'standby' ? 'warning' : host.online ? 'good' : host.power.state === 'on' ? 'info' : 'neutral';
     online.title = host.power.state === 'standby' ? '主机处于待机（休息模式）：载荷通常仍在内存中，唤醒后即可继续使用。' : '';
     const elfldr = card.querySelector('[data-field="elfldr"]');
@@ -5765,7 +5774,7 @@
   };
   const formatRate = (bytesPerSecond) => (bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : '—');
   const XFER_ACTIVE = new Set(['wait', 'run', 'sync', 'queued', 'scanning', 'running', 'copying', 'moving', 'active', 'pending', 'wait-confirm']);
-  const XFER_LABEL = { wait: '等待', run: '传输中', sync: '正在落盘', queued: '排队中', scanning: '正在统计文件', running: '传输中', copying: '复制中', moving: '移动中', active: '进行中', pending: '等待', done: '完成', fail: '失败', failed: '失败', cancel: '已取消', canceled: '已取消', skip: '已跳过', 'wait-confirm': '等待确认' };
+  const XFER_LABEL = { wait: '等待', run: '传输中', sync: '正在落盘', queued: '排队中', scanning: '正在统计文件', running: '传输中', copying: '复制中', moving: '移动中', active: '进行中', pending: '等待', done: '完成', done_with_warnings: '完成（有提醒）', interrupted: '已中断', fail: '失败', failed: '失败', cancel: '已取消', canceled: '已取消', skip: '已跳过', 'wait-confirm': '等待确认' };
   const XFER_KIND = { upload: '上传', copy: '复制', move: '移动', nas: 'NAS → PS5', extract: '解压安装', remote: 'PS5' };
 
   function filesTransferTasks() {
@@ -5782,7 +5791,10 @@
         files: { done: job.files_done, total: job.files_total, skipped: job.files_skipped, failed: job.files_failed },
         current: job.state === 'running' ? job.current : '',
         error: job.error, errors: job.errors || [],
-        cancel: XFER_ACTIVE.has(job.state) ? () => cancelNasJob(job.id) : null
+        interrupted: job.interrupted === true,
+        line: job.retry_of ? '重试任务：已在 PS5 上的同名文件会跳过' : '',
+        cancel: XFER_ACTIVE.has(job.state) ? () => cancelNasJob(job.id) : null,
+        retry: ['failed', 'canceled'].includes(job.state) && job.kind === 'nas' ? () => retryNasJob(job.id) : null
       });
     }
     const job = files.job;
@@ -5826,9 +5838,19 @@
     const title = makeElement('div', 'xfer-title');
     title.append(makeElement('span', 'xfer-kind', XFER_KIND[task.kind] || task.kind), makeElement('span', 'xfer-name', task.name));
     title.lastChild.title = task.name;
-    const badge = makeElement('span', 'result-badge', XFER_LABEL[task.state] || task.state || '—');
-    badge.dataset.tone = task.state === 'done' ? 'good' : ['fail', 'failed'].includes(task.state) ? 'error' : XFER_ACTIVE.has(task.state) ? 'info' : 'neutral';
+    const label = task.interrupted ? XFER_LABEL.interrupted : XFER_LABEL[task.state];
+    const badge = makeElement('span', 'result-badge', label || task.state || '—');
+    badge.dataset.tone = task.state === 'done' ? 'good' : task.state === 'done_with_warnings' ? 'warning'
+      : ['fail', 'failed'].includes(task.state) ? 'error' : XFER_ACTIVE.has(task.state) ? 'info' : 'neutral';
     head.append(title, badge);
+    if (task.retry) {
+      const retry = makeElement('button', 'button button-secondary button-small', '重试');
+      retry.type = 'button';
+      retry.title = '重新排队，PS5 上已有的同名文件会跳过';
+      retry.setAttribute('aria-label', `重试 ${task.name}`);
+      retry.addEventListener('click', task.retry);
+      head.append(retry);
+    }
     if (task.cancel) {
       const cancel = makeElement('button', 'button button-secondary button-small', '取消');
       cancel.type = 'button';
@@ -6722,11 +6744,14 @@
     if (job.files_done) line = job.files_total > job.files_done ? `已解出 ${job.files_done} / ${job.files_total} 个文件` : `已解出 ${job.files_done} 个文件`;
     if (job.state === 'running' && job.current) line += `${line ? ' · ' : ''}当前 ${job.current}`;
     if (done && job.note) line += `${line ? ' · ' : ''}${job.note}`;
+    // The hidden staging folder stays behind when the service restarted mid-way.
+    if (job.interrupted && job.staging) line += `${line ? ' · ' : ''}可在 PS5 文件页手动删除临时文件夹 ${job.staging}`;
     return {
       key: `nas:${job.id}`, kind: 'extract', name: job.name, state: job.state,
       sub: done && job.result_path ? `已安装到 ${job.result_path}` : `${job.source} → ${job.dest}${job.mode === 'merge' ? '（合并）' : ''}`,
       done: job.bytes_done, total: job.bytes_total, speed: job.speed, elapsed: job.elapsed, eta: job.eta,
       line, error: job.error, errors: job.errors || [],
+      interrupted: job.interrupted === true,
       cancel: XFER_ACTIVE.has(job.state) ? () => cancelNasJob(job.id) : null
     };
   }
@@ -6780,6 +6805,22 @@
       ensureFilesPolling();
     } catch (error) {
       if (error.status === 401) showLogin(error.message);
+    }
+  }
+
+  async function retryNasJob(id) {
+    try {
+      const result = await api('/api/transfers/retry', { id });
+      if (result.job && result.job.id) nasJobs = [result.job, ...nasJobs.filter((job) => job.id !== result.job.id)];
+      toast('已重新排队，PS5 上已有的同名文件会跳过。', 'success');
+      renderFilesTransfers();
+      ensureFilesPolling();
+    } catch (error) {
+      if (error.status === 401) {
+        showLogin(error.message);
+        return;
+      }
+      toast(error.message, 'error');
     }
   }
 

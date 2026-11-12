@@ -38,7 +38,8 @@ class ConsoleAPI:
         self.engine = EngineClient(getattr(settings, 'engine_url', 'http://127.0.0.1:19113'))
         self.game_services = GameServices(self.engine)
         self.transfers = TransferManager(self.nas, self.files, work_dir=settings.data_dir / 'extract',
-                                         game_services=self.game_services, host=self.files.host)
+                                         game_services=self.game_services, host=self.files.host,
+                                         state_path=settings.data_dir / 'transfers.json')
         self.power = PowerManager(self.engine, self.ps5.validate_ip)
         if autoscan and self.enabled:
             # The discovery cache is in memory; without this the host list is
@@ -289,6 +290,7 @@ class ConsoleAPI:
         '/api/nas/extract': '_post_nas_extract',
         '/api/transfers/cancel': '_post_transfers_cancel',
         '/api/transfers/clear': '_post_transfers_clear',
+        '/api/transfers/retry': '_post_transfers_retry',
         '/api/files/bench': '_post_bench',
     }
     # Raw request bodies: the handler checks session and CSRF itself.
@@ -426,6 +428,9 @@ class ConsoleAPI:
 
     def _post_transfers_clear(self, handler, body, path):
         handler.send_body(200, self.transfers.clear())
+
+    def _post_transfers_retry(self, handler, body, path):
+        handler.send_body(200, {'ok': True, 'job': self.transfers.retry(body.get('id'))})
 
     def _post_bench(self, handler, body, path):
         handler.send_body(200, {'ok': True, 'result': self.files.bench(body.get('path'))})

@@ -1,6 +1,9 @@
 """NAS sources and NAS -> PS5 transfers (no real NAS or console needed)."""
 import base64
 import json
+import collections
+import contextlib
+import stat
 import sys
 import tempfile
 import threading
@@ -378,6 +381,168 @@ class TransferTests(unittest.TestCase):
         handler = mock.Mock()
         api._fail(handler, NasError('SMB 读取目录被拒绝', status=401))
         self.assertEqual(handler.send_body.call_args[0][0], 502)
+
+
+class TransferPersistenceTests(unittest.TestCase):
+    """transfers.json: jobs survive a restart; interrupted ones can be retried (B3)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.store = NasStore(self.root / 'nas.json', self.root / 'nas.key')
+        self.ident = self.store.save({'protocol': 'ftp', 'host': '192.0.2.9', 'username': 'nas-user',
+                                      'password': 'Nas-Pass-789'})['id']
+        self.ps5 = FakePs5()
+        self.state = self.root / 'transfers.json'
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def manager(self, **kwargs):
+        kwargs.setdefault('client_factory', lambda config: FakeClient(TREE))
+        return TransferManager(self.store, self.ps5, state_path=self.state, **kwargs)
+
+    def write_state(self, jobs):
+        self.state.write_text(json.dumps({'schema': 1, 'jobs': jobs}))
+
+    def job(self, ident, state, kind='nas', **extra):
+        return {'id': ident, 'kind': kind, 'state': state, 'nas_id': self.ident, 'paths': ['/movies'],
+                'dest': '/data', 'overwrite': 'overwrite', 'name': 'movies', 'started': 1.0,
+                'finished': None, 'bytes_done': 10, 'bytes_total': 100, 'files_skipped': 0,
+                'files_done': 0, 'files_failed': 0, 'files_total': 0, 'error': '', 'errors': [],
+                'speed': 0, 'eta': None, 'percent': 10, 'elapsed': 0, 'current': '', 'current_done': 0,
+                'current_size': 0, 'title': '', 'created': 1.0, **extra}
+
+    def test_finished_jobs_are_read_back_after_restart(self):
+        first = self.manager()
+        done = wait(first, first.start(self.ident, ['/readme.txt'], '/data')['id'])
+        self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o600)
+        raw = self.state.read_text()
+        for secret in ('nas-user', 'Nas-Pass-789'):
+            self.assertNotIn(secret, raw)
+        second = self.manager()
+        again = second.snapshot_one(done['id'])
+        self.assertEqual(again['state'], 'done')
+        self.assertEqual(again['bytes_done'], done['bytes_done'])
+        self.assertNotIn('samples', json.loads(raw)['jobs'][0])
+
+    def test_running_and_queued_jobs_become_interrupted(self):
+        self.write_state([self.job('run1', 'running'), self.job('wait1', 'queued'),
+                          self.job('old1', 'done'), self.job('ext1', 'running', kind='extract',
+                                                             engine='libarchive', staging='/data/.extract-ext1')])
+        manager = self.manager()
+        for ident in ('run1', 'wait1', 'ext1'):
+            job = manager.snapshot_one(ident)
+            self.assertEqual(job['state'], 'failed')
+            self.assertTrue(job['interrupted'])
+            self.assertEqual(job['error'], '服务重启时中断')
+            self.assertIsNotNone(job['finished'])
+        self.assertEqual(manager.snapshot_one('ext1')['staging'], '/data/.extract-ext1')
+        self.assertEqual(manager.snapshot_one('old1')['state'], 'done')
+        self.assertEqual(json.loads(self.state.read_text())['jobs'][0]['state'], 'failed', 'written back')
+        import server
+        console = mock.Mock()
+        console.transfers = manager
+        console.files.job.return_value = {}
+        console.files.transfers.return_value = {'transfers': []}
+        self.assertFalse(server.update_busy(console), 'interrupted jobs do not block upgrades')
+
+    def test_retry_requeues_with_skip_and_links_the_original(self):
+        self.write_state([self.job('run1', 'running')])
+        self.ps5.dirs.add('/data/movies')
+        self.ps5.files['/data/movies/a b.mkv'] = b'already there'
+        manager = self.manager()
+        retried = manager.retry('run1')
+        self.assertNotEqual(retried['id'], 'run1')
+        self.assertEqual(retried['overwrite'], 'skip')
+        self.assertEqual(retried['retry_of'], 'run1')
+        job = wait(manager, retried['id'])
+        self.assertEqual(job['state'], 'done')
+        self.assertEqual(job['files_skipped'], 1)
+        self.assertEqual(self.ps5.files['/data/movies/a b.mkv'], b'already there')
+        self.assertEqual(self.ps5.files['/data/movies/sub/c.txt'], b'hello')
+
+    def test_retry_is_refused_for_extraction_and_unfinished_jobs(self):
+        self.write_state([self.job('ext1', 'running', kind='extract', engine='libarchive'),
+                          self.job('ok1', 'done')])
+        manager = self.manager()
+        with self.assertRaisesRegex(ValueError, '解压任务不支持重试'):
+            manager.retry('ext1')
+        with self.assertRaisesRegex(ValueError, '失败或已取消'):
+            manager.retry('ok1')
+        with self.assertRaises(NasError):
+            manager.retry('missing')
+
+    def test_damaged_state_file_starts_empty(self):
+        for content in ('{not json', '[]', '{"jobs": "x"}', '{"jobs": [1, {"id": 3}]}'):
+            with self.subTest(content=content):
+                self.state.write_text(content)
+                with self.assertLogs(level='WARNING') if content in ('{not json', '[]', '{"jobs": "x"}') \
+                        else contextlib.nullcontext():
+                    manager = self.manager()
+                self.assertEqual(manager.snapshot(), [])
+
+    def test_progress_is_written_at_most_every_few_seconds(self):
+        manager = self.manager()
+        writes = []
+        with mock.patch('nas.atomic_json', side_effect=lambda *args, **kw: writes.append(args)):
+            job = {'id': 'x', 'bytes_done': 0, 'bytes_total': 100, 'current_done': 0, 'speed': 0,
+                   'percent': 0, 'eta': None, 'elapsed': 0, 'started': time.time()}
+            samples = collections.deque(maxlen=80)
+            manager._last_persist = 0.0
+            for _ in range(50):
+                manager._progress(job, 1, 0, samples)
+            self.assertEqual(len(writes), 1)
+            manager._set(job, state='running')
+            self.assertEqual(len(writes), 2, 'state changes are written at once')
+
+    def test_live_unrar_unit_is_followed_after_restart(self):
+        work = self.root / 'extract'
+        work.mkdir()
+        (work / 'unr1.json').write_text('{}')
+        status = work / 'unr1.status.json'
+        status.write_text(json.dumps({'state': 'running', 'bytes_done': 40, 'bytes_total': 100}))
+
+        class Handle:
+            def __init__(self):
+                self.ticks = 0
+
+            def alive(self):
+                self.ticks += 1
+                if self.ticks == 3:
+                    status.write_text(json.dumps({'state': 'done', 'final': True, 'bytes_done': 100,
+                                                  'result_path': '/data/games/PPSA1', 'title': 'PPSA1'}))
+                return self.ticks < 4
+
+            def stop(self):
+                pass
+
+        class Runner:
+            def attach(self, unit):
+                self.unit = unit
+                return Handle()
+        runner = Runner()
+        self.write_state([self.job('unr1', 'running', kind='extract', engine='unrar', bytes_done=30,
+                                   title='PPSA1', mode='install', dest='/data/games')])
+        manager = self.manager(work_dir=work, runner=runner)
+        self.assertEqual(runner.unit, 'ps5-extract-unr1')
+        job = wait(manager, 'unr1')
+        self.assertEqual(job['state'], 'done', job.get('error'))
+        self.assertEqual(job['result_path'], '/data/games/PPSA1')
+        self.assertNotIn('interrupted', job)
+        self.assertFalse((work / 'unr1.json').exists())
+
+    def test_dead_unrar_unit_is_interrupted(self):
+        work = self.root / 'extract'
+        work.mkdir()
+        (work / 'unr2.json').write_text('{}')
+
+        class Runner:
+            def attach(self, unit):
+                return mock.Mock(alive=lambda: False)
+        self.write_state([self.job('unr2', 'running', kind='extract', engine='unrar')])
+        manager = self.manager(work_dir=work, runner=Runner())
+        self.assertTrue(manager.snapshot_one('unr2')['interrupted'])
 
 
 class FtpHelpersTests(unittest.TestCase):

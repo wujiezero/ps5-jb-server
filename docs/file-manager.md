@@ -70,14 +70,27 @@ PS5 的 `/data/tom-ps5-usbnet/log.txt`，没有链路时会写 `no Ethernet link
 | FTP | `ftplib`，可选 FTPS | 以父目录列表判断文件/目录（不少服务器对目录执行 `SIZE` 也返回 0） |
 
 接口：`GET /api/nas`、`GET /api/nas/list?id=&path=`、`POST /api/nas/{save,delete,test,transfer}`、
-`GET /api/transfers`、`POST /api/transfers/{cancel,clear}`。NAS 侧鉴权失败一律返回 502，
+`GET /api/transfers`、`POST /api/transfers/{cancel,clear,retry}`。NAS 侧鉴权失败一律返回 502，
 避免被页面当成管理员会话过期（401）。
 
 传输任务（`TransferManager`）：单线程顺序执行、其余排队；先统计（`scanning`）再传输（`running`）；
 每个文件从 NAS 读 256 KiB 块直接喂给 `FileProxy.upload`（FTP `STOR` 或 HTTP `/fs/put`），
 进度字段 `bytes_done/bytes_total/percent/speed`（5 秒滑动窗口）`/eta/elapsed/files_*`；
 同名文件按目标目录列表一次判断（跳过或覆盖）；取消或单文件失败时删除半截文件，其余继续。
-已结束的任务最多保留 30 条，服务重启后清空。
+已结束的任务最多保留 30 条。
+
+任务列表写在 `<data>/transfers.json`（0600，原子写）：入队、状态变化和结束时立即写，进度最多每 5 秒写一次；
+只存页面可见的字段，不含 NAS 账号。服务重启后读回：未结束的任务标为失败、`interrupted: true`、
+错误「服务重启时中断」；解压任务另带 `staging`（隐藏的 `.extract-<任务号>` 暂存目录），页面提示可手动删除。
+unrar 解压跑在独立的 `ps5-extract-<任务号>` 单元里，服务重启时它可能还在运行：单元仍存活就继续读它的状态文件，
+否则按中断处理。文件损坏时从空列表开始。
+
+`POST /api/transfers/retry {id}`：把失败或已取消的 NAS 传输按原参数重新排队，并强制「同名跳过」，
+效果等于按文件续传（已传完的文件不再传，传了一半的文件在失败时已删除）。新任务带 `retry_of`。
+解压任务不支持重试，需要重新选择压缩包，以便重新检查分卷与空间。
+
+已发现的 PS5 记在 `<data>/hosts.json`（IP、主机名、固件、`last_seen`，30 天未见即丢弃）。启动扫描先探测这些地址，
+扫描完成前页面把它们列为「上次发现」。
 
 2026-11-10 在 Debian 12 容器里对 Samba 4.23、rclone WebDAV、rclone FTP 做过端到端联调：
 中文与空格文件名、40 MB 文件字节一致、同名跳过、取消、错误密码提示均通过。

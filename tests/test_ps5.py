@@ -10,6 +10,71 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
 from ps5 import ConsoleError, ElfldrClient, HostManager, PldmgrClient
 
 
+class KnownHostsTests(unittest.TestCase):
+    """hosts.json: consoles found before a restart are probed first and listed meanwhile (B3)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / 'hosts.json'
+        self.now = 1_800_000_000.0
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def discovery(self):
+        from ps5 import Discovery
+        return Discovery('192.0.2.0/24', hosts_path=self.path, clock=lambda: self.now)
+
+    def test_scan_results_are_recorded_and_read_back(self):
+        import os
+        from unittest import mock
+        found = [{'ip': '192.0.2.7', 'elfldr': True, 'pldmgr': False, 'loader': False,
+                  'power': {'name': 'Living room', 'firmware': '9.60', 'state': 'on'}}]
+        first = self.discovery()
+        with first.lock:
+            first._save_known(found)
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+        second = self.discovery()
+        self.assertEqual(second.extra[0], '192.0.2.7', 'known hosts are probed first')
+        host = second.snapshot()['hosts'][0]
+        self.assertEqual((host['ip'], host['remembered'], host['name'], host['firmware']),
+                         ('192.0.2.7', True, 'Living room', '9.60'))
+        self.assertEqual(host['last_seen'], self.now)
+        # A later scan replaces "last seen" entries with what it really found.
+        with mock.patch('ps5.ddp_search', return_value={}), mock.patch('ps5._tcp_open', return_value=False):
+            second._scan()
+        self.assertEqual(second.snapshot()['hosts'], [])
+        self.assertIn('192.0.2.7', json.loads(self.path.read_text())['hosts'][0]['ip'])
+
+    def test_hosts_not_seen_for_30_days_are_forgotten(self):
+        self.path.write_text(json.dumps({'schema': 1, 'hosts': [
+            {'ip': '192.0.2.7', 'last_seen': self.now - 31 * 86400},
+            {'ip': '192.0.2.8', 'last_seen': self.now - 86400, 'name': 'Den'},
+            {'ip': '198.51.100.9', 'last_seen': self.now},          # other subnet
+            {'ip': 'not-an-ip', 'last_seen': self.now}, 'junk']}))
+        known = self.discovery().known
+        self.assertEqual(list(known), ['192.0.2.8'])
+
+    def test_missing_or_damaged_file_is_empty(self):
+        self.assertEqual(self.discovery().known, {})
+        self.path.write_text('{oops')
+        self.assertEqual(self.discovery().snapshot()['hosts'], [])
+
+    def test_overview_marks_remembered_hosts(self):
+        from unittest import mock
+        self.path.write_text(json.dumps({'hosts': [{'ip': '192.0.2.8', 'last_seen': self.now, 'name': 'Den'}]}))
+        config = FakeConfig(subnet='192.0.2.0/24')
+        config.data_dir = Path(self.tmp.name)
+        manager = HostManager(config, lambda: {'items': []})
+        manager.discovery.clock = lambda: self.now
+        with mock.patch('ps5._tcp_open', return_value=False):
+            host = manager.overview()['hosts'][0]
+        self.assertTrue(host['remembered'])
+        self.assertEqual(host['name'], 'Den')
+        self.assertFalse(host['online'])
+
+
 class FakeConfig:
     def __init__(self, subnet='127.0.0.1/32', host_ip='127.0.0.1', repo_port=8080,
                  pldmgr_port=0, elf_port=0):

@@ -104,8 +104,12 @@ def _tcp_open(ip, port, timeout):
 class Discovery:
     """Bounded TCP scan of the LAN for elfldr / pldmgr / the boot loader."""
 
+    # Hosts not seen for this long are forgotten.
+    FORGET_AFTER = 30 * 86400
+
     def __init__(self, subnet, timeout=0.3, workers=48, cache_ttl=60,
-                 elf_port=ELF_PORT, pldmgr_port=PLDMGR_PORT, loader_port=LOADER_PORT):
+                 elf_port=ELF_PORT, pldmgr_port=PLDMGR_PORT, loader_port=LOADER_PORT,
+                 hosts_path=None, clock=time.time):
         self.ports = (('elfldr', elf_port), ('pldmgr', pldmgr_port), ('loader', loader_port))
         self.subnet = _bounded(ipaddress.ip_network(subnet, strict=False))
         self.timeout = timeout
@@ -116,6 +120,60 @@ class Discovery:
         self.extra = []
         self.scanning = False
         self.scan_lock = threading.Lock()
+        self.clock = clock
+        self.hosts_path = Path(hosts_path) if hosts_path else None
+        self.known = self._load_known()
+        if self.known:
+            # Probe these first, and list them as "last seen" until a scan finishes.
+            self.extra = list(self.known)[:32]
+            self.cached['hosts'] = [{'ip': ip, 'elfldr': False, 'pldmgr': False, 'loader': False,
+                                     'power': None, 'remembered': True, **record}
+                                    for ip, record in self.known.items()]
+
+    def _load_known(self):
+        if not self.hosts_path:
+            return {}
+        try:
+            document = json.loads(self.hosts_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {}
+        records = document.get('hosts') if isinstance(document, dict) else None
+        known, now = {}, self.clock()
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict):
+                continue
+            try:
+                ip = str(ipaddress.IPv4Address(record.get('ip')))
+                seen = float(record.get('last_seen'))
+            except (ValueError, TypeError):
+                continue
+            if ipaddress.IPv4Address(ip) in self.subnet and now - seen <= self.FORGET_AFTER:
+                known[ip] = {'name': str(record.get('name') or '')[:64],
+                             'firmware': str(record.get('firmware') or '')[:16], 'last_seen': seen}
+        return dict(sorted(known.items(), key=lambda item: -item[1]['last_seen']))
+
+    def _save_known(self, found):
+        """Record the hosts a scan found; caller holds self.lock."""
+        now = self.clock()
+        for host in found:
+            power = host.get('power') or {}
+            previous = self.known.get(host['ip'], {})
+            self.known[host['ip']] = {'name': power.get('name') or previous.get('name', ''),
+                                      'firmware': power.get('firmware') or previous.get('firmware', ''),
+                                      'last_seen': now}
+        self.known = {ip: record for ip, record in self.known.items()
+                      if now - record['last_seen'] <= self.FORGET_AFTER}
+        if not self.hosts_path:
+            return
+        document = {'schema': 1, 'hosts': [{'ip': ip, **record} for ip, record in self.known.items()]}
+        try:
+            temporary = self.hosts_path.with_name('.' + self.hosts_path.name + '.tmp')
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                json.dump(document, stream, ensure_ascii=False)
+            os.replace(temporary, self.hosts_path)
+        except OSError as exc:
+            logging.warning('could not save known PS5 hosts: %s', exc)
 
     def remember(self, ip):
         """Prefer addresses we already saw (activity page, manual add)."""
@@ -187,6 +245,7 @@ class Discovery:
                 if host['ip'] not in self.extra:
                     self.extra.append(host['ip'])
             self.extra = self.extra[:32]
+            self._save_known(found)
         return result
 
     def snapshot(self):
@@ -604,8 +663,10 @@ class HostManager:
     def __init__(self, config, catalog, fetch_bytes=None):
         self.config = config
         self._catalog = catalog           # callable() -> {'name','items'}
+        data_dir = getattr(config, 'data_dir', None)
         self.discovery = Discovery(config.subnet, elf_port=config.elf_port,
-                                   pldmgr_port=config.pldmgr_port)
+                                   pldmgr_port=config.pldmgr_port,
+                                   hosts_path=Path(data_dir) / 'hosts.json' if data_dir else None)
         self.pldmgr_port = config.pldmgr_port
         self.elf_port = config.elf_port
         self.manifest = {}                # filename -> url
@@ -761,6 +822,10 @@ class HostManager:
                      'repo_payloads': None, 'installed': [], 'running': [],
                      'autoload': {'enabled': False, 'list': [], 'status': {}},
                      'last_error': None}
+            if host.get('remembered'):
+                # Known from an earlier run; this restart's scan has not reached it yet.
+                entry.update(remembered=True, last_seen=host.get('last_seen'),
+                             name=host.get('name') or '', firmware=host.get('firmware') or '')
             if not refresh:
                 return entry
             # A console that went to rest mode keeps its scan entry; probe the

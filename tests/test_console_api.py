@@ -193,6 +193,23 @@ class ConsoleAPITests(unittest.TestCase):
         self.api.files.host = '127.0.0.1'
         self.api.game_services = None
 
+    def test_retry_route_queues_the_failed_job_again(self):
+        with mock.patch.object(self.api.transfers, 'retry', return_value={'id': 'new', 'retry_of': 'old'}) as retry:
+            body, headers = json_body({'id': 'old'})
+            handler = StubHandler('/api/transfers/retry', body, headers)
+            self.api.handle_post(handler, '/api/transfers/retry')
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(handler.payload['job']['retry_of'], 'old')
+        retry.assert_called_once_with('old')
+        body, headers = json_body({'id': 'nope'})
+        handler = StubHandler('/api/transfers/retry', body, headers)
+        self.api.handle_post(handler, '/api/transfers/retry')
+        self.assertEqual(handler.status, 404)
+
+    def test_transfer_state_lives_in_the_data_dir(self):
+        self.assertEqual(self.api.transfers.state_path, self.api.settings.data_dir / 'transfers.json')
+        self.assertEqual(self.api.ps5.discovery.hosts_path, self.api.settings.data_dir / 'hosts.json')
+
 
 if __name__ == '__main__':
     unittest.main()

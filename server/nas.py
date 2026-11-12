@@ -748,16 +748,41 @@ class _Canceled(Exception):
     pass
 
 
+def atomic_json(path, document, mode=0o600):
+    """Write JSON next to path, fsync, then rename over it."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f'.{path.name}.{uuid.uuid4().hex[:8]}.tmp')
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(document, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+TERMINAL = frozenset(('done', 'done_with_warnings', 'failed', 'canceled'))
+INTERRUPTED = '服务重启时中断'
+
+
 class TransferManager:
     """One NAS transfer at a time; the rest wait in order."""
 
     KEEP = 30
+    # Progress is written to the state file at most this often; state changes at once.
+    PERSIST_EVERY = 5.0
+    # Kinds that /api/transfers/retry can queue again (extraction needs a fresh preflight).
+    RETRYABLE = ('nas',)
 
     def __init__(self, store, files, client_factory=client_for, work_dir=None, runner=None,
-                 engines=None, game_services=None, host=None):
+                 engines=None, game_services=None, host=None, state_path=None):
         """work_dir: where unrar jobs keep their spec and status files; runner
         starts the worker unit (SystemdRunner by default); engines overrides
-        engine detection (tests)."""
+        engine detection (tests); state_path keeps the job list across restarts."""
         self.store = store
         self.files = files
         self.client_factory = client_factory
@@ -773,6 +798,100 @@ class TransferManager:
         self.queue = collections.deque()
         self.cancels = {}
         self.worker = None
+        self.state_path = Path(state_path) if state_path else None
+        self._persist_lock = threading.Lock()
+        self._last_persist = 0.0
+        self.adopted = {}           # job id -> unit handle of an unrar worker that outlived a restart
+        self._load()
+
+    # -- persistence --
+    def _load(self):
+        if not self.state_path:
+            return
+        try:
+            document = json.loads(self.state_path.read_text(encoding='utf-8'))
+            saved = document.get('jobs') if isinstance(document, dict) else None
+            if not isinstance(saved, list):
+                raise ValueError('transfers.json has no job list')
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            # A damaged file must not keep the service from starting.
+            logging.warning('Ignoring unreadable transfer state %s: %s', self.state_path, exc)
+            return
+        changed = False
+        for job in saved:
+            if not (isinstance(job, dict) and isinstance(job.get('id'), str) and
+                    isinstance(job.get('state'), str) and isinstance(job.get('kind'), str)):
+                continue
+            ident = job['id']
+            if job['state'] not in TERMINAL:
+                changed = True
+                handle = self._reattach(job)
+                if handle is not None:
+                    self.adopted[ident] = handle
+                    self.queue.append(ident)
+                else:
+                    job.update(state='failed', error=INTERRUPTED, interrupted=True,
+                               finished=job.get('finished') or time.time(), speed=0, eta=None)
+            self.jobs[ident] = job
+            self.cancels[ident] = threading.Event()
+        self._trim()
+        if changed:
+            self._persist(force=True)
+        if self.queue:
+            self.worker = threading.Thread(target=self._run, daemon=True, name='nas-transfer')
+            self.worker.start()
+
+    def _reattach(self, job):
+        """An unrar worker runs in its own unit and may still be going: keep following it."""
+        if job['kind'] != 'extract' or job.get('engine') != 'unrar' or self.work_dir is None:
+            return None
+        attach = getattr(self.runner, 'attach', None)
+        if attach is None or not (self.work_dir / f'{job["id"]}.json').exists():
+            return None
+        try:
+            handle = attach(f'ps5-extract-{job["id"]}')
+            return handle if handle.alive() else None
+        except Exception as exc:
+            logging.warning('Cannot check extraction unit for %s: %s', job['id'], exc)
+            return None
+
+    def _persist(self, force=False):
+        """Write the visible job fields (never NAS credentials) to the state file."""
+        if not self.state_path:
+            return
+        with self._persist_lock:
+            with self.lock:
+                now = time.monotonic()
+                if not force and now - self._last_persist < self.PERSIST_EVERY:
+                    return
+                self._last_persist = now
+                jobs = [{key: value for key, value in job.items() if key != 'samples'}
+                        for job in self.jobs.values()]
+            try:
+                atomic_json(self.state_path, {'schema': 1, 'jobs': jobs})
+            except (OSError, TypeError, ValueError) as exc:
+                logging.warning('Could not save transfer state: %s', exc)
+
+    def retry(self, ident):
+        """Queue a failed or canceled transfer again; existing files are skipped (file-level resume)."""
+        with self.lock:
+            job = self.jobs.get(ident)
+            if job is None:
+                raise NasError('没有这个传输任务', status=404)
+            job = dict(job)
+        if job['kind'] not in self.RETRYABLE:
+            raise ValueError('解压任务不支持重试：请重新在 NAS 里选择压缩包，开始前会重新检查分卷与空间')
+        if job['state'] not in ('failed', 'canceled'):
+            raise ValueError('只能重试失败或已取消的任务')
+        created = self.start(job['nas_id'], job['paths'], job['dest'], 'skip',
+                             auto_register=job.get('auto_register', False),
+                             host=job.get('host'), title=job.get('title') or '')
+        with self.lock:
+            self.jobs[created['id']]['retry_of'] = ident
+        self._persist(force=True)
+        return self.snapshot_one(created['id'])
 
     # -- public --
     def start(self, nas_id, paths, dest, overwrite='skip', auto_register=False,
@@ -860,7 +979,10 @@ class TransferManager:
             raise ValueError(f'目标存储剩余 {free / 2 ** 30:.1f} GB，放不下{what} '
                              f'{need / 2 ** 30:.1f} GB 的内容')
         ident = uuid.uuid4().hex[:10]
+        # Hidden folder the archive is unpacked into before the final rename.
+        staging_parent = dest if mode == 'install' else posixpath.dirname(dest.rstrip('/'))
         job = {'id': ident, 'kind': 'extract', 'source': info['source'], 'nas_id': nas_id,
+               'staging': posixpath.join(staging_parent, f'.extract-{ident}'),
                'protocol': self.store.get(nas_id)['protocol'],
                'name': info['base'] + (f'（{info["parts"]} 个分卷）' if info['parts'] > 1 else ''),
                'paths': [item['path'] for item in info['volumes']], 'volumes': info['volumes'],
@@ -901,6 +1023,7 @@ class TransferManager:
             if self.worker is None or not self.worker.is_alive():
                 self.worker = threading.Thread(target=self._run, daemon=True, name='nas-transfer')
                 self.worker.start()
+        self._persist(force=True)
 
     def snapshot_one(self, ident):
         with self.lock:
@@ -929,19 +1052,21 @@ class TransferManager:
                     self.queue.remove(ident)
                 except ValueError:
                     pass
+        self._persist(force=True)
         return {'ok': True}
 
     def clear(self):
         with self.lock:
             for ident in [key for key, job in self.jobs.items()
-                          if job['state'] in ('done', 'failed', 'canceled')]:
+                          if job['state'] in TERMINAL]:
                 self.jobs.pop(ident, None)
                 self.cancels.pop(ident, None)
+        self._persist(force=True)
         return {'ok': True}
 
     def _trim(self):
         finished = [key for key, job in self.jobs.items()
-                    if job['state'] in ('done', 'failed', 'canceled')]
+                    if job['state'] in TERMINAL]
         while len(self.jobs) > self.KEEP and finished:
             key = finished.pop(0)
             self.jobs.pop(key, None)
@@ -957,10 +1082,14 @@ class TransferManager:
                     return
                 ident = self.queue.popleft()
                 job = self.jobs.get(ident)
-            if job is None or job['state'] != 'queued':
+                adopted = self.adopted.pop(ident, None)
+            if job is None or (job['state'] != 'queued' and adopted is None):
                 continue
             try:
-                if job['kind'] == 'extract' and job.get('engine') == 'unrar':
+                if adopted is not None:
+                    self._follow_unrar(job, self.cancels[ident], adopted,
+                                       self.work_dir / f'{ident}.json', self.work_dir / f'{ident}.status.json')
+                elif job['kind'] == 'extract' and job.get('engine') == 'unrar':
                     self._execute_unrar(job, self.cancels[ident])
                 elif job['kind'] == 'extract':
                     self._execute_extract(job, self.cancels[ident])
@@ -980,6 +1109,7 @@ class TransferManager:
     def _set(self, job, **fields):
         with self.lock:
             job.update(fields)
+        self._persist(force='state' in fields or 'finished' in fields)
 
     def _execute(self, job, cancel):
         config = self.store.get(job['nas_id'])
@@ -1124,10 +1254,17 @@ class TransferManager:
         with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
             json.dump(spec, stream, ensure_ascii=False)
         self._set(job, state='scanning', started=time.time())
-        samples = collections.deque(maxlen=80)
-        seen = 0
-        stopping = False
         handle = self.runner.start(spec_path, f'ps5-extract-{ident}', job['memory'])
+        self._follow_unrar(job, cancel, handle, spec_path, status_path)
+
+    def _follow_unrar(self, job, cancel, handle, spec_path, status_path):
+        """Mirror a running unrar unit's status file until it finishes."""
+        ident = job['id']
+        samples = collections.deque(maxlen=80)
+        # After a restart the job already counts the bytes reported before it.
+        seen = int(job.get('bytes_done') or 0)
+        stopping = False
+        status = None
         try:
             while True:
                 status = _read_json(status_path)
@@ -1253,6 +1390,7 @@ class TransferManager:
             job['eta'] = (round((total - job['bytes_done']) / job['speed'])
                           if job['speed'] > 0 and total >= job['bytes_done'] else None)
             job['elapsed'] = round(now - job['started'], 1)
+        self._persist()
 
 
 def unrar_engine_available():
@@ -1298,6 +1436,10 @@ class SystemdRunner:
         result = subprocess.run(command, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             raise NasError(f'无法启动解压进程：{(result.stderr or result.stdout).strip()[:200]}')
+        return _UnitHandle(unit)
+
+    def attach(self, unit):
+        """Handle for a worker unit started before this service restarted."""
         return _UnitHandle(unit)
 
 

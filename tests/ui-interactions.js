@@ -34,6 +34,7 @@ class Element {
   showModal() { this.open = true; }
   close() { this.open = false; this.dispatch('close'); }
   reset() {}
+  get lastChild() { return this.children[this.children.length - 1] || null; }
   querySelector() { return null; }
   querySelectorAll() { return []; }
   get classList() {
@@ -65,7 +66,8 @@ function fixture(extra = {}) {
       normalizeActivity, activityRow, renderBuiltinDomains,
       setActivityFilter, renderRepo, renderPs5Catalog,
       files, filesRow, nasRow, filesVisibleEntries, titleIdOf, titleNames, flushTitleNames, normalizeFilesEntries,
-      nas, nasArchiveSelection, extractTask,
+      nas, nasArchiveSelection, extractTask, filesTransferTasks, filesTransferCard, normalizePs5,
+      setNasJobs(value) { nasJobs = value; },
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
       normalizeRepo, renderUpstream, categoryChoices,
@@ -697,4 +699,37 @@ test('builtin domain block lists server domains and hides when absent', () => {
   assert.equal(ui.node('builtin-host-ip').textContent, '192.0.2.10');
   ui.renderBuiltinDomains([], '192.0.2.10');
   assert.equal(ui.node('builtin-domains').hidden, true);
+});
+
+test('interrupted NAS transfers show 已中断 and a retry button; extraction only a cleanup hint', () => {
+  const ui = fixture();
+  const base = { source: 'NAS', dest: '/data', bytes_done: 10, bytes_total: 100, speed: 0, elapsed: 3, eta: null,
+    files_done: 0, files_total: 2, files_skipped: 0, files_failed: 0, errors: [] };
+  ui.setNasJobs([
+    { ...base, id: 'a', kind: 'nas', name: 'movies', state: 'failed', error: '服务重启时中断', interrupted: true },
+    { ...base, id: 'b', kind: 'extract', name: 'Game.rar', state: 'failed', error: '服务重启时中断', interrupted: true,
+      staging: '/data/games/.extract-b' },
+    { ...base, id: 'c', kind: 'nas', name: 'running', state: 'running' }
+  ]);
+  const [nasTask, extract, running] = ui.filesTransferTasks();
+  assert.equal(typeof nasTask.retry, 'function');
+  assert.equal(extract.retry, undefined);
+  assert.equal(running.retry, null);
+  assert.match(extract.line, /\.extract-b/);
+  const card = ui.filesTransferCard(nasTask);
+  assert.match(textOf(card), /已中断/);
+  assert.match(textOf(card), /重试/);
+  assert.doesNotMatch(textOf(ui.filesTransferCard(running)), /重试/);
+});
+
+test('hosts remembered from an earlier run are marked until the scan reaches them', () => {
+  const ui = fixture();
+  const { hosts } = ui.normalizePs5({ hosts: [
+    { ip: '192.0.2.8', online: false, remembered: true, last_seen: 1800000000, name: 'Den', firmware: '9.60' },
+    { ip: '192.0.2.9', online: true }
+  ] });
+  assert.equal(hosts[0].remembered, true);
+  assert.equal(hosts[0].lastSeen, 1800000000 * 1000);
+  assert.equal(hosts[0].rememberedName, 'Den');
+  assert.equal(hosts[1].remembered, false, 'older servers omit the field');
 });
