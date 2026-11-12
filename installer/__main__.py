@@ -441,6 +441,8 @@ def write_config(layout, runner):
 host_ip = "{layout.host_ip}"
 subnet = "{layout.subnet}"
 upstream_dns = "{layout.upstream_dns}"
+# Gateway interface; empty = the one holding host_ip, detected at every start.
+interface = ""
 
 [ports]
 dns = {layout.ports['dns']}
@@ -686,7 +688,8 @@ def write_firewall(layout, runner):
         return
     sys.path.insert(0, str(layout.opt))
     from policy import Firewall
-    baseline = Firewall(host_ip=layout.host_ip, lan=layout.subnet, interface=interface_name()).render(
+    interface = interface_name(layout.host_ip, configured_interface(layout))
+    baseline = Firewall(host_ip=layout.host_ip, lan=layout.subnet, interface=interface).render(
         {'domains': [], 'networks': [], 'upstream_dns': layout.upstream_dns}, {})
     runner.write(layout.nft, baseline, 0o644)
     text = layout.nftables_conf.read_text() if layout.nftables_conf.exists() else '#!/usr/sbin/nft -f\n'
@@ -699,18 +702,31 @@ def write_firewall(layout, runner):
 net.ipv4.ip_forward=0
 net.ipv4.conf.all.send_redirects=0
 net.ipv4.conf.default.send_redirects=0
-net.ipv4.conf.{interface_name()}.send_redirects=0
+net.ipv4.conf.{interface}.send_redirects=0
 net.ipv6.conf.all.forwarding=0
 ''', 0o644)
     runner.run(['nft', '-c', '-f', str(layout.nftables_conf)], check=False)
     runner.run(['sysctl', '-w', 'net.ipv4.ip_forward=0'], check=False)
 
 
-def interface_name():
-    result = subprocess.run(['sh', '-c', "ip -4 route show default 2>/dev/null | awk '{print $5; exit}'"],
-                            capture_output=True, text=True)
-    name = (result.stdout or '').strip()
-    return name if re.fullmatch(r'[a-zA-Z0-9_.:-]{1,15}', name or '') else 'eth0'
+def interface_name(host_ip='', configured=''):
+    """Same detection the service runs at start, so baseline and live rules agree."""
+    sys.path.insert(0, str(REPO / 'server'))
+    from settings import detect_interface, valid_interface
+    if configured and valid_interface(configured):
+        return configured
+    return detect_interface(host_ip or detect_ip())
+
+
+def configured_interface(layout):
+    """[network] interface from an existing config.toml (upgrades keep it), else ''."""
+    if not layout.config.exists():
+        return ''
+    try:
+        import tomllib
+        return str((tomllib.loads(layout.config.read_text()).get('network') or {}).get('interface') or '')
+    except (OSError, ValueError):
+        return ''
 
 
 def install_units(layout, runner):
@@ -872,6 +888,8 @@ def cmd_doctor(layout):
         from settings import Settings
         settings = Settings.load(layout.config)
         print(f'  主机/网段    {settings.host_ip} / {settings.subnet}')
+        source = '配置' if settings.interface else '自动探测'
+        print(f'  网关网卡     {interface_name(settings.host_ip, settings.interface)}（{source}）')
         print(f'  端口         dns={settings.dns_port} http={settings.http_port} '
               f'https={settings.https_port} admin={settings.admin_port} repo={settings.repo_port}')
         layout.ports = {'dns': settings.dns_port, 'http': settings.http_port,

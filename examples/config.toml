@@ -8,6 +8,10 @@ host_ip = ""
 subnet = ""
 # Upstream resolver for allowed names. Leave empty to read /etc/resolv.conf.
 upstream_dns = ""
+# LAN interface for the gateway rules. Leave empty to use the interface holding
+# host_ip (then the default route's). One interface only: PS5 traffic must
+# enter and leave through it.
+interface = ""
 
 [ports]
 dns = 53

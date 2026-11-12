@@ -7,12 +7,14 @@ unprivileged test install possible.
 """
 import ipaddress
 import os
+import re
+import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULTS = {
-    'network': {'host_ip': '', 'subnet': '', 'upstream_dns': ''},
+    'network': {'host_ip': '', 'subnet': '', 'upstream_dns': '', 'interface': ''},
     'ports': {'dns': 53, 'http': 80, 'https': 443, 'admin': 8443, 'repo': 8080},
     'ps5': {'pldmgr_port': 8084, 'elf_port': 9021, 'file_port': 80, 'ftp_port': 2120,
             'control': True, 'file_manager': True},
@@ -30,6 +32,8 @@ class Settings:
     host_ip: str
     subnet: str
     upstream_dns: str = ''
+    # LAN interface for the forwarding rules; '' = detect at start (detect_interface).
+    interface: str = ''
     dns_port: int = 53
     http_port: int = 80
     https_port: int = 443
@@ -94,6 +98,7 @@ class Settings:
             host_ip=host_ip,
             subnet=subnet,
             upstream_dns=str(pick('network', 'upstream_dns', 'PS5JB_UPSTREAM_DNS', '') or _resolver()),
+            interface=str(pick('network', 'interface', 'PS5JB_INTERFACE', '') or '').strip(),
             dns_port=int(pick('ports', 'dns', 'PS5JB_PORT_DNS', 53)),
             http_port=int(pick('ports', 'http', 'PS5JB_PORT_HTTP', 80)),
             https_port=int(pick('ports', 'https', 'PS5JB_PORT_HTTPS', 443)),
@@ -127,6 +132,45 @@ class Settings:
             secret_key_path=Path(pick('paths', 'secret_key', 'PS5JB_SECRET_KEY',
                                       str(Path(path or DEFAULTS['paths']['config']).parent / 'nas.key'))),
         )
+
+
+# Same pattern policy.Firewall enforces before a name reaches an nft rule.
+INTERFACE_PATTERN = re.compile(r'[a-zA-Z0-9_.:-]{1,15}')
+
+
+def valid_interface(name):
+    return isinstance(name, str) and INTERFACE_PATTERN.fullmatch(name) is not None
+
+
+def detect_interface(host_ip, runner=subprocess.run):
+    """Name of the LAN interface: the one holding host_ip, else the default route's, else eth0.
+
+    The gateway still assumes a single interface (packets enter and leave on it).
+    """
+    def output(argv):
+        try:
+            result = runner(argv, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return ''
+        if getattr(result, 'returncode', 0) != 0:
+            return ''
+        return result.stdout or ''
+
+    # "2: ens18    inet 192.0.2.10/24 brd 192.0.2.255 scope global ens18\ ..."
+    for line in output(['ip', '-4', '-o', 'addr', 'show']).splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[2] == 'inet' and parts[3].split('/', 1)[0] == host_ip:
+            name = parts[1].split('@', 1)[0]
+            if valid_interface(name):
+                return name
+    # "default via 192.0.2.1 dev ens18 proto dhcp src 192.0.2.10 metric 100"
+    for line in output(['ip', '-4', 'route', 'show', 'default']).splitlines():
+        parts = line.split()
+        if 'dev' in parts[:-1]:
+            name = parts[parts.index('dev') + 1].split('@', 1)[0]
+            if valid_interface(name):
+                return name
+    return 'eth0'
 
 
 def _detect_ip():

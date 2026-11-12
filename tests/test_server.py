@@ -178,3 +178,93 @@ class SessionPersistenceTests(unittest.TestCase):
         before = auth.sessions[key]['expires']
         auth.session(token)
         self.assertGreater(auth.sessions[key]['expires'], before + 3600)
+
+
+class InterfaceTests(unittest.TestCase):
+    """[network] interface: configured value first, else detected, never a stale eth0."""
+
+    ADDR = ('1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever\n'
+            '2: ens18    inet 192.0.2.10/24 brd 192.0.2.255 scope global ens18\\       valid_lft forever\n'
+            '3: wg0    inet 10.9.0.1/24 scope global wg0\\       valid_lft forever\n')
+    ROUTE = 'default via 192.0.2.1 dev enp3s0 proto dhcp src 192.0.2.10 metric 100\n'
+
+    def runner(self, addr='', route='', fail=()):
+        import subprocess
+        from types import SimpleNamespace
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            kind = 'addr' if 'addr' in argv else 'route'
+            if kind in fail:
+                raise FileNotFoundError('ip')
+            return SimpleNamespace(returncode=0, stdout=addr if kind == 'addr' else route)
+        run.calls = calls
+        run.subprocess = subprocess
+        return run
+
+    def test_interface_holding_host_ip_wins(self):
+        from settings import detect_interface
+        self.assertEqual(detect_interface('192.0.2.10', runner=self.runner(self.ADDR, self.ROUTE)), 'ens18')
+
+    def test_default_route_when_no_interface_holds_host_ip(self):
+        from settings import detect_interface
+        self.assertEqual(detect_interface('192.0.2.99', runner=self.runner(self.ADDR, self.ROUTE)), 'enp3s0')
+        self.assertEqual(detect_interface('192.0.2.10', runner=self.runner(fail=('addr',), route=self.ROUTE)),
+                         'enp3s0')
+
+    def test_eth0_as_last_resort(self):
+        from settings import detect_interface
+        self.assertEqual(detect_interface('192.0.2.10', runner=self.runner(fail=('addr', 'route'))), 'eth0')
+        self.assertEqual(detect_interface('192.0.2.10', runner=self.runner('', '')), 'eth0')
+
+    def test_detected_names_must_be_safe_for_nft(self):
+        from settings import detect_interface
+        hostile = '2: ev"il;    inet 192.0.2.10/24 scope global x\n'
+        route = 'default via 192.0.2.1 dev bad"name proto static\n'
+        self.assertEqual(detect_interface('192.0.2.10', runner=self.runner(hostile, route)), 'eth0')
+
+    def test_configured_value_is_read_and_overrides_detection(self):
+        import os
+        from unittest import mock
+        from settings import Settings
+        settings = Settings.from_mapping({'network': {'host_ip': '192.0.2.10', 'subnet': '192.0.2.0/24',
+                                                      'upstream_dns': '192.0.2.1', 'interface': 'br0'}})
+        self.assertEqual(settings.interface, 'br0')
+        with mock.patch.dict(os.environ, {'PS5JB_INTERFACE': 'vmbr1'}):
+            self.assertEqual(Settings.from_mapping({}).interface, 'vmbr1')
+        empty = Settings.from_mapping({'network': {'host_ip': '192.0.2.10', 'upstream_dns': '192.0.2.1'}})
+        self.assertEqual(empty.interface, '', 'from_mapping must not run detection')
+
+    def test_engine_renders_rules_for_the_given_interface(self):
+        from policy import ConfigStore
+        from server import create_engine
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ConfigStore(Path(tmp) / 'config.json', {'upstream_dns': '192.0.2.1'})
+            engine = create_engine(store, '192.0.2.10', '192.0.2.0/24', interface='ens18')
+            rules = engine.firewall.render(store.snapshot(), {})
+            self.assertIn('iifname "ens18" oifname "ens18"', rules)
+            self.assertIn('oifname "ens18" ip saddr', rules)
+            self.assertNotIn('eth0', rules)
+            with self.assertRaises(ValueError):
+                create_engine(store, '192.0.2.10', '192.0.2.0/24', interface='ens18"; flush ruleset')
+
+    def test_state_and_report_expose_the_interface(self):
+        from policy import ConfigStore
+        from server import Application, create_engine, diagnostic_report
+        from types import SimpleNamespace
+
+        class Counting:
+            interface = 'ens18'
+
+            def counters(self):
+                return {}
+
+            def apply(self, *_):
+                pass
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ConfigStore(Path(tmp) / 'config.json', {'upstream_dns': '192.0.2.1'})
+            app = Application(create_engine(store, '192.0.2.10', '192.0.2.0/24', firewall=Counting()))
+            app.units = lambda: {role: {'name': role, 'state': 'active'} for role in ('server', 'host', 'repo')}
+            self.assertEqual(app.state()['status']['interface'], 'ens18')
+            self.assertIn('网关网卡：ens18', diagnostic_report(SimpleNamespace(app=app)))

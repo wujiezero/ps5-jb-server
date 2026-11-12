@@ -26,7 +26,7 @@ from activity import Classifier, FlowObserver, LabelsStore, make_poller
 from api_console import ConsoleAPI
 import logbook
 import netproxy
-from settings import Settings
+from settings import Settings, detect_interface
 from titles import TitleCatalog, proxy_reader
 from dns_service import DNSPolicy, LimitedThreads, diagnostic_error, start_dns
 from policy import ConfigStore, Firewall, LOCAL_DOMAINS
@@ -192,9 +192,9 @@ def _allowed_destination(engine):
     return check
 
 
-def create_engine(store, host_ip, lan, firewall=None):
+def create_engine(store, host_ip, lan, firewall=None, interface=None):
     """DNS policy and firewall must agree on the LAN, or DNS refuses every client."""
-    firewall = firewall or Firewall(host_ip=host_ip, lan=lan)
+    firewall = firewall or Firewall(host_ip=host_ip, lan=lan, interface=interface or 'eth0')
     return DNSPolicy(store, firewall, host_ip=host_ip, lan=lan)
 
 
@@ -682,6 +682,7 @@ class Application(_ConsoleMixin):
             # duplicating the list, so policy.py stays the single source of truth.
             'local_domains': list(LOCAL_DOMAINS),
             'status': {'host_ip': self.engine.host_ip, 'dns': 'running', 'gateway': gateway,
+                       'interface': getattr(self.engine.firewall, 'interface', None),
                        'host': service['units']['host']['state'],
                        'host_unit': service['units']['host']['name'],
                        'uptime': round(time.monotonic() - self.started),
@@ -1178,6 +1179,8 @@ def diagnostic_report(server):
         status = app.state()['status']
         lines.append('运行时长：{} 秒 · DNS {} · 网关 {} · 用户手册 {}'.format(
             status.get('uptime'), status.get('dns'), status.get('gateway'), status.get('host')))
+        if status.get('interface'):
+            lines.append(f"网关网卡：{status['interface']}")
         for key, label in (('gateway_error', '网关错误'), ('last_error', '最近应用错误')):
             if status.get(key):
                 lines.append(f'{label}：{status[key]}')
@@ -1262,7 +1265,12 @@ def main():
     netproxy.seal_direct()
     data = data_dir
     store = ConfigStore(data / 'config.json')
-    engine = create_engine(store, host_ip, lan)
+    # Resolved here, not in Settings.from_mapping, so loading settings stays side-effect free.
+    configured = bool(settings.interface)
+    interface = settings.interface or detect_interface(host_ip)
+    settings.interface = interface
+    logging.info('Gateway interface: %s (%s)', interface, 'configured' if configured else 'detected')
+    engine = create_engine(store, host_ip, lan, interface=interface)
     initialize_engine(engine)
     engine.on_apply = set_forwarding
     auth = AuthManager(json.loads((data / 'credentials.json').read_text()),

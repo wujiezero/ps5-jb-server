@@ -199,3 +199,36 @@ class DependencyInstallTests(unittest.TestCase):
         actions, text = self.plan(set())
         self.assertEqual(actions, [])
         self.assertIn('依赖齐全', text)
+
+
+class InterfaceTests(unittest.TestCase):
+    def test_installer_shares_the_service_detection(self):
+        from unittest import mock
+        installer = load_installer()
+        sys.path.insert(0, str(REPO / 'server'))
+        import settings
+        with mock.patch.object(settings, 'detect_interface', return_value='ens18') as detect:
+            self.assertEqual(installer.interface_name('192.0.2.10'), 'ens18')
+            detect.assert_called_once_with('192.0.2.10')
+            self.assertEqual(installer.interface_name('192.0.2.10', 'vmbr0'), 'vmbr0')
+            self.assertEqual(installer.interface_name('192.0.2.10', 'bad"name'), 'ens18')
+
+    def test_configured_interface_survives_upgrades(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = installer.Layout(prefix=Path(tmp), host_ip='192.0.2.10', dry_run=True)
+            self.assertEqual(installer.configured_interface(layout), '')
+            layout.config.parent.mkdir(parents=True)
+            layout.config.write_text('[network]\ninterface = "ens18"\n')
+            self.assertEqual(installer.configured_interface(layout), 'ens18')
+
+    def test_doctor_prints_the_interface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'etc/ps5-jb-server/config.toml'
+            config.parent.mkdir(parents=True)
+            config.write_text('[network]\nhost_ip = "192.0.2.10"\nsubnet = "192.0.2.0/24"\n'
+                              'upstream_dns = "192.0.2.1"\ninterface = "ens18"\n')
+            result = subprocess.run([sys.executable, str(INSTALLER), '--dry-run', 'doctor',
+                                     '--prefix', tmp], capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('网关网卡     ens18（配置）', result.stdout)

@@ -335,3 +335,11 @@ class ConfigStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterfaceRenderTests(unittest.TestCase):
+    def test_non_default_interface_replaces_eth0_everywhere(self):
+        rules = make_firewall(interface="ens18").render({"networks": ["8.8.8.8"]}, {"9.9.9.9": 30})
+        self.assertIn('iifname "ens18" oifname "ens18"', rules)
+        self.assertIn('oifname "ens18" ip saddr', rules)
+        self.assertNotIn("eth0", rules)

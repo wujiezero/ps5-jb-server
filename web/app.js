@@ -852,6 +852,10 @@
     $('info-admin').textContent = `https://${hostIp}:${adminPort}/`;
     $('info-ports').textContent = `DNS ${port('dns', 53)} · 用户手册 ${port('https', 443)}/${port('http', 80)} · 仓库 ${repoPort} · 管理 ${adminPort}`;
     $('info-subnet').textContent = asText(info.subnet, '—');
+    // Older servers do not report the interface; keep the row hidden then.
+    const iface = typeof status.interface === 'string' ? status.interface : '';
+    $('info-interface').textContent = iface || '—';
+    $('info-interface-row').hidden = !iface;
     $('info-repo-dir').textContent = paths.repo ? `${paths.repo}/（repo.json + payloads/）` : '—';
     $('info-data-dir').textContent = asText(paths.data, '—');
     $('info-config').textContent = asText(paths.config, '—');
