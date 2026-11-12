@@ -262,6 +262,98 @@ class LockFreeUpstreamTests(unittest.TestCase):
         self.assertEqual(self.engine.inflight, {})
 
 
+class IncrementalFirewall(Firewall):
+    """Records both paths; the full-table fallback stays apply()."""
+
+    def __init__(self):
+        super().__init__()
+        self.added = []
+        self.fail_add = False
+
+    def add_leases(self, leases, refresh=()):
+        if self.fail_add:
+            raise RuntimeError('delete element: No such file or directory')
+        self.added.append((dict(leases), sorted(refresh)))
+
+
+class IncrementalLeaseTests(unittest.TestCase):
+    """Answers write only their own addresses to nft (A3)."""
+
+    def setUp(self):
+        self.fw = IncrementalFirewall()
+        self.now = 100.0
+        self.ttl = 20
+        self.addresses = {}
+        self.store = Store(['*.example.com'])
+
+        def resolve(query, upstream):
+            name = query.question[0].name.to_text(omit_final_dot=True)
+            response = dns.message.make_response(query)
+            address = self.addresses.get(name, '93.184.215.14')
+            response.answer.append(dns.rrset.from_text(query.question[0].name, self.ttl, 'IN', 'A', address))
+            return response
+        self.engine = DNSPolicy(self.store, self.fw, host_ip=HOST_IP, resolver=resolve, clock=lambda: self.now)
+
+    def query(self, name):
+        return self.engine.answer(dns.message.make_query(name, 'A'), CLIENT)
+
+    def test_first_answer_only_adds_its_addresses(self):
+        self.addresses['a.example.com'] = '1.1.1.1'
+        self.query('a.example.com')
+        self.addresses['b.example.com'] = '8.8.8.8'
+        self.query('b.example.com')
+        self.assertEqual(self.fw.added, [({'1.1.1.1': 20}, []), ({'8.8.8.8': 20}, [])])
+        self.assertEqual(self.fw.calls, [], 'no full table replacement')
+        self.assertEqual(set(self.engine.live_leases()), {'1.1.1.1', '8.8.8.8'})
+
+    def test_longer_lease_on_a_live_address_is_refreshed(self):
+        self.addresses['a.example.com'] = self.addresses['b.example.com'] = '1.1.1.1'
+        self.query('a.example.com')
+        self.now += 5
+        self.query('b.example.com')
+        self.assertEqual(self.fw.added[-1], ({'1.1.1.1': 20}, ['1.1.1.1']))
+        self.assertEqual(self.engine.leases['1.1.1.1'], 125.0)
+
+    def test_shorter_lease_on_a_live_address_writes_nothing(self):
+        self.addresses['a.example.com'] = self.addresses['b.example.com'] = '1.1.1.1'
+        self.query('a.example.com')
+        self.ttl = 5
+        self.query('b.example.com')
+        self.assertEqual(len(self.fw.added), 1)
+        self.assertEqual(self.engine.leases['1.1.1.1'], 120.0)
+
+    def test_incremental_failure_falls_back_to_the_full_table(self):
+        self.addresses['a.example.com'] = '1.1.1.1'
+        self.query('a.example.com')
+        self.fw.fail_add = True
+        self.addresses['b.example.com'] = '8.8.8.8'
+        with self.assertLogs(level='WARNING') as logs:
+            answer = self.query('b.example.com')
+        self.assertEqual(answer.rcode(), dns.rcode.NOERROR)
+        self.assertEqual(self.fw.calls, [{'1.1.1.1': 20, '8.8.8.8': 20}])
+        self.assertIn('replacing the table', '\n'.join(logs.output))
+
+    def test_fallback_failure_is_servfail_without_a_lease(self):
+        self.fw.fail_add = True
+        self.fw.fail = True
+        self.assertEqual(self.query('a.example.com').rcode(), dns.rcode.SERVFAIL)
+        self.assertEqual(self.engine.live_leases(), {})
+
+    def test_ten_new_names_are_ten_nft_writes(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            from types import SimpleNamespace
+            return SimpleNamespace(stdout='', returncode=0)
+        from policy import Firewall as Real
+        self.engine.firewall = Real(host_ip='127.0.0.1', lan='127.0.0.0/8', runner=runner)
+        for index in range(10):
+            self.addresses[f'n{index}.example.com'] = f'1.1.1.{index + 1}'
+            self.assertEqual(self.query(f'n{index}.example.com').rcode(), dns.rcode.NOERROR)
+        self.assertEqual(len(calls), 10)
+
+
 class TransportTests(unittest.TestCase):
     def test_real_udp_and_tcp_reply(self):
         from dns_service import start_dns

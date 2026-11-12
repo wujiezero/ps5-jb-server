@@ -114,24 +114,37 @@ class Firewall:
         self.runner = runner if runner is not None else subprocess.run
         self.lock = threading.RLock()
 
-    def render(self, config, leases: dict[str, int]) -> str:
-        """Render a new table; apply prepends its deletion if it already exists."""
-        config = validate_config(config)
+    # Keep milliseconds below INT_MAX even on older nft/kernel builds.
+    MAX_TIMEOUT = 2147483
+
+    @classmethod
+    def _lease_elements(cls, leases):
+        """Validated (sort key, nft element text) pairs; leases with TTL <= 0 are dropped."""
         if not isinstance(leases, dict):
             raise ValueError("leases must map IPv4 addresses to TTL seconds")
         dynamic = []
         for value, ttl in leases.items():
             if not isinstance(value, str) or type(ttl) is not int:
                 raise ValueError("leases require string IPv4 keys and integer TTLs")
-            try:
-                address = ipaddress.IPv4Address(value)
-            except ValueError as exc:
-                raise ValueError("lease address must be IPv4") from exc
-            if not address.is_global or address.is_multicast or address.is_reserved or address.is_loopback or address.is_link_local:
-                raise ValueError("lease address must be a public unicast IPv4 address")
+            address = cls._lease_address(value)
             if ttl > 0:
-                # Keep milliseconds below INT_MAX even on older nft/kernel builds.
-                dynamic.append((int(address), f"{address} timeout {min(ttl, 2147483)}s"))
+                dynamic.append((int(address), f"{address} timeout {min(ttl, cls.MAX_TIMEOUT)}s"))
+        return dynamic
+
+    @staticmethod
+    def _lease_address(value):
+        try:
+            address = ipaddress.IPv4Address(value)
+        except ValueError as exc:
+            raise ValueError("lease address must be IPv4") from exc
+        if not address.is_global or address.is_multicast or address.is_reserved or address.is_loopback or address.is_link_local:
+            raise ValueError("lease address must be a public unicast IPv4 address")
+        return address
+
+    def render(self, config, leases: dict[str, int]) -> str:
+        """Render a new table; apply prepends its deletion if it already exists."""
+        config = validate_config(config)
+        dynamic = self._lease_elements(leases)
         static_elements = ", ".join(config["networks"])
         dynamic_elements = ", ".join(item for _, item in sorted(dynamic))
         scope = f'iifname "{self.interface}" oifname "{self.interface}"'
@@ -190,6 +203,32 @@ class Firewall:
             script = ("delete table inet ps5guard\n" if exists else "") + rules
             self._run(["nft", "-c", "-f", "-"], input=script)
             self._run(["nft", "-f", "-"], input=script)
+
+    def add_leases(self, leases: dict[str, int], refresh=()):
+        """Add dynamic addresses with one atomic `nft -f -`, leaving rules and counters intact.
+
+        refresh names addresses that should still be in the kernel set and need a
+        longer timeout. nft 1.0.6 (Debian 12) cannot change an element's timeout,
+        so they are deleted and re-added inside the same transaction: there is no
+        window without authorization. Each refreshed element is first added with
+        a one-second timeout so the delete cannot fail if the kernel already
+        expired it. Errors (table missing, nft failure) propagate to the caller,
+        which falls back to apply().
+        """
+        elements = self._lease_elements(leases)
+        if not elements:
+            return
+        # Only addresses granted by this call can be refreshed; leases keys are validated.
+        granted = {value for value, ttl in leases.items() if ttl > 0}
+        stale = sorted(set(refresh) & granted, key=lambda value: int(ipaddress.IPv4Address(value)))
+        target = "element inet ps5guard dynamic_v4"
+        lines = []
+        if stale:
+            lines.append(f"add {target} {{ " + ", ".join(f"{ip} timeout 1s" for ip in stale) + " }")
+            lines.append(f"delete {target} {{ " + ", ".join(stale) + " }")
+        lines.append(f"add {target} {{ " + ", ".join(item for _, item in sorted(elements)) + " }")
+        with self.lock:
+            self._run(["nft", "-f", "-"], input="\n".join(lines) + "\n")
 
     def counters(self):
         """Return nft's JSON table including rule counters; propagate query failures."""

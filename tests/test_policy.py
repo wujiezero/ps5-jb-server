@@ -343,3 +343,44 @@ class InterfaceRenderTests(unittest.TestCase):
         self.assertIn('iifname "ens18" oifname "ens18"', rules)
         self.assertIn('oifname "ens18" ip saddr', rules)
         self.assertNotIn("eth0", rules)
+
+
+class IncrementalLeaseTests(unittest.TestCase):
+    def test_new_addresses_are_one_add_element_call(self):
+        runner = RecordingRunner(exists=True)
+        make_firewall(runner=runner).add_leases({"9.9.9.9": 30, "8.8.8.8": 10**9})
+        self.assertEqual([call[0] for call in runner.calls], [["nft", "-f", "-"]])
+        script = runner.calls[0][1]["input"]
+        self.assertEqual(script, "add element inet ps5guard dynamic_v4 "
+                                 "{ 8.8.8.8 timeout 2147483s, 9.9.9.9 timeout 30s }\n")
+        self.assertNotIn("delete table", script)
+        self.assertTrue(runner.calls[0][1]["check"])
+
+    def test_refresh_deletes_and_re_adds_in_one_transaction(self):
+        runner = RecordingRunner(exists=True)
+        make_firewall(runner=runner).add_leases({"9.9.9.9": 30, "1.1.1.1": 60}, refresh=["9.9.9.9", "4.4.4.4"])
+        script = runner.calls[0][1]["input"].splitlines()
+        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(script, [
+            "add element inet ps5guard dynamic_v4 { 9.9.9.9 timeout 1s }",
+            "delete element inet ps5guard dynamic_v4 { 9.9.9.9 }",
+            "add element inet ps5guard dynamic_v4 { 1.1.1.1 timeout 60s, 9.9.9.9 timeout 30s }"])
+
+    def test_invalid_or_empty_leases(self):
+        runner = RecordingRunner(exists=True)
+        firewall = make_firewall(runner=runner)
+        firewall.add_leases({})
+        firewall.add_leases({"9.9.9.9": 0})
+        self.assertEqual(runner.calls, [])
+        for value in ["127.0.0.1", "192.0.2.77", "8.8.8.8 }; delete table inet filter; {"]:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                firewall.add_leases({value: 30})
+        with self.assertRaises(ValueError):
+            firewall.add_leases({"8.8.8.8": "30"})
+        self.assertEqual(runner.calls, [])
+
+    def test_failures_propagate(self):
+        def broken(argv, **kwargs):
+            raise subprocess.CalledProcessError(1, argv, stderr="No such file or directory")
+        with self.assertRaises(subprocess.CalledProcessError):
+            make_firewall(runner=broken).add_leases({"9.9.9.9": 30})

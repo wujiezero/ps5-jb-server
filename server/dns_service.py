@@ -96,9 +96,17 @@ class DNSPolicy:
         self.generation = 0
         # name -> Event for upstream queries in progress (guarded by store.lock).
         self.inflight = {}
+        # ip -> when the kernel drops the dynamic_v4 element we last wrote for it.
+        self.kernel_expiry = {}
+
+    def _install(self, config, leases):
+        """Replace the whole table; leases maps ip -> timeout seconds."""
+        self.firewall.apply(config, leases)
+        now = self.clock()
+        self.kernel_expiry = {ip: now + ttl for ip, ttl in leases.items() if ttl > 0}
 
     def apply_rules(self, config, leases):
-        self.firewall.apply(config, leases)
+        self._install(config, leases)
         if self.on_apply:
             self.on_apply(True)
         self.gateway_error = None
@@ -326,16 +334,35 @@ class DNSPolicy:
         pending = {ip: until for ip, until in self.leases.items() if until > now}
         if len(pending) + len(ips) > 2048:
             raise ValueError('动态地址授权数量超过限制')
-        for ip in ips:
-            pending[ip] = max(pending.get(ip, 0), expiry)
-        if ips:
-            # Keep absolute expiry times: rounding on unrelated queries must
-            # never extend an existing authorization. Kernel timeouts may
-            # outlast fractional TTL by at most one second, without drift.
-            leases = {ip: max(1, math.ceil(until - self.clock()))
-                      for ip, until in pending.items() if until > self.clock()}
-            self.firewall.apply(cfg, leases)
-            self.leases = pending
+        changed = {ip: expiry for ip in ips if expiry > pending.get(ip, 0)}
+        if not changed:
+            return
+        pending.update(changed)
+        # Keep absolute expiry times: rounding on unrelated queries must never
+        # extend an existing authorization. Kernel timeouts may outlast
+        # fractional TTL by at most one second, without drift.
+        now = self.clock()
+        timeouts = {ip: max(1, math.ceil(until - now)) for ip, until in changed.items()}
+        add = getattr(self.firewall, 'add_leases', None)
+        try:
+            if add is None:
+                raise LookupError('firewall has no incremental update')
+            # Addresses the kernel may still hold get re-added with the new timeout.
+            refresh = [ip for ip in timeouts if self.kernel_expiry.get(ip, 0) > now - 2]
+            add(timeouts, refresh)
+            for ip, ttl in timeouts.items():
+                self.kernel_expiry[ip] = now + ttl
+            if len(self.kernel_expiry) > 4096:
+                self.kernel_expiry = {ip: until for ip, until in self.kernel_expiry.items()
+                                      if until > now - 2}
+        except Exception as exc:
+            if add is not None:
+                logging.warning('Incremental nft update failed, replacing the table: %s',
+                                diagnostic_error(exc))
+            # Full replacement with every live lease; its failure is SERVFAIL upstream.
+            self._install(cfg, {ip: max(1, math.ceil(until - now))
+                                for ip, until in pending.items() if until > now})
+        self.leases = pending
 
 
 class LimitedThreads(socketserver.ThreadingMixIn):
