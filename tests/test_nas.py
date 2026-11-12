@@ -154,6 +154,14 @@ class FakePs5:
         self.files.pop(path, None)
 
 
+def join_workers(timeout=5):
+    """Wait for transfer workers: a job reads as finished before its thread has
+    written transfers.json and removed its work files for the last time."""
+    for thread in threading.enumerate():
+        if thread.name == 'nas-transfer':
+            thread.join(timeout)
+
+
 def wait(manager, ident, timeout=10):
     end = time.time() + timeout
     while time.time() < end:
@@ -170,6 +178,7 @@ class StoreTests(unittest.TestCase):
         self.store = NasStore(Path(self.tmp.name) / 'nas.json')
 
     def tearDown(self):
+        join_workers()
         self.tmp.cleanup()
 
     def test_password_never_leaves_the_server(self):
@@ -281,6 +290,7 @@ class TransferTests(unittest.TestCase):
         self.ps5 = FakePs5()
 
     def tearDown(self):
+        join_workers()
         self.tmp.cleanup()
 
     def manager(self, delay=0.0):
@@ -397,6 +407,7 @@ class TransferPersistenceTests(unittest.TestCase):
         self.state = self.root / 'transfers.json'
 
     def tearDown(self):
+        join_workers()
         self.tmp.cleanup()
 
     def manager(self, **kwargs):
@@ -616,6 +627,7 @@ class RetryTests(unittest.TestCase):
         self.ident = self.store.save({'protocol': 'ftp', 'host': '192.0.2.9'})['id']
 
     def tearDown(self):
+        join_workers()
         self.tmp.cleanup()
 
     def run_job(self, client, ps5, retries=3):
