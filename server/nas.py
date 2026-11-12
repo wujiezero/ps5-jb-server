@@ -1043,6 +1043,11 @@ class TransferManager:
             except Exception:
                 pass
 
+    @staticmethod
+    def _final_state(job):
+        # Registration problems downgrade a finished job; anything else is plain done.
+        return 'done_with_warnings' if job.get('state') == 'done_with_warnings' else 'done'
+
     def _finish_registration(self, job, result):
         """Register a successfully placed runnable game, without hiding transfer success."""
         if not job.get('auto_register') or not self.game_services:
@@ -1091,7 +1096,7 @@ class TransferManager:
                                           job['mode'], job['id'], Hooks)
             result = installer.run(job['base'])
             self._finish_registration(job, result)
-            self._set(job, state=job.get('state') or 'done', percent=100, current='', current_done=0, current_size=0,
+            self._set(job, state=self._final_state(job), percent=100, current='', current_done=0, current_size=0,
                       result_path=result['path'], title=result['title'] or job['title'],
                       note=result['note'], game=result.get('game'), packages=result.get('packages', []),
                       sidecars=result.get('sidecars', []))
@@ -1164,7 +1169,7 @@ class TransferManager:
                   'note': status.get('note') or '', 'game': status.get('game'),
                   'packages': status.get('packages') or [], 'sidecars': status.get('sidecars') or []}
         self._finish_registration(job, result)
-        self._set(job, state=job.get('state') or 'done', percent=100, current='', current_done=0, current_size=0,
+        self._set(job, state=self._final_state(job), percent=100, current='', current_done=0, current_size=0,
                   result_path=result['path'], title=result['title'], note=result['note'],
                   game=result['game'], packages=result['packages'], sidecars=result['sidecars'],
                   bytes_done=job['bytes_total'])
