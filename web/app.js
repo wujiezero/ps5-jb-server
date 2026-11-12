@@ -5788,7 +5788,7 @@
         key: `nas:${job.id}`, kind: 'nas', name: job.name, state: job.state,
         sub: `${job.source} → ${job.dest}`,
         done: job.bytes_done, total: job.bytes_total, speed: job.speed, elapsed: job.elapsed, eta: job.eta,
-        files: { done: job.files_done, total: job.files_total, skipped: job.files_skipped, failed: job.files_failed },
+        files: { done: job.files_done, total: job.files_total, skipped: job.files_skipped, failed: job.files_failed, retries: job.retries || 0, resumed: job.resumed || 0 },
         current: job.state === 'running' ? job.current : '',
         error: job.error, errors: job.errors || [],
         interrupted: job.interrupted === true,
@@ -5895,6 +5895,8 @@
       const parts = [`文件 ${task.files.done} / ${task.files.total}`];
       if (task.files.skipped) parts.push(`跳过 ${task.files.skipped}`);
       if (task.files.failed) parts.push(`失败 ${task.files.failed}`);
+      if (task.files.retries) parts.push(`自动重试 ${task.files.retries} 次`);
+      if (task.files.resumed) parts.push(`续传 ${task.files.resumed} 次`);
       if (task.current) parts.push(`当前 ${task.current}`);
       item.append(makeElement('p', 'xfer-sub', parts.join(' · ')));
     }

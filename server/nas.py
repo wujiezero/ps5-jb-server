@@ -454,6 +454,14 @@ class WebDavClient:
         response = self._request('GET', path)
         return response
 
+    def open_at(self, path, offset):
+        """Stream from offset, or None when the server ignores Range (no 206)."""
+        response = self._request('GET', path, headers={'Range': f'bytes={int(offset)}-'})
+        if response.status != 206:
+            response.close()
+            return None
+        return response
+
     def read_at(self, path, offset, size):
         """Bytes [offset, offset + size) of a file, or None when Range is ignored."""
         response = self._request('GET', path, headers={'Range': f'bytes={offset}-{offset + size - 1}'})
@@ -561,6 +569,14 @@ class SmbClient:
     def open(self, path):
         try:
             return _SmbReader(self.context.open(self._url(path), os.O_RDONLY))
+        except Exception as exc:
+            raise self._wrap(exc, '打开文件') from exc
+
+    def open_at(self, path, offset):
+        try:
+            handle = self.context.open(self._url(path), os.O_RDONLY)
+            handle.seek(int(offset))
+            return _SmbReader(handle)
         except Exception as exc:
             raise self._wrap(exc, '打开文件') from exc
 
@@ -688,11 +704,14 @@ class FtpClient:
             reader.close()
 
     def open(self, path):
+        return self.open_at(path, 0)
+
+    def open_at(self, path, offset):
         # A dedicated connection: the listing connection stays usable.
         reader = FtpClient(self.config, self.timeout)
         conn = reader._connect()
         try:
-            data = conn.transfercmd('RETR ' + self._full(path))
+            data = conn.transfercmd('RETR ' + self._full(path), rest=int(offset) or None)
         except ftplib.Error as exc:
             reader.close()
             raise NasError(f'FTP 打开文件失败：{str(exc)[:160]}') from exc
@@ -778,8 +797,11 @@ class TransferManager:
     # Kinds that /api/transfers/retry can queue again (extraction needs a fresh preflight).
     RETRYABLE = ('nas',)
 
+    # Waits before the 1st, 2nd, 3rd… automatic retry of one file (seconds).
+    RETRY_DELAYS = (2, 5, 15)
+
     def __init__(self, store, files, client_factory=client_for, work_dir=None, runner=None,
-                 engines=None, game_services=None, host=None, state_path=None):
+                 engines=None, game_services=None, host=None, state_path=None, retries=3):
         """work_dir: where unrar jobs keep their spec and status files; runner
         starts the worker unit (SystemdRunner by default); engines overrides
         engine detection (tests); state_path keeps the job list across restarts."""
@@ -798,6 +820,8 @@ class TransferManager:
         self.queue = collections.deque()
         self.cancels = {}
         self.worker = None
+        # Automatic retries per file after a connection error; 0 disables them.
+        self.retries = max(0, int(retries))
         self.state_path = Path(state_path) if state_path else None
         self._persist_lock = threading.Lock()
         self._last_persist = 0.0
@@ -915,7 +939,8 @@ class TransferManager:
                'current_done': 0, 'created': time.time(), 'started': None, 'finished': None,
                'elapsed': 0, 'speed': 0, 'eta': None, 'percent': 0, 'error': '', 'errors': [],
                 'auto_register': bool(auto_register), 'registration_error': '',
-                'registration': None, 'host': host or self.host, 'title': str(title or '')}
+                'registration': None, 'host': host or self.host, 'title': str(title or ''),
+                'retries': 0, 'resumed': 0}
         self._enqueue(job)
         return self.snapshot_one(ident)
 
@@ -1324,43 +1349,136 @@ class TransferManager:
         except FileServiceError:
             pass        # usually "already exists"; a real problem surfaces on upload
 
-    def _copy_file(self, job, client, source, directory, name, size, cancel, samples):
-        self._set(job, current=source, current_size=size, current_done=0)
-        reader = client.open(source)
-        sent = [0]
+    @staticmethod
+    def _retryable(exc):
+        """Connection trouble is worth another try; bad input, missing files and conflicts are not."""
+        if isinstance(exc, ValueError):
+            return False
+        if isinstance(exc, FileServiceError):
+            return exc.status is None
+        if isinstance(exc, NasError):
+            return exc.status not in (401, 403, 404)
+        return isinstance(exc, OSError)
 
-        def chunks():
-            while True:
-                if cancel.is_set():
-                    raise _Canceled()
-                data = reader.read(CHUNK)
-                if not data:
-                    return
-                sent[0] += len(data)
-                self._progress(job, len(data), sent[0], samples)
-                yield data
-
+    def _ps5_size(self, directory, name):
+        sizer = getattr(self.files, 'file_size', None)
+        if sizer is None:
+            return None
         try:
-            self.files.upload(directory, name, chunks(), size, overwrite=True)
-            self._set(job, files_done=job['files_done'] + 1)
-        except _Canceled:
-            self._discard(directory, name)
-            raise
-        except (FileServiceError, ValueError, OSError, NasError) as exc:
-            self._discard(directory, name)
-            # Remove what this file contributed, record it, keep going.
-            with self.lock:
-                job['bytes_done'] -= sent[0]
-                job['bytes_total'] -= size
-                job['files_failed'] += 1
-                if len(job['errors']) < 20:
-                    job['errors'].append(f'{source}：{str(exc)[:160]}')
-                job['error'] = f'{job["files_failed"]} 个文件失败，最近：{source}'
-        finally:
+            return sizer(posixpath.join(directory, name))
+        except (FileServiceError, ValueError, OSError):
+            return None
+
+    def _resume_offset(self, client, directory, name, size):
+        """Bytes of a partial copy on the PS5 that both ends can continue from, else 0."""
+        supports = getattr(self.files, 'supports_resume', None)
+        if not hasattr(client, 'open_at') or supports is None:
+            return 0
+        try:
+            if not supports():
+                return 0
+        except (FileServiceError, OSError):
+            return 0
+        partial = self._ps5_size(directory, name)
+        return partial if isinstance(partial, int) and 0 < partial < size else 0
+
+    def _copy_file(self, job, client, source, directory, name, size, cancel, samples):
+        """Copy one file, retrying connection errors and resuming a partial copy when possible."""
+        self._set(job, current=source, current_size=size, current_done=0)
+        offset = 0              # bytes already on the PS5 that this attempt continues from
+        failures = 0
+        verified = False        # a resumed copy came out the wrong size once already
+        while True:
+            sent = [0]
+            reader = None
             try:
-                reader.close()
-            except Exception:
-                pass
+                if offset:
+                    reader = client.open_at(source, offset)
+                    if reader is None:          # the NAS ignored the range: start over
+                        with self.lock:
+                            job['bytes_done'] -= offset
+                        offset = 0
+                if reader is None:
+                    reader = client.open(source)
+                start = offset
+
+                def chunks():
+                    while True:
+                        if cancel.is_set():
+                            raise _Canceled()
+                        data = reader.read(CHUNK)
+                        if not data:
+                            if start + sent[0] < size:
+                                # A dropped connection can look like a short file.
+                                raise NasError(f'NAS 数据提前结束（{start + sent[0]} / {size} 字节）')
+                            return
+                        sent[0] += len(data)
+                        self._progress(job, len(data), start + sent[0], samples)
+                        yield data
+
+                if offset:
+                    self.files.upload(directory, name, chunks(), size, overwrite=True, offset=offset)
+                else:
+                    self.files.upload(directory, name, chunks(), size, overwrite=True)
+            except _Canceled:
+                self._discard(directory, name)
+                raise
+            except (FileServiceError, ValueError, OSError, NasError) as exc:
+                with self.lock:
+                    job['bytes_done'] -= sent[0] + offset
+                if self._retryable(exc) and failures < self.retries:
+                    failures += 1
+                    with self.lock:
+                        job['retries'] = job.get('retries', 0) + 1
+                    logging.info('transfer %s: %s failed (%s), retry %d/%d', job['id'], source,
+                                 str(exc)[:160], failures, self.retries)
+                    delay = self.RETRY_DELAYS[min(failures, len(self.RETRY_DELAYS)) - 1]
+                    if cancel.wait(delay):
+                        self._discard(directory, name)
+                        raise _Canceled() from None
+                    offset = self._resume_offset(client, directory, name, size)
+                    with self.lock:
+                        job['bytes_done'] += offset
+                        if offset:
+                            job['resumed'] = job.get('resumed', 0) + 1
+                    continue
+                self._discard(directory, name)
+                # Remove what this file contributed, record it, keep going.
+                with self.lock:
+                    job['bytes_total'] -= size
+                    job['files_failed'] += 1
+                    if len(job['errors']) < 20:
+                        job['errors'].append(f'{source}：{str(exc)[:160]}')
+                    job['error'] = f'{job["files_failed"]} 个文件失败，最近：{source}'
+                return
+            finally:
+                if reader is not None:
+                    try:
+                        reader.close()
+                    except Exception:
+                        pass
+            if offset:
+                # The server may have ignored REST and written from the start.
+                actual = self._ps5_size(directory, name)
+                if actual is not None and actual != size:
+                    self._discard(directory, name)
+                    with self.lock:
+                        job['bytes_done'] -= size
+                    if verified:
+                        with self.lock:
+                            job['bytes_total'] -= size
+                            job['files_failed'] += 1
+                            if len(job['errors']) < 20:
+                                job['errors'].append(f'{source}：续传后大小不符（{actual} / {size}）')
+                            job['error'] = f'{job["files_failed"]} 个文件失败，最近：{source}'
+                        return
+                    verified = True
+                    logging.warning('transfer %s: resumed %s has %s of %d bytes, copying it again',
+                                    job['id'], source, actual, size)
+                    offset = 0
+                    continue
+            self._set(job, files_done=job['files_done'] + 1)
+            return
 
     def _discard(self, directory, name):
         """Remove a partial file; the server may need a moment to publish it."""

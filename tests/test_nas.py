@@ -545,6 +545,208 @@ class TransferPersistenceTests(unittest.TestCase):
         self.assertTrue(manager.snapshot_one('unr2')['interrupted'])
 
 
+class FlakyClient(FakeClient):
+    """FakeClient whose reads break after `fail_after` bytes, `failures` times."""
+
+    def __init__(self, tree, failures=1, fail_after=1500, error=OSError, open_error=None):
+        super().__init__(tree)
+        self.failures, self.fail_after, self.error, self.open_error = failures, fail_after, error, open_error
+        self.opened = []
+
+    def open(self, path):
+        return self.open_at(path, 0)
+
+    def open_at(self, path, offset):
+        self.opened.append((path, offset))
+        if self.open_error:
+            raise self.open_error
+        data, client = self.tree[path], self
+
+        class Reader:
+            position = offset
+
+            def read(self, size):
+                if client.failures and self.position >= offset + client.fail_after:
+                    client.failures -= 1
+                    raise client.error('connection reset by peer')
+                chunk = data[self.position:self.position + min(size, 1000)]
+                self.position += len(chunk)
+                return chunk
+
+            def close(self):
+                pass
+        return Reader()
+
+
+class ResumablePs5(FakePs5):
+    """FakePs5 that keeps partial uploads and can continue them (like zftpd REST + STOR)."""
+
+    def __init__(self, resume=True, ignore_rest=False):
+        super().__init__()
+        self.resume, self.ignore_rest, self.calls = resume, ignore_rest, []
+
+    def supports_resume(self):
+        return self.resume
+
+    def file_size(self, path):
+        return len(self.files[path]) if path in self.files else None
+
+    def upload(self, directory, name, chunks, length, overwrite=False, offset=0):
+        path = directory + '/' + name
+        self.calls.append(offset)
+        kept = self.files.get(path, b'')[:offset] if offset and not self.ignore_rest else b''
+        self.files[path] = kept
+        for chunk in chunks:                       # a broken source leaves the partial file behind
+            self.files[path] += chunk
+        return {'ok': True}
+
+    def delete(self, path):
+        self.files.pop(path, None)
+
+
+class RetryTests(unittest.TestCase):
+    """Automatic per-file retries and REST resume (B4)."""
+
+    BIG = {'/big.bin': bytes(range(256)) * 20}       # 5120 bytes
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = NasStore(Path(self.tmp.name) / 'nas.json')
+        self.ident = self.store.save({'protocol': 'ftp', 'host': '192.0.2.9'})['id']
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_job(self, client, ps5, retries=3):
+        manager = TransferManager(self.store, ps5, client_factory=lambda config: client, retries=retries)
+        manager.RETRY_DELAYS = (0, 0, 0)
+        return wait(manager, manager.start(self.ident, ['/big.bin'], '/data')['id'])
+
+    def test_connection_error_is_retried_and_counted_once(self):
+        ps5 = ResumablePs5(resume=False)
+        job = self.run_job(FlakyClient(self.BIG), ps5)
+        self.assertEqual(job['state'], 'done', job['error'])
+        self.assertEqual(job['retries'], 1)
+        self.assertEqual(job['files_done'], 1)
+        self.assertEqual(job['bytes_done'], job['bytes_total'])
+        self.assertEqual(ps5.files['/data/big.bin'], self.BIG['/big.bin'])
+        self.assertEqual(ps5.calls, [0, 0], 'without resume support the file is sent again')
+
+    def test_resume_continues_from_the_partial_file(self):
+        client = FlakyClient(self.BIG, fail_after=3000)
+        ps5 = ResumablePs5()
+        job = self.run_job(client, ps5)
+        self.assertEqual(job['state'], 'done', job['error'])
+        self.assertEqual(job['resumed'], 1)
+        self.assertEqual(ps5.calls, [0, 3000])
+        self.assertEqual(client.opened[-1], ('/big.bin', 3000))
+        self.assertEqual(ps5.files['/data/big.bin'], self.BIG['/big.bin'])
+        self.assertEqual(job['bytes_done'], 5120)
+
+    def test_size_mismatch_after_resume_copies_again_from_the_start(self):
+        ps5 = ResumablePs5(ignore_rest=True)       # a server that silently ignores REST
+        job = self.run_job(FlakyClient(self.BIG, fail_after=3000), ps5)
+        self.assertEqual(job['state'], 'done', job['error'])
+        self.assertEqual(ps5.calls, [0, 3000, 0])
+        self.assertEqual(ps5.files['/data/big.bin'], self.BIG['/big.bin'])
+        self.assertEqual(job['bytes_done'], job['bytes_total'])
+
+    def test_errors_that_cannot_improve_are_not_retried(self):
+        for error in (NasError('missing', status=404), NasError('denied', status=401), ValueError('bad name')):
+            with self.subTest(error=error):
+                ps5 = ResumablePs5()
+                job = self.run_job(FlakyClient(self.BIG, open_error=error), ps5)
+                self.assertEqual(job['retries'], 0)
+                self.assertEqual(job['files_failed'], 1)
+                self.assertNotIn('/data/big.bin', ps5.files)
+
+    def test_retries_run_out_and_zero_disables_them(self):
+        ps5 = ResumablePs5(resume=False)
+        job = self.run_job(FlakyClient(self.BIG, failures=10), ps5)
+        self.assertEqual((job['retries'], job['files_failed']), (3, 1))
+        self.assertEqual(job['bytes_done'], 0)
+        self.assertNotIn('/data/big.bin', ps5.files, 'the partial file is removed at the end')
+        job = self.run_job(FlakyClient(self.BIG, failures=1), ResumablePs5(), retries=0)
+        self.assertEqual((job['retries'], job['files_failed']), (0, 1))
+
+    def test_truncated_source_stream_counts_as_a_connection_error(self):
+        class Short(FakeClient):
+            calls = 0
+
+            def open(self, path):
+                Short.calls += 1
+                reader = super().open(path)
+                if Short.calls == 1:
+                    reader.read = lambda size, original=reader.read: b'' if reader.offset >= 2000 else original(size)
+                return reader
+        job = self.run_job(Short(self.BIG), ResumablePs5(resume=False))
+        self.assertEqual(job['state'], 'done', job['error'])
+        self.assertEqual(job['retries'], 1)
+
+    def test_cancel_during_the_backoff_wait_is_immediate(self):
+        ps5 = ResumablePs5(resume=False)
+        manager = TransferManager(self.store, ps5, client_factory=lambda config: FlakyClient(self.BIG, failures=10))
+        manager.RETRY_DELAYS = (30, 30, 30)
+        ident = manager.start(self.ident, ['/big.bin'], '/data')['id']
+        for _ in range(200):
+            if manager.snapshot_one(ident)['retries']:
+                break
+            time.sleep(0.01)
+        started = time.time()
+        manager.cancel(ident)
+        job = wait(manager, ident)
+        self.assertEqual(job['state'], 'canceled')
+        self.assertLess(time.time() - started, 2)
+        self.assertNotIn('/data/big.bin', ps5.files)
+
+    def test_setting_limits_and_default(self):
+        self.assertEqual(Settings.from_mapping({}).transfer_retries, 3)
+        self.assertEqual(Settings.from_mapping({'limits': {'transfer_retries': 0}}).transfer_retries, 0)
+        self.assertEqual(Settings.from_mapping({'limits': {'transfer_retries': 99}}).transfer_retries, 10)
+
+
+class FtpResumeTests(unittest.TestCase):
+    def test_feat_with_rest_stream_enables_resume_once_per_server(self):
+        ftp_files._RESUME.clear()
+        files = ftp_files.FtpFiles('192.0.2.5', 2120)
+        conn = mock.Mock()
+        conn.sendcmd.return_value = '211-Extensions supported:\n SIZE\n REST STREAM\n MLSD\n211 End'
+        with mock.patch.object(files, 'connect', return_value=conn) as connect:
+            self.assertTrue(files.supports_resume())
+            self.assertTrue(files.supports_resume())
+        self.assertEqual(connect.call_count, 1)
+        ftp_files._RESUME.clear()
+        conn.sendcmd.return_value = '211-Features:\n SIZE\n211 End'
+        with mock.patch.object(files, 'connect', return_value=conn):
+            self.assertFalse(files.supports_resume())
+        ftp_files._RESUME.clear()
+
+    def test_upload_at_offset_sends_rest(self):
+        files = ftp_files.FtpFiles('192.0.2.5', 2120)
+        conn = mock.Mock()
+
+        def store(command, body, blocksize, rest=None):
+            store.rest = rest
+            while body.read(blocksize):
+                pass
+        conn.storbinary.side_effect = store
+        with mock.patch.object(files, 'connect', return_value=conn):
+            files.upload('/data/a.bin', iter([b'x' * 40]), 100, overwrite=True, offset=60)
+            self.assertEqual(store.rest, 60)
+            files.upload('/data/a.bin', iter([b'x' * 100]), 100, overwrite=True)
+            self.assertIsNone(store.rest)
+            with self.assertRaises(ValueError):
+                files.upload('/data/a.bin', iter([b'x' * 10]), 100, overwrite=True, offset=60)
+
+    def test_http_backend_refuses_offsets(self):
+        from files import FileProxy
+        proxy = FileProxy('192.0.2.0/24', host='192.0.2.5')
+        with mock.patch.object(proxy, '_active', return_value=None):
+            self.assertFalse(proxy.supports_resume())
+            with self.assertRaises(FileServiceError):
+                proxy.upload('/data', 'a.bin', iter([b'x']), 2, offset=1)
+
+
 class FtpHelpersTests(unittest.TestCase):
     def test_list_fallback_parses_unix_listing(self):
         conn = mock.Mock()

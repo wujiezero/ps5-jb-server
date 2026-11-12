@@ -39,7 +39,8 @@ class ConsoleAPI:
         self.game_services = GameServices(self.engine)
         self.transfers = TransferManager(self.nas, self.files, work_dir=settings.data_dir / 'extract',
                                          game_services=self.game_services, host=self.files.host,
-                                         state_path=settings.data_dir / 'transfers.json')
+                                         state_path=settings.data_dir / 'transfers.json',
+                                         retries=getattr(settings, 'transfer_retries', 3))
         self.power = PowerManager(self.engine, self.ps5.validate_ip)
         if autoscan and self.enabled:
             # The discovery cache is in memory; without this the host list is

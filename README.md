@@ -193,6 +193,7 @@ PS5 的待机即休息模式（黄灯）：插件留在内存里，唤醒后不�
 | `[ps5]` | `control` / `file_manager` | 关掉可禁用对应页面 |
 | `[limits]` | `max_upload` | 插件仓库上传上限，默认 64 MiB |
 | `[limits]` | `max_file_upload` | PS5 文件上传上限（流式转发不落盘），默认 0 = 不限制 |
+| `[limits]` | `transfer_retries` | NAS → PS5 传输中单个文件遇到网络错误时的自动重试次数（支持时断点续传），默认 3，0 关闭 |
 | `[paths]` | `data` `repo` `static` `certs` `credentials` `rulesets` `titles` | 全部可改（`titles` 为游戏名称库） |
 | `[paths]` | `secret_key` | NAS 账号加密密钥，默认与配置文件同目录的 `nas.key` |
 | `[ps5]` | `engine_url` | 唤醒/待机所用 PS5Upload 引擎地址，默认 `http://127.0.0.1:19113` |

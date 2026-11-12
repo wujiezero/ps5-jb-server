@@ -722,6 +722,16 @@ test('interrupted NAS transfers show 已中断 and a retry button; extraction on
   assert.doesNotMatch(textOf(ui.filesTransferCard(running)), /重试/);
 });
 
+test('automatic retries and resumes are counted on the NAS task card', () => {
+  const ui = fixture();
+  const base = { source: 'NAS', dest: '/data', bytes_done: 10, bytes_total: 100, speed: 0, elapsed: 3, eta: null,
+    files_done: 1, files_total: 2, files_skipped: 0, files_failed: 0, errors: [], kind: 'nas', state: 'running' };
+  ui.setNasJobs([{ ...base, id: 'a', name: 'movies', retries: 2, resumed: 1 }, { ...base, id: 'b', name: 'old' }]);
+  const [retried, older] = ui.filesTransferTasks();
+  assert.match(textOf(ui.filesTransferCard(retried)), /自动重试 2 次.*续传 1 次/);
+  assert.doesNotMatch(textOf(ui.filesTransferCard(older)), /重试|续传/, 'older servers omit the fields');
+});
+
 test('hosts remembered from an earlier run are marked until the scan reaches them', () => {
   const ui = fixture();
   const { hosts } = ui.normalizePs5({ hosts: [

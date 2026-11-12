@@ -230,8 +230,22 @@ class FileProxy:
         _check_path(path, allow_volume=True)
         return self._call('bench', path)
 
+    def supports_resume(self):
+        """Whether an upload can continue at an offset (FTP with REST STREAM; /fs/put cannot)."""
+        ftp = self._active()
+        return ftp is not None and ftp.supports_resume()
+
+    def file_size(self, path):
+        """Size of a file on the console, or None when there is no such file."""
+        _check_path(path, allow_root=False)
+        parent, name = path.rstrip('/').rsplit('/', 1)
+        for entry in self.list(parent or '/').get('entries', []):
+            if entry.get('name') == name and not entry.get('dir'):
+                return int(entry.get('size') or 0)
+        return None
+
     def upload(self, directory, filename, chunks, length, overwrite=False,
-               client='ps5-jb-server'):
+               client='ps5-jb-server', offset=0):
         _check_path(directory, allow_volume=True)
         if not filename or '/' in filename or filename in ('.', '..'):
             raise ValueError('文件名不合法')
@@ -239,7 +253,11 @@ class FileProxy:
         _check_path(target, allow_root=False)
         ftp = self._active()
         if ftp is not None:
+            if offset:
+                return ftp.upload(target, chunks, length, overwrite=overwrite, offset=offset)
             return ftp.upload(target, chunks, length, overwrite=overwrite)
+        if offset:
+            raise FileServiceError('PS5 的 HTTP 文件服务不支持续传')
         return self._http_upload(target, chunks, length, overwrite, client)
 
     # -- HTTP backend (tom-ps5-usbnet /fs/*) --

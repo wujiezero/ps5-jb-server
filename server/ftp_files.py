@@ -420,18 +420,39 @@ class FtpFiles:
             if self.job_state.get('state') in ('done', 'failed', 'canceled'):
                 self.job_state['speed'] = 0
 
-    def upload(self, target, chunks, length, overwrite=False):
+    def supports_resume(self):
+        """FEAT lists REST STREAM (zftpd 1.7 does); asked once per server."""
+        key = (self.host, self.port)
+        cached = _RESUME.get(key)
+        if cached is not None:
+            return cached
+        try:
+            conn = self.connect(timeout=5)
+        except self.error:
+            return False
+        try:
+            reply = conn.sendcmd('FEAT')
+            result = any(line.strip().upper().startswith('REST STREAM') for line in reply.splitlines())
+        except (OSError, EOFError, ftplib.Error):
+            result = False
+        finally:
+            _close(conn)
+        _RESUME[key] = result
+        return result
+
+    def upload(self, target, chunks, length, overwrite=False, offset=0):
+        """Write target; with offset > 0 continue an existing partial file (REST + STOR)."""
         conn = self.connect(timeout=300)
         try:
-            if not overwrite:
+            if not overwrite and not offset:
                 # Callers that already know the folder (batch transfers) pass
                 # overwrite=True and skip this per-file parent listing.
                 exists, _, _ = self._stat(conn, target)
                 if exists:
                     raise self.error('同名文件已存在', status=409)
             body = _Body(chunks)
-            conn.storbinary('STOR ' + target, body, blocksize=CHUNK)
-            if body.sent != length:
+            conn.storbinary('STOR ' + target, body, blocksize=CHUNK, rest=int(offset) or None)
+            if body.sent != length - int(offset):
                 raise ValueError('上传中断：浏览器发送的数据不完整')
             return {'ok': True, 'path': target}
         except ftplib.Error as exc:
@@ -443,6 +464,10 @@ class FtpFiles:
 _LIST_LINE = re.compile(r'^([dl\-])[rwxsStT\-]{9}\S*\s+\d+\s+\S+\s+\S+\s+(\d+)\s+'
                         r'(\w{3})\s+(\d{1,2})\s+(\d{1,2}:\d{2}|\d{4})\s+(.+)$')
 _MONTHS = {m: i for i, m in enumerate(('Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec').split(), 1)}
+
+
+# (host, port) -> whether the server resumes uploads; cleared with the process.
+_RESUME = {}
 
 
 def listing(conn, path):
