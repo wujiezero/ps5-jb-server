@@ -213,10 +213,10 @@ class SecretBox:
 
 class NasStore:
     FIELDS = ('name', 'protocol', 'host', 'port', 'share', 'path', 'username',
-              'tls', 'verify_tls', 'workgroup')
+              'tls', 'verify_tls', 'workgroup', 'writable')
     # Written to disk: never the username or password themselves.
     STORED = ('id', 'name', 'protocol', 'host', 'port', 'share', 'path',
-              'tls', 'verify_tls', 'workgroup', 'credentials')
+              'tls', 'verify_tls', 'workgroup', 'writable', 'credentials')
 
     def __init__(self, path, key_path=None):
         self.path = Path(path)
@@ -261,6 +261,7 @@ class NasStore:
 
     def public(self, item):
         result = {key: item.get(key) for key in self.FIELDS if key != 'username'}
+        result['writable'] = item.get('writable') is True
         result['id'] = item['id']
         try:
             username, password = self._credentials(item)
@@ -331,6 +332,8 @@ class NasStore:
             'username': username, 'password': password,
             'tls': bool(raw.get('tls')), 'verify_tls': bool(raw.get('verify_tls', False)),
             'workgroup': workgroup,
+            # PS5 -> NAS backups write here only when this is switched on.
+            'writable': raw.get('writable') is True,
         }
 
     def save(self, raw):
@@ -409,6 +412,61 @@ def client_for(config, timeout=15):
     raise ValueError('不支持的协议')
 
 
+class _ChunkStream:
+    """File-like view of an iterator of byte chunks (request bodies, STOR)."""
+
+    def __init__(self, chunks):
+        self.chunks = iter(chunks)
+        self.buffer = b''
+
+    def read(self, size=-1):
+        size = CHUNK if size is None or size < 0 else size
+        while len(self.buffer) < size:
+            try:
+                self.buffer += next(self.chunks)
+            except StopIteration:
+                break
+        data, self.buffer = self.buffer[:size], self.buffer[size:]
+        return data
+
+
+def _require_writable(config):
+    if config.get('writable') is not True:
+        raise NasError('这个 NAS 连接没有开启「允许写入」', status=403)
+
+
+PART = '.part'
+
+
+def put_file(client, path, chunks, size):
+    """Write to <path>.part, check its size, then move it over path."""
+    path = clean_path(path)
+    part = path + PART
+    client.write(part, chunks, size)
+    try:
+        written = client.stat(part).get('size')
+    except NasError:
+        written = None
+    if written is not None and written != size:
+        _quiet(client.delete, part)
+        raise NasError(f'NAS 上的文件大小不符（{written} / {size} 字节）')
+    try:
+        client.stat(path)
+        exists = True
+    except NasError:
+        exists = False
+    if exists:
+        client.delete(path)
+    client.rename(part, path)
+
+
+def _quiet(action, *args):
+    try:
+        action(*args)
+    except Exception:
+        pass
+
+
 def _entry(path, name, is_dir, size=0, mtime=0):
     return {'name': name, 'path': posixpath.join(path, name) if path != '/' else '/' + name,
             'dir': bool(is_dir), 'size': 0 if is_dir else int(size or 0), 'mtime': int(mtime or 0)}
@@ -421,6 +479,7 @@ class WebDavClient:
                 b'<d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>')
 
     def __init__(self, config, timeout):
+        self.config = config
         scheme = 'https' if config.get('tls') else 'http'
         host = config['host']
         if ':' in host:
@@ -437,6 +496,8 @@ class WebDavClient:
                 context.check_hostname = False
                 context.verify_mode = ssl.CERT_NONE
             handlers.append(urllib.request.HTTPSHandler(context=context))
+        self.plain = urllib.request.build_opener(*handlers)     # no auth handlers: sees the challenge
+        self.scheme = None
         if config.get('username'):
             manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
             manager.add_password(None, self.origin, config['username'], config.get('password', ''))
@@ -542,6 +603,55 @@ class WebDavClient:
             if response.status != 206:
                 return None
             return response.read(size)
+
+    # -- writing (only with "writable") --
+    def mkdir(self, path):
+        _require_writable(self.config)
+        try:
+            self._request('MKCOL', path).close()
+        except NasError as exc:
+            # 405: it already exists (RFC 4918); check it is a folder.
+            if not self.stat(path)['dir']:
+                raise NasError(f'NAS 上已有同名文件，不能建文件夹：{path}') from exc
+
+    def _auth_scheme(self):
+        """'none', 'basic' or 'digest': how this NAS wants requests authenticated."""
+        if self.scheme is None:
+            request = urllib.request.Request(self._url('/'), data=self.PROPFIND, method='PROPFIND',
+                                             headers={'Depth': '0', 'Content-Type': 'application/xml'})
+            try:
+                self.plain.open(request, timeout=self.timeout).close()
+                self.scheme = 'none'
+            except urllib.error.HTTPError as exc:
+                challenge = (exc.headers.get('WWW-Authenticate') or '').lower() if exc.headers else ''
+                exc.close()
+                self.scheme = ('basic' if 'basic' in challenge else 'digest' if 'digest' in challenge
+                               else 'none')
+            except (urllib.error.URLError, OSError) as exc:
+                raise NasError(f'无法连接 WebDAV 服务（{self.origin}）：{getattr(exc, "reason", exc)}') from exc
+        return self.scheme
+
+    def write(self, path, chunks, size):
+        _require_writable(self.config)
+        headers = {'Content-Length': str(int(size)), 'Content-Type': 'application/octet-stream'}
+        # A streamed body cannot be sent twice, so it must not meet a 401 challenge.
+        scheme = self._auth_scheme()
+        if scheme == 'digest':
+            raise NasError('这台 NAS 的 WebDAV 只接受 Digest 认证，流式写入需要 Basic 认证（建议同时开启 HTTPS）')
+        if scheme == 'basic' and self.config.get('username'):
+            token = f'{self.config["username"]}:{self.config.get("password", "")}'.encode()
+            headers['Authorization'] = 'Basic ' + base64.b64encode(token).decode()
+        self._request('PUT', path, _ChunkStream(chunks), headers).close()
+
+    def rename(self, source, target):
+        _require_writable(self.config)
+        self._request('MOVE', source, headers={'Destination': self._url(target), 'Overwrite': 'T'}).close()
+
+    def delete(self, path):
+        _require_writable(self.config)
+        self._request('DELETE', path).close()
+
+    rmdir = delete
 
     def close(self):
         pass
@@ -664,6 +774,61 @@ class SmbClient:
         except Exception as exc:
             raise self._wrap(exc, '读取文件') from exc
 
+    # -- writing (only with "writable") --
+    def mkdir(self, path):
+        _require_writable(self.config)
+        try:
+            self.context.mkdir(self._url(path), 0o755)
+        except Exception as exc:
+            try:
+                if self.stat(path)['dir']:
+                    return
+            except NasError:
+                pass
+            raise self._wrap(exc, '建文件夹') from exc
+
+    def write(self, path, chunks, size):
+        _require_writable(self.config)
+        try:
+            handle = self.context.open(self._url(path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644)
+        except Exception as exc:
+            raise self._wrap(exc, '写入') from exc
+        try:
+            for chunk in chunks:
+                handle.write(chunk)
+        except NasError:
+            raise
+        except Exception as exc:
+            if isinstance(exc, (_Canceled, ValueError)):
+                raise
+            raise self._wrap(exc, '写入') from exc
+        finally:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+    def rename(self, source, target):
+        _require_writable(self.config)
+        try:
+            self.context.rename(self._url(source), self._url(target))
+        except Exception as exc:
+            raise self._wrap(exc, '改名') from exc
+
+    def delete(self, path):
+        _require_writable(self.config)
+        try:
+            self.context.unlink(self._url(path))
+        except Exception as exc:
+            raise self._wrap(exc, '删除') from exc
+
+    def rmdir(self, path):
+        _require_writable(self.config)
+        try:
+            self.context.rmdir(self._url(path))
+        except Exception as exc:
+            raise self._wrap(exc, '删除文件夹') from exc
+
     def close(self):
         self.context = None
 
@@ -779,6 +944,38 @@ class FtpClient:
     def open(self, path):
         return self.open_at(path, 0)
 
+    # -- writing (only with "writable") --
+    def _command(self, what, action, *args):
+        _require_writable(self.config)
+        conn = self._connect()
+        try:
+            return action(conn, *args)
+        except ftplib.Error as exc:
+            raise NasError(f'FTP {what}失败：{str(exc)[:160]}',
+                           status=404 if str(exc).startswith('550') else None) from exc
+
+    def mkdir(self, path):
+        _require_writable(self.config)
+        try:
+            self._command('建文件夹', lambda conn, full: conn.mkd(full), self._full(path))
+        except NasError:
+            if not self.stat(path)['dir']:      # MKD fails for an existing folder too
+                raise
+
+    def write(self, path, chunks, size):
+        def store(conn, full):
+            conn.storbinary('STOR ' + full, _ChunkStream(chunks), blocksize=CHUNK)
+        self._command('写入', store, self._full(path))
+
+    def rename(self, source, target):
+        self._command('改名', lambda conn, a, b: conn.rename(a, b), self._full(source), self._full(target))
+
+    def delete(self, path):
+        self._command('删除', lambda conn, full: conn.delete(full), self._full(path))
+
+    def rmdir(self, path):
+        self._command('删除文件夹', lambda conn, full: conn.rmd(full), self._full(path))
+
     def open_at(self, path, offset):
         # A dedicated connection: the listing connection stays usable.
         reader = FtpClient(self.config, self.timeout)
@@ -868,7 +1065,8 @@ class TransferManager:
     # Progress is written to the state file at most this often; state changes at once.
     PERSIST_EVERY = 5.0
     # Kinds that /api/transfers/retry can queue again (extraction needs a fresh preflight).
-    RETRYABLE = ('nas', 'package')
+    RETRYABLE = ('nas', 'package', 'backup')
+    BACKUP_MODES = ('mirror', 'snapshot')
     # Largest cheat ZIP read from the NAS into memory.
     CHEAT_ZIP_LIMIT = 16 << 20
 
@@ -988,6 +1186,14 @@ class TransferManager:
             raise ValueError('解压任务不支持重试：请重新在 NAS 里选择压缩包，开始前会重新检查分卷与空间')
         if job['state'] not in ('failed', 'canceled'):
             raise ValueError('只能重试失败或已取消的任务')
+        if job['kind'] == 'backup':
+            # Same target folder: a retried snapshot completes the same snapshot.
+            created = self.start_backup(job['nas_id'], job['paths'], job['dest'], job.get('mode') or 'mirror',
+                                        host=job.get('host'), target=job.get('target'))
+            with self.lock:
+                self.jobs[created['id']]['retry_of'] = ident
+            self._persist(force=True)
+            return self.snapshot_one(created['id'])
         if job['kind'] == 'package':
             created = self.start_package(job['nas_id'], job['paths'][0], host=job.get('host'),
                                          title=job.get('title') or '')
@@ -1113,6 +1319,176 @@ class TransferManager:
                       warning=result.get('warning') or '安装完成但主机报告 may_not_launch，游戏可能无法启动', **done)
         else:
             self._set(job, state='done', **done)
+
+    def start_backup(self, nas_id, paths, dest, mode='mirror', host=None, target=None):
+        """Queue a PS5 -> NAS backup of whole folders.
+
+        mirror: always into dest, files already there with the same size are skipped;
+        snapshot: into dest/<host>/<YYYYMMDD-HHMMSS>/ (or the given target on retry).
+        """
+        config = self.store.get(nas_id)
+        _require_writable(config)
+        if mode not in self.BACKUP_MODES:
+            raise ValueError('备份方式只能是镜像或快照')
+        if not isinstance(paths, list) or not 0 < len(paths) <= 20:
+            raise ValueError('请选择 1–20 个要备份的 PS5 文件夹')
+        sources = []
+        for path in paths:
+            if not isinstance(path, str) or not path.startswith('/') or posixpath.normpath(path) != path.rstrip('/'):
+                raise ValueError('PS5 路径必须是规范的绝对路径')
+            path = path.rstrip('/') or '/'
+            if path == '/' or path in sources:
+                raise ValueError('不能备份根目录或重复选择同一个文件夹')
+            sources.append(path)
+        dest = clean_path(dest or '/')
+        host = host or self.host or getattr(self.files, 'host', '') or 'ps5'
+        if target is None:
+            target = dest
+            if mode == 'snapshot':
+                stamp = time.strftime('%Y%m%d-%H%M%S')
+                target = posixpath.join(dest, re.sub(r'[^A-Za-z0-9_.-]', '_', str(host)), stamp)
+        target = clean_path(target)
+        ident = uuid.uuid4().hex[:10]
+        label = sources[0].rsplit('/', 1)[-1] or sources[0]
+        job = {'id': ident, 'kind': 'backup', 'source': f'PS5 {host}', 'nas_id': nas_id,
+               'protocol': config['protocol'], 'nas_name': config['name'],
+               'name': label + (f' 等 {len(sources)} 项' if len(sources) > 1 else ''),
+               'paths': sources, 'dest': dest, 'target': target, 'mode': mode, 'state': 'queued',
+               'files_total': 0, 'files_done': 0, 'files_skipped': 0, 'files_failed': 0,
+               'bytes_total': 0, 'bytes_done': 0, 'current': '', 'current_size': 0, 'current_done': 0,
+               'created': time.time(), 'started': None, 'finished': None, 'elapsed': 0, 'speed': 0,
+               'eta': None, 'percent': 0, 'error': '', 'errors': [], 'host': host, 'retries': 0, 'resumed': 0}
+        self._enqueue(job)
+        return self.snapshot_one(ident)
+
+    def _ps5_tree(self, root, cancel):
+        """(folders, files) below one PS5 folder; files are (path, relative, size)."""
+        folders, files, stack = [''], [], [(root, '')]
+        while stack:
+            if cancel.is_set():
+                raise _Canceled()
+            current, relative = stack.pop()
+            for entry in self.files.list(current).get('entries', []):
+                name = entry.get('name') or ''
+                if not name or name in ('.', '..') or '/' in name:
+                    continue
+                child = posixpath.join(relative, name)
+                if entry.get('dir'):
+                    folders.append(child)
+                    stack.append((entry.get('path') or posixpath.join(current, name), child))
+                else:
+                    files.append((entry.get('path') or posixpath.join(current, name), child,
+                                  int(entry.get('size') or 0)))
+        return folders, files
+
+    def _execute_backup(self, job, cancel):
+        config = self.store.get(job['nas_id'])
+        _require_writable(config)
+        client = self.client_factory(config)
+        self._set(job, state='scanning', started=time.time())
+        try:
+            plan = []           # (source root name, folders, files)
+            for source in job['paths']:
+                folders, files = self._ps5_tree(source, cancel)
+                plan.append((source.rsplit('/', 1)[-1] or 'root', folders, files))
+            every = [item for _, _, files in plan for item in files]
+            self._set(job, state='running', files_total=len(every), bytes_total=sum(item[2] for item in every))
+            self._nas_mkdirs(client, job['target'])
+            samples = collections.deque(maxlen=80)
+            for top, folders, files in plan:
+                base = posixpath.join(job['target'], top)
+                existing = {}
+                for folder in folders:
+                    if cancel.is_set():
+                        raise _Canceled()
+                    folder_path = posixpath.join(base, folder) if folder else base
+                    client.mkdir(folder_path)
+                    try:
+                        existing[folder_path] = {entry['name']: entry for entry in client.list(folder_path)}
+                    except NasError:
+                        existing[folder_path] = {}
+                for source, relative, size in files:
+                    if cancel.is_set():
+                        raise _Canceled()
+                    target = posixpath.join(base, relative)
+                    known = existing.get(posixpath.dirname(target), {}).get(posixpath.basename(target))
+                    if known and not known.get('dir') and int(known.get('size') or 0) == size:
+                        self._set(job, files_skipped=job['files_skipped'] + 1, bytes_total=job['bytes_total'] - size)
+                        continue
+                    self._backup_file(job, client, source, target, size, cancel, samples)
+            if job['files_failed']:
+                # An incomplete backup is a failure: 「重试」 finishes it, unchanged files are skipped.
+                raise NasError(f'{job["files_failed"]} 个文件没有备份成功，可以点「重试」补齐')
+            self._set(job, state='done', percent=100, current='', current_done=0, current_size=0)
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _nas_mkdirs(client, path):
+        current = ''
+        for part in [item for item in path.split('/') if item]:
+            current += '/' + part
+            client.mkdir(current)
+
+    def _backup_file(self, job, client, source, target, size, cancel, samples):
+        """Stream one PS5 file into <target>.part on the NAS, retrying connection errors."""
+        self._set(job, current=source, current_size=size, current_done=0)
+        failures = 0
+        while True:
+            sent = [0]
+            response = None
+            try:
+                response = self.files.stream(source)
+
+                def chunks():
+                    while True:
+                        if cancel.is_set():
+                            raise _Canceled()
+                        data = response.read(CHUNK)
+                        if not data:
+                            if sent[0] < size:
+                                raise NasError(f'PS5 数据提前结束（{sent[0]} / {size} 字节）')
+                            return
+                        sent[0] += len(data)
+                        self._progress(job, len(data), sent[0], samples)
+                        yield data
+
+                put_file(client, target, chunks(), size)
+                with self.lock:
+                    job['files_done'] += 1
+                return
+            except _Canceled:
+                _quiet(client.delete, target + PART)
+                raise
+            except (FileServiceError, ValueError, OSError, NasError) as exc:
+                with self.lock:
+                    job['bytes_done'] -= sent[0]
+                _quiet(client.delete, target + PART)
+                if self._retryable(exc) and failures < self.retries:
+                    failures += 1
+                    with self.lock:
+                        job['retries'] = job.get('retries', 0) + 1
+                    logging.info('backup %s: %s failed (%s), retry %d/%d', job['id'], source,
+                                 str(exc)[:160], failures, self.retries)
+                    if cancel.wait(self.RETRY_DELAYS[min(failures, len(self.RETRY_DELAYS)) - 1]):
+                        raise _Canceled() from None
+                    continue
+                with self.lock:
+                    job['bytes_total'] -= size
+                    job['files_failed'] += 1
+                    if len(job['errors']) < 20:
+                        job['errors'].append(f'{source}：{str(exc)[:160]}')
+                    job['error'] = f'{job["files_failed"]} 个文件失败，最近：{source}'
+                return
+            finally:
+                if response is not None:
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
 
     def engines(self):
         if self._engines is not None:
@@ -1294,6 +1670,8 @@ class TransferManager:
                     self._execute_extract(job, self.cancels[ident])
                 elif job['kind'] == 'package':
                     self._execute_package(job, self.cancels[ident])
+                elif job['kind'] == 'backup':
+                    self._execute_backup(job, self.cancels[ident])
                 else:
                     self._execute(job, self.cancels[ident])
             except _Canceled:
@@ -1833,7 +2211,27 @@ def check_connection(config):
     client = client_for(config, timeout=10)
     try:
         entries = client.list('/')
+        result = {'ok': True, 'entries': len(entries)}
+        if config.get('writable') is True:
+            result['write'] = _write_check(client)
     finally:
         client.close()
-    return {'ok': True, 'entries': len(entries)}
+    return result
+
+
+def _write_check(client):
+    """Create a folder, write and remove a small file in it, remove the folder."""
+    folder = f'/.ps5jb-write-test-{secrets.token_hex(4)}'
+    data = b'ps5-jb-server write test\n'
+    try:
+        client.mkdir(folder)
+        put_file(client, folder + '/test.txt', [data], len(data))
+        client.delete(folder + '/test.txt')
+        client.rmdir(folder)
+    except NasError as exc:
+        _quiet(client.delete, folder + '/test.txt' + PART)
+        _quiet(client.delete, folder + '/test.txt')
+        _quiet(client.rmdir, folder)
+        raise NasError(f'可以读取，但写入测试失败：{exc}', status=exc.status) from exc
+    return 'ok'
 

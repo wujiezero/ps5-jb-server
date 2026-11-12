@@ -195,6 +195,7 @@ PS5 的待机即休息模式（黄灯）：插件留在内存里，唤醒后不�
 | `[ps5]` | `ftp_port` / `space_port` | FTP 后备端口（默认 2120，0 关闭）/ 读取容量的 web-file-mgr 端口（默认 8888，0 关闭） |
 | `[ps5]` | `pkg_port` | NAS 上的 PKG 安装时，本机向 PS5 提供文件的端口（默认 8090，0 关闭 PKG 安装）；只在任务期间对目标 PS5 开放 |
 | `[ps5]` | `game_dirs` | 游戏库扫描的文件夹（每个存储卷下，只看一层），默认 `["games", "homebrew", "etaHEN/games"]` |
+| `[ps5]` | `backup_roots` | PS5 → NAS 备份时额外可选的只读来源（如截图、存档目录），默认空；只能列目录和读取，任何写操作都不认 |
 | `[ps5]` | `control` / `file_manager` | 关掉可禁用对应页面 |
 | `[limits]` | `max_upload` | 插件仓库上传上限，默认 64 MiB |
 | `[limits]` | `max_file_upload` | PS5 文件上传上限（流式转发不落盘），默认 0 = 不限制 |

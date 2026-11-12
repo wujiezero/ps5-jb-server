@@ -431,11 +431,11 @@ class Notifier:
     def job_finished(self, job):
         """TransferManager listener: called once per job when it ends."""
         state, kind = job.get('state'), job.get('kind')
-        if state == 'canceled' or kind not in ('nas', 'extract', 'package'):
+        if state == 'canceled' or kind not in ('nas', 'extract', 'package', 'backup'):
             return
-        prefix = {'nas': 'transfer', 'extract': 'extract', 'package': 'package'}[kind]
+        prefix = {'nas': 'transfer', 'extract': 'extract', 'package': 'package', 'backup': 'backup'}[kind]
         ok = state in ('done', 'done_with_warnings')
-        label = {'nas': 'NAS 传输', 'extract': '解压安装', 'package': 'PKG 安装'}[kind] + ('完成' if ok else '失败')
+        label = {'nas': 'NAS 传输', 'extract': '解压安装', 'package': 'PKG 安装', 'backup': 'PS5 备份'}[kind] + ('完成' if ok else '失败')
         if state == 'done_with_warnings':
             label += '（有提醒）'
         name = str(job.get('name') or job.get('source') or '')

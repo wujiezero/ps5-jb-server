@@ -69,7 +69,7 @@ function fixture(extra = {}) {
       nas, nasArchiveSelection, extractTask, packageTask, filesTransferTasks, filesTransferCard, normalizePs5,
       setNasJobs(value) { nasJobs = value; },
       renderRestoreResult, backupFilename, renderSelfcheck, renderNotify, notifyState, normalizeNotify,
-      library, normalizeLibrary, libraryCard, libraryVisible, renderLibrary,
+      library, normalizeLibrary, libraryCard, libraryVisible, renderLibrary, backupSources, backupTask,
       actHistory, renderStats, renderHistory, setActivityMode,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
@@ -803,6 +803,25 @@ test('game library cards: cover only for title IDs, register only for ID-named f
   ui.node('library-search').value = '';
   ui.node('library-volume').value = '/mnt/ext0';
   assert.deepEqual(ui.libraryVisible().map((game) => game.name), ['Big']);
+});
+
+test('backup sources add read-only presets once; backup cards show target, skips and retry', () => {
+  const ui = fixture();
+  ui.nas.backupRoots = ['/user/av_contents', '/data/savedata'];
+  const sources = ui.backupSources({ path: '/data/savedata', name: 'savedata', dir: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(sources.map((item) => [item.path, item.checked]))), [['/data/savedata', true], ['/user/av_contents', false]]);
+  assert.match(sources[1].label, /只读/);
+  const base = { id: 'b', kind: 'backup', name: 'savedata', source: 'PS5 192.0.2.5', nas_name: '家里 NAS',
+    target: '/ps5/192.0.2.5/20261112-101010', dest: '/ps5', mode: 'snapshot', bytes_done: 1, bytes_total: 2,
+    files_done: 1, files_total: 2, files_skipped: 0, files_failed: 0, errors: [] };
+  const running = ui.backupTask({ ...base, state: 'running' });
+  assert.equal(running.kind, 'backup');
+  assert.match(running.sub, /家里 NAS \/ps5\/192\.0\.2\.5\/20261112-101010（快照）/);
+  assert.equal(running.retry, null);
+  assert.equal(typeof ui.backupTask({ ...base, state: 'failed', error: '2 个文件没有备份成功' }).retry, 'function');
+  assert.match(ui.backupTask({ ...base, state: 'done', files_skipped: 3 }).line, /3 个文件.*跳过/);
+  ui.setNasJobs([{ ...base, state: 'queued' }]);
+  assert.equal(ui.filesTransferTasks()[0].kind, 'backup');
 });
 
 test('restore results are listed as text with their state; backup names are sanitized', () => {

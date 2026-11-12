@@ -45,6 +45,26 @@ def clean_dirs(value):
     return result[:16]
 
 
+def clean_roots(value):
+    """[ps5] backup_roots: absolute console folders, readable (never writable) for backups."""
+    if isinstance(value, str):
+        value = value.split(',')
+    if not isinstance(value, (list, tuple)):
+        return []
+    result = []
+    for item in value:
+        item = str(item).strip()
+        if len(item) > 1 and item.endswith('/'):
+            item = item.rstrip('/')
+        parts = item.split('/')
+        if (not item.startswith('/') or item == '/' or '\x00' in item or len(item) > 512
+                or any(part in ('', '.', '..') for part in parts[1:])):
+            continue
+        if item not in result:
+            result.append(item)
+    return result[:16]
+
+
 @dataclass
 class Settings:
     host_ip: str
@@ -65,6 +85,8 @@ class Settings:
     pkg_port: int = 8090                # PKG install: NAS file served to the console; 0 = off
     # Folders under each volume that the game library lists (one level deep).
     game_dirs: tuple = DEFAULT_GAME_DIRS
+    # Extra read-only console folders for PS5 -> NAS backups; empty by default (paths unconfirmed).
+    backup_roots: tuple = ()
     engine_url: str = 'http://127.0.0.1:19113'
     ps5_control: bool = True
     file_manager: bool = True
@@ -134,6 +156,7 @@ class Settings:
             space_port=int(pick('ps5', 'space_port', 'PS5JB_SPACE_PORT', 8888)),
             pkg_port=max(0, min(65535, int(pick('ps5', 'pkg_port', 'PS5JB_PKG_PORT', 8090)))),
             game_dirs=tuple(clean_dirs(pick('ps5', 'game_dirs', 'PS5JB_GAME_DIRS', list(DEFAULT_GAME_DIRS)))),
+            backup_roots=tuple(clean_roots(pick('ps5', 'backup_roots', 'PS5JB_BACKUP_ROOTS', []))),
             engine_url=str(pick('ps5', 'engine_url', 'PS5JB_ENGINE_URL', 'http://127.0.0.1:19113')),
             ps5_control=flag('ps5', 'control', 'PS5JB_PS5_CONTROL', True),
             file_manager=flag('ps5', 'file_manager', 'PS5JB_FILE_MANAGER', True),

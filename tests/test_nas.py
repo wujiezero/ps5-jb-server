@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
 import ftp_files  # noqa: E402
 from api_console import ConsoleAPI  # noqa: E402
 from files import FileServiceError  # noqa: E402
-from nas import NasError, NasStore, TransferManager, WebDavClient, clean_path  # noqa: E402
+from nas import NasError, NasStore, TransferManager, WebDavClient, clean_path, put_file  # noqa: E402
+import nas  # noqa: E402
 from settings import Settings  # noqa: E402
 
 TREE = {'/': None, '/movies': None, '/movies/a b.mkv': b'A' * 3000, '/movies/sub': None,
@@ -912,6 +913,380 @@ class PackageJobTests(unittest.TestCase):
         manager = self.manager(None)
         with self.assertRaisesRegex(ValueError, 'ZIP'):
             manager.start_extract(self.ident, '/games/a.rar', '/data', cheats=['/games/a.txt'])
+
+
+class WriteDav(BaseHTTPRequestHandler):
+    """In-memory WebDAV with writes (server.tree: path -> bytes or None for folders)."""
+
+    def log_message(self, *args):
+        pass
+
+    def _path(self, raw=None):
+        path = urllib.parse.unquote(urllib.parse.urlsplit(raw or self.path).path)
+        return (path[4:] or '/').rstrip('/') or '/'
+
+    def _reply(self, code, body=b''):
+        self.send_response(code)
+        if code == 401:
+            self.send_header('WWW-Authenticate', self.server.challenge)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _auth(self):
+        expected = 'Basic ' + base64.b64encode(b'user:secret').decode()
+        self.server.log.append((self.command, self._path(), self.headers.get('Authorization') == expected))
+        if self.headers.get('Authorization') != expected:
+            self.close_connection = True
+            self._reply(401)
+            return False
+        return True
+
+    def do_PROPFIND(self):
+        self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        if not self._auth():
+            return
+        tree, path = self.server.tree, self._path()
+        if path not in tree:
+            return self._reply(404)
+        names = [path]
+        if self.headers.get('Depth') == '1' and tree[path] is None:
+            prefix = path.rstrip('/') + '/'
+            names += [k for k in tree if k.startswith(prefix) and '/' not in k[len(prefix):] and k != path]
+        parts = []
+        for name in names:
+            kind = '<d:resourcetype><d:collection/></d:resourcetype>' if tree[name] is None else '<d:resourcetype/>'
+            size = '' if tree[name] is None else f'<d:getcontentlength>{len(tree[name])}</d:getcontentlength>'
+            parts.append(f'<d:response><d:href>{urllib.parse.quote("/dav" + name)}</d:href><d:propstat><d:prop>'
+                         f'{kind}{size}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>')
+        self._reply(207, ('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">' + ''.join(parts)
+                          + '</d:multistatus>').encode())
+
+    def do_MKCOL(self):
+        if not self._auth():
+            return
+        path = self._path()
+        if path in self.server.tree:
+            return self._reply(405)
+        self.server.tree[path] = None
+        self._reply(201)
+
+    def do_PUT(self):
+        if not self._auth():
+            return
+        self.server.tree[self._path()] = self.rfile.read(int(self.headers['Content-Length']))
+        self._reply(201)
+
+    def do_MOVE(self):
+        if not self._auth():
+            return
+        tree, source = self.server.tree, self._path()
+        target = self._path(self.headers['Destination'])
+        if source not in tree:
+            return self._reply(404)
+        tree[target] = tree.pop(source)
+        self._reply(201)
+
+    def do_DELETE(self):
+        if not self._auth():
+            return
+        if self.server.tree.pop(self._path(), 'missing') == 'missing':
+            return self._reply(404)
+        self._reply(204)
+
+
+class WebDavWriteTests(unittest.TestCase):
+    def setUp(self):
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), WriteDav)
+        self.server.tree, self.server.log, self.server.challenge = {'/': None}, [], 'Basic realm="nas"'
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.config = {'protocol': 'webdav', 'host': '127.0.0.1', 'port': self.server.server_address[1],
+                       'path': '/dav', 'username': 'user', 'password': 'secret', 'writable': True}
+
+    def test_mkdir_put_file_and_overwrite(self):
+        client = WebDavClient(self.config, 5)
+        client.mkdir('/backup')
+        client.mkdir('/backup')                              # already there: fine
+        put_file(client, '/backup/a.bin', iter([b'ab', b'cd']), 4)
+        self.assertEqual(self.server.tree['/backup/a.bin'], b'abcd')
+        self.assertNotIn('/backup/a.bin.part', self.server.tree)
+        put_file(client, '/backup/a.bin', iter([b'xyz']), 3)
+        self.assertEqual(self.server.tree['/backup/a.bin'], b'xyz')
+        puts = [entry for entry in self.server.log if entry[0] == 'PUT']
+        self.assertTrue(all(authorized for _, _, authorized in puts), 'PUT must carry credentials up front')
+
+    def test_digest_only_servers_are_refused_before_streaming(self):
+        self.server.challenge = 'Digest realm="nas", nonce="x"'
+        client = WebDavClient(self.config, 5)
+        with self.assertRaisesRegex(NasError, 'Digest'):
+            client.write('/a.bin', iter([b'x']), 1)
+
+    def test_read_only_connection_refuses_every_write(self):
+        client = WebDavClient({**self.config, 'writable': False}, 5)
+        for action in (lambda: client.mkdir('/x'), lambda: client.write('/x', iter([b'']), 0),
+                       lambda: client.rename('/a', '/b'), lambda: client.delete('/a'), lambda: client.rmdir('/a')):
+            with self.assertRaisesRegex(NasError, '允许写入'):
+                action()
+        self.assertEqual([e for e in self.server.log if e[0] != 'PROPFIND'], [])
+
+    def test_connection_check_does_a_write_round_trip(self):
+        result = nas.check_connection(self.config)
+        self.assertEqual(result['write'], 'ok')
+        self.assertEqual(set(self.server.tree), {'/'}, 'test folder removed')
+        self.assertNotIn('write', nas.check_connection({**self.config, 'writable': False}))
+
+
+class FakeSmbModule:
+    """Enough of pysmbc for the write path: files keyed by URL."""
+
+    def __init__(self):
+        self.files, self.dirs, self.calls = {}, {'smb://nas/share'}, []
+        module = self
+
+        class Handle:
+            def __init__(self, url):
+                self.url = url
+                module.files[url] = b''
+
+            def write(self, data):
+                module.files[self.url] += data
+
+            def close(self):
+                pass
+
+        class Context:
+            def __init__(self, auth_fn=None):
+                pass
+
+            def open(self, url, flags, mode=0):
+                module.calls.append(('open', url, flags))
+                return Handle(url)
+
+            def mkdir(self, url, mode):
+                module.calls.append(('mkdir', url))
+                if url in module.dirs:
+                    raise OSError(17, 'exists')
+                module.dirs.add(url)
+
+            def stat(self, url):
+                if url in module.dirs:
+                    return (stat.S_IFDIR, 0, 0, 0, 0, 0, 0, 0, 0)
+                if url in module.files:
+                    return (stat.S_IFREG, 0, 0, 0, 0, 0, len(module.files[url]), 0, 0)
+                raise OSError(2, 'No such file')
+
+            def rename(self, source, target):
+                module.calls.append(('rename', source, target))
+                module.files[target] = module.files.pop(source)
+
+            def unlink(self, url):
+                module.calls.append(('unlink', url))
+                module.files.pop(url)
+
+            def rmdir(self, url):
+                module.dirs.discard(url)
+        self.Context = Context
+
+
+class SmbWriteTests(unittest.TestCase):
+    def test_write_rename_and_existing_folder(self):
+        fake = FakeSmbModule()
+        with mock.patch.dict(sys.modules, {'smbc': fake}):
+            client = nas.SmbClient({'protocol': 'smb', 'host': 'nas', 'share': 'share', 'path': '/',
+                                    'writable': True}, 5)
+            client.mkdir('/b')
+            client.mkdir('/b')
+            put_file(client, '/b/a b.bin', iter([b'12', b'34']), 4)
+            self.assertEqual(fake.files['smb://nas/share/b/a%20b.bin'], b'1234')
+            self.assertIn(('rename', 'smb://nas/share/b/a%20b.bin.part', 'smb://nas/share/b/a%20b.bin'), fake.calls)
+            read_only = nas.SmbClient({'protocol': 'smb', 'host': 'nas', 'share': 'share', 'path': '/'}, 5)
+            with self.assertRaisesRegex(NasError, '允许写入'):
+                read_only.write('/x', iter([b'']), 0)
+
+    def test_short_part_is_removed_and_reported(self):
+        fake = FakeSmbModule()
+        with mock.patch.dict(sys.modules, {'smbc': fake}):
+            client = nas.SmbClient({'protocol': 'smb', 'host': 'nas', 'share': 'share', 'writable': True}, 5)
+            with self.assertRaisesRegex(NasError, '大小不符'):
+                put_file(client, '/a.bin', iter([b'12']), 4)
+        self.assertEqual(fake.files, {})
+
+
+class FtpWriteTests(unittest.TestCase):
+    def test_commands(self):
+        client = nas.FtpClient({'protocol': 'ftp', 'host': '192.0.2.9', 'path': '/root', 'writable': True}, 5)
+        conn = mock.Mock()
+        stored = {}
+
+        def store(command, body, blocksize):
+            stored[command] = b''.join(iter(lambda: body.read(blocksize), b''))
+        conn.storbinary.side_effect = store
+        with mock.patch.object(client, '_connect', return_value=conn):
+            client.mkdir('/b')
+            client.write('/b/a.bin', iter([b'xy', b'z']), 3)
+            client.rename('/b/a.bin.part', '/b/a.bin')
+            client.delete('/b/old')
+            client.rmdir('/b/empty')
+        conn.mkd.assert_called_once_with('/root/b')
+        self.assertEqual(stored, {'STOR /root/b/a.bin': b'xyz'})
+        conn.rename.assert_called_once_with('/root/b/a.bin.part', '/root/b/a.bin')
+        conn.delete.assert_called_once_with('/root/b/old')
+        conn.rmd.assert_called_once_with('/root/b/empty')
+
+    def test_read_only(self):
+        client = nas.FtpClient({'protocol': 'ftp', 'host': '192.0.2.9'}, 5)
+        with mock.patch.object(client, '_connect') as connect, self.assertRaisesRegex(NasError, '允许写入'):
+            client.mkdir('/b')
+        connect.assert_not_called()
+
+
+class MemoryNas(FakeClient):
+    """Writable in-memory NAS client."""
+
+    def __init__(self, tree, fail_writes=0):
+        super().__init__(tree)
+        self.fail_writes = fail_writes
+        self.writes = []
+
+    def mkdir(self, path):
+        if self.tree.get(path, None) is not None:
+            raise NasError('file in the way')
+        self.tree[path] = None
+
+    def write(self, path, chunks, size):
+        data = b''.join(chunks)
+        self.writes.append(path)
+        if self.fail_writes:
+            self.fail_writes -= 1
+            self.tree[path] = data[:1]
+            raise NasError('connection reset')
+        self.tree[path] = data
+
+    def rename(self, source, target):
+        self.tree[target] = self.tree.pop(source)
+
+    def delete(self, path):
+        if path not in self.tree:
+            raise NasError('missing', status=404)
+        del self.tree[path]
+
+    rmdir = delete
+
+
+class TreePs5:
+    """FileProxy stand-in with real folder listings and streams."""
+
+    host = '192.0.2.5'
+
+    def __init__(self, tree, slow=False):
+        self.tree, self.slow = tree, slow
+
+    def list(self, path):
+        if self.tree.get(path, b'') is not None:
+            raise FileServiceError('not a folder', status=404)
+        prefix = path.rstrip('/') + '/'
+        return {'path': path, 'entries': [
+            {'name': key[len(prefix):], 'path': key, 'dir': value is None, 'size': 0 if value is None else len(value)}
+            for key, value in self.tree.items() if key.startswith(prefix) and '/' not in key[len(prefix):]]}
+
+    def stream(self, path):
+        import io
+        data, slow = self.tree[path], self.slow
+
+        class Body(io.BytesIO):
+            def read(self, size=-1):
+                if slow:
+                    time.sleep(0.05)
+                return super().read(min(size, 2) if slow else size)
+        return Body(data)
+
+
+PS5_TREE = {'/data/savedata': None, '/data/savedata/a.bin': b'A' * 10, '/data/savedata/sub': None,
+            '/data/savedata/sub/b.bin': b'BB', '/data/savedata/empty': None}
+
+
+class BackupTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = NasStore(Path(self.tmp.name) / 'nas.json')
+        self.ident = self.store.save({'protocol': 'ftp', 'host': '192.0.2.9', 'writable': True})['id']
+        self.read_only = self.store.save({'protocol': 'ftp', 'host': '192.0.2.9'})['id']
+        self.remote = MemoryNas({'/': None})
+        self.ps5 = TreePs5(dict(PS5_TREE))
+
+    def manager(self, **extra):
+        manager = TransferManager(self.store, self.ps5, client_factory=lambda config: self.remote,
+                                  host='192.0.2.5', **extra)
+        manager.RETRY_DELAYS = (0, 0, 0)
+        return manager
+
+    def test_mirror_copies_folders_and_skips_unchanged_files_next_time(self):
+        manager = self.manager()
+        job = wait(manager, manager.start_backup(self.ident, ['/data/savedata'], '/ps5')['id'])
+        self.assertEqual((job['kind'], job['state'], job['files_done'], job['files_total']), ('backup', 'done', 2, 2))
+        self.assertEqual(self.remote.tree['/ps5/savedata/a.bin'], b'A' * 10)
+        self.assertEqual(self.remote.tree['/ps5/savedata/sub/b.bin'], b'BB')
+        self.assertIsNone(self.remote.tree['/ps5/savedata/empty'])
+        self.assertFalse([path for path in self.remote.tree if path.endswith('.part')])
+        self.ps5.tree['/data/savedata/sub/b.bin'] = b'BBB'
+        self.remote.writes.clear()
+        again = wait(manager, manager.start_backup(self.ident, ['/data/savedata'], '/ps5')['id'])
+        self.assertEqual((again['files_skipped'], again['files_done']), (1, 1))
+        self.assertEqual(self.remote.writes, ['/ps5/savedata/sub/b.bin.part'])
+        self.assertEqual(self.remote.tree['/ps5/savedata/sub/b.bin'], b'BBB')
+
+    def test_snapshot_goes_into_host_and_time_folder(self):
+        manager = self.manager()
+        job = wait(manager, manager.start_backup(self.ident, ['/data/savedata'], '/ps5', 'snapshot')['id'])
+        self.assertRegex(job['target'], r'^/ps5/192\.0\.2\.5/\d{8}-\d{6}$')
+        self.assertIn(job['target'] + '/savedata/a.bin', self.remote.tree)
+
+    def test_network_errors_are_retried_then_recorded(self):
+        self.remote.fail_writes = 1
+        manager = self.manager()
+        job = wait(manager, manager.start_backup(self.ident, ['/data/savedata'], '/ps5')['id'])
+        self.assertEqual((job['state'], job['retries'], job['files_failed']), ('done', 1, 0))
+        self.remote.fail_writes = 99
+        manager.retries = 1
+        job = wait(manager, manager.start_backup(self.ident, ['/data/savedata'], '/other')['id'])
+        self.assertEqual((job['state'], job['files_failed']), ('failed', 2))
+        self.assertIn('重试', job['error'])
+        self.assertTrue(job['errors'])
+        self.assertFalse([path for path in self.remote.tree if path.endswith('.part')])
+        self.remote.fail_writes = 0
+        again = wait(manager, manager.retry(job['id'])['id'])
+        self.assertEqual((again['state'], again['target'], again['retry_of']), ('done', '/other', job['id']))
+
+    def test_cancel_leaves_no_partial_file(self):
+        self.ps5.slow = True
+        manager = self.manager()
+        ident = manager.start_backup(self.ident, ['/data/savedata'], '/ps5')['id']
+        deadline = time.time() + 5
+        while manager.snapshot_one(ident)['bytes_done'] == 0 and time.time() < deadline:
+            time.sleep(0.01)
+        manager.cancel(ident)
+        self.assertEqual(wait(manager, ident)['state'], 'canceled')
+        self.assertFalse([path for path in self.remote.tree if path.endswith('.part')])
+
+    def test_requests_are_checked(self):
+        manager = self.manager()
+        with self.assertRaisesRegex(NasError, '允许写入'):
+            manager.start_backup(self.read_only, ['/data/savedata'], '/ps5')
+        for paths in ([], ['/'], ['data'], ['/data/../etc'], ['/a', '/a'], ['/a'] * 21):
+            with self.subTest(paths=paths), self.assertRaises(ValueError):
+                manager.start_backup(self.ident, paths, '/ps5')
+        with self.assertRaises(ValueError):
+            manager.start_backup(self.ident, ['/data/savedata'], '/ps5', 'zip')
+
+    def test_store_keeps_the_writable_switch(self):
+        listed = {item['id']: item['writable'] for item in self.store.list_public()}
+        self.assertEqual(listed, {self.ident: True, self.read_only: False})
+        reopened = NasStore(Path(self.tmp.name) / 'nas.json')
+        self.assertTrue(reopened.get(self.ident)['writable'])
+        self.assertFalse(reopened.get(self.read_only)['writable'])
 
 
 class FtpHelpersTests(unittest.TestCase):

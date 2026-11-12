@@ -58,8 +58,11 @@ class FileProxy:
     UPLOAD_TIMEOUT = 300
 
     def __init__(self, subnet, host='', port=FILE_PORT, timeout=10, ftp_port=FTP_PORT,
-                 space_port=8888):
+                 space_port=8888, read_roots=()):
         self.subnet = ipaddress.ip_network(subnet, strict=False)
+        # [ps5] backup_roots: extra folders that list() and stream() may read (backups
+        # of saves / captures). No write operation ever accepts them.
+        self.read_roots = tuple(read_roots or ())
         self.host = host
         self.port = port
         self.ftp_port = ftp_port
@@ -184,7 +187,7 @@ class FileProxy:
         return self._call('volumes')
 
     def list(self, path):
-        _check_path(path, allow_volume=True)
+        _check_path(path, allow_volume=True, read_roots=self.read_roots)
         return self._call('list', path)
 
     def folder_size(self, path):
@@ -198,7 +201,7 @@ class FileProxy:
         return self._call('transfers')
 
     def stream(self, path):
-        _check_path(path, allow_volume=True)
+        _check_path(path, allow_volume=True, read_roots=self.read_roots)
         return self._call('stream', path)
 
     def stream_folder(self, path):
@@ -330,7 +333,12 @@ def _error_text(detail):
     return detail
 
 
-def _check_path(path, allow_volume=True, allow_root=True):
+def _under(path, roots):
+    return any(path == root or path.startswith(root.rstrip('/') + '/') for root in roots)
+
+
+def _check_path(path, allow_volume=True, allow_root=True, read_roots=()):
+    """Validate a console path; read_roots (list / stream only) widen the whitelist read-only."""
     if not isinstance(path, str) or not path.startswith('/'):
         raise ValueError('路径必须以 / 开头')
     if any(part in ('..', '.') for part in path.split('/')):
@@ -341,6 +349,8 @@ def _check_path(path, allow_volume=True, allow_root=True):
         raise ValueError('路径包含非法字符')
     match = VOLUME_PATTERN.match(path)
     if allow_volume and not match:
+        if read_roots and _under(path, read_roots):
+            return path
         raise ValueError('只允许访问 /data、/mnt/ext*、/mnt/usb*')
     if not allow_root and match and path.rstrip('/') == match.group(0).rstrip('/'):
         raise ValueError('不能修改存储卷根目录本身')

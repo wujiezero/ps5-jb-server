@@ -217,11 +217,20 @@ class DeliveryTests(unittest.TestCase):
         self.notifier.job_finished({**base, 'id': 'p1', 'state': 'done_with_warnings', 'warning': '游戏可能无法启动'})
         self.notifier.job_finished({**base, 'id': 'p2', 'state': 'failed', 'error': '引擎正忙'})
         self.notifier.job_finished({**base, 'id': 'p3', 'kind': 'nas', 'state': 'done'})
+        self.notifier.job_finished({**base, 'id': 'p4', 'kind': 'backup', 'state': 'failed', 'error': 'x'})
         self.assertTrue(wait_for(lambda: len(self.opener.requests) == 2))
         bodies = sorted((r['body']['event'], r['body']['title'], r['body']['body']) for r in self.opener.requests)
         self.assertEqual(bodies[0], ('package.failed', 'PKG 安装失败：CUSA12345.pkg', '引擎正忙'))
         self.assertEqual(bodies[1][1], 'PKG 安装完成（有提醒）：CUSA12345.pkg')
         self.assertIn('可能无法启动', bodies[1][2])
+
+    def test_backup_jobs_announce_backup_events(self):
+        self.store.save({'type': 'webhook', 'url': 'http://192.0.2.7/a', 'events': ['backup.failed']})
+        self.notifier.job_finished({'kind': 'backup', 'id': 'b1', 'name': 'savedata', 'state': 'failed',
+                                    'error': '2 个文件没有备份成功'})
+        self.assertTrue(wait_for(lambda: len(self.opener.requests) == 1))
+        body = self.opener.requests[0]['body']
+        self.assertEqual((body['event'], body['title']), ('backup.failed', 'PS5 备份失败：savedata'))
 
     def test_update_result_is_announced_once_and_old_results_stay_quiet(self):
         self.store.save({'type': 'webhook', 'url': 'http://192.0.2.7/a', 'events': ['update.finished', 'update.failed']})

@@ -112,7 +112,7 @@
   let filesOverwritePending = null;
   let filesPollTimer = null;
   let nasJobs = [];
-  const nas = { loaded: false, connections: [], protocols: { webdav: true, smb: true, ftp: true }, activeId: '', path: '/', entries: [], selected: new Set(), loading: false, error: '', editing: null, busy: false, seq: 0 };
+  const nas = { loaded: false, backupRoots: [], connections: [], protocols: { webdav: true, smb: true, ftp: true }, activeId: '', path: '/', entries: [], selected: new Set(), loading: false, error: '', editing: null, busy: false, seq: 0 };
   let filesPollBusy = false;
   let filesDragDepth = 0;
   const files = {
@@ -5219,16 +5219,19 @@
       rename: `重命名 ${entry.name}`,
       copy: `复制 ${entry.name} 到…`,
       move: `移动 ${entry.name} 到…`,
+      backup: `把 ${entry.name} 备份到 NAS`,
       delete: `删除 ${entry.name}`
     };
     for (const item of $$('#files-menu [data-files-menu]')) {
       const action = item.dataset.filesMenu;
       item.disabled = false;
+      // Only folders can be backed up; hidden rather than disabled so the sheet stays short.
+      if (action === 'backup') item.hidden = !entry.dir;
       item.setAttribute('aria-label', labels[action] || action);
     }
     if (isPhone()) {
       // Same actions as the popover, presented as a bottom sheet.
-      const items = $$('#files-menu [data-files-menu]').map((item) => {
+      const items = $$('#files-menu [data-files-menu]').filter((item) => !item.hidden).map((item) => {
         const use = item.querySelector('use');
         return {
           label: item.textContent.trim(),
@@ -5297,6 +5300,7 @@
     else if (action === 'rename') openFilesNameDialog('rename', entry);
     else if (action === 'copy') openFilesDest('copy', entry);
     else if (action === 'move') openFilesDest('move', entry);
+    else if (action === 'backup') openBackupDialog(entry);
     else if (action === 'delete') openFilesDelete(entry);
     if (trigger && trigger.isConnected && action === 'download') trigger.focus({ preventScroll: true });
   }
@@ -5781,7 +5785,7 @@
   const formatRate = (bytesPerSecond) => (bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : '—');
   const XFER_ACTIVE = new Set(['wait', 'run', 'sync', 'queued', 'scanning', 'running', 'copying', 'moving', 'active', 'pending', 'wait-confirm']);
   const XFER_LABEL = { wait: '等待', run: '传输中', sync: '正在落盘', queued: '排队中', scanning: '正在统计文件', running: '传输中', copying: '复制中', moving: '移动中', active: '进行中', pending: '等待', done: '完成', done_with_warnings: '完成（有提醒）', interrupted: '已中断', fail: '失败', failed: '失败', cancel: '已取消', canceled: '已取消', skip: '已跳过', 'wait-confirm': '等待确认' };
-  const XFER_KIND = { upload: '上传', copy: '复制', move: '移动', nas: 'NAS → PS5', extract: '解压安装', package: 'PKG 安装', remote: 'PS5' };
+  const XFER_KIND = { upload: '上传', copy: '复制', move: '移动', nas: 'NAS → PS5', extract: '解压安装', package: 'PKG 安装', backup: 'PS5 → NAS', remote: 'PS5' };
 
   function filesTransferTasks() {
     const tasks = [];
@@ -5792,6 +5796,10 @@
       }
       if (job.kind === 'package') {
         tasks.push(packageTask(job));
+        continue;
+      }
+      if (job.kind === 'backup') {
+        tasks.push(backupTask(job));
         continue;
       }
       tasks.push({
@@ -6409,6 +6417,7 @@
       nas.protocols = data.protocols && typeof data.protocols === 'object' ? data.protocols : nas.protocols;
       nas.encryption = data.encryption !== false;
       nas.archive = data.archive !== false;
+      nas.backupRoots = Array.isArray(data.backup_roots) ? data.backup_roots.filter((item) => typeof item === 'string') : [];
       nas.loaded = true;
       if (nas.activeId && !nasActive()) setFilesMode('ps5');
     } catch (error) {
@@ -7006,7 +7015,8 @@
       keep_password: true,
       workgroup: $('nas-workgroup').value.trim(),
       tls: $('nas-tls').checked,
-      verify_tls: $('nas-verify').checked
+      verify_tls: $('nas-verify').checked,
+      writable: $('nas-writable').checked
     };
   }
 
@@ -7026,6 +7036,7 @@
     $('nas-workgroup').value = item ? item.workgroup || '' : '';
     $('nas-tls').checked = Boolean(item && item.tls);
     $('nas-verify').checked = Boolean(item && item.verify_tls);
+    $('nas-writable').checked = Boolean(item && item.writable === true);
     $('nas-delete').hidden = !item;
     $('nas-dialog-status').textContent = '';
     $('nas-dialog-error').hidden = true;
@@ -7047,7 +7058,7 @@
     buttonBusy('nas-test', true, '测试中…');
     try {
       const result = await api('/api/nas/test', nasDialogValues());
-      $('nas-dialog-status').textContent = `连接成功，起始路径下有 ${result.entries} 项。`;
+      $('nas-dialog-status').textContent = `连接成功，起始路径下有 ${result.entries} 项${result.write === 'ok' ? '，写入测试通过' : ''}。`;
     } catch (error) {
       if (error.status === 401) {
         $('nas-dialog').close();
@@ -7955,6 +7966,8 @@
       steps: ['自检会主动发出 DNS 查询和连接，每项最多几秒，整体不超过 10 秒。', '「PS5 网络指向」看的是最近的 DNS 记录和连接表：PS5 待机或刚开机时可能显示「注意」，开机用一会儿后再检查。', '最近一次结果会附在「导出日志」的诊断摘要里。', '服务器上也可以运行 sudo ./install.sh doctor 查看其中不依赖服务运行的几项。'] },
     notify: { title: '通知', body: '任务结束或出问题时推送消息：NAS 传输、解压安装完成或失败，服务更新结果，网关出错。支持 Bark、ntfy、Telegram 和通用 Webhook（POST JSON）。',
       steps: ['令牌、设备密钥、主题和 Webhook 地址加密保存，页面不会再显示；编辑时留空表示不修改。', '同一事件 1 分钟内只发一次；发送失败会重试两次，不影响任务本身。', '公网地址默认走服务代理（Telegram 常需要），局域网地址始终直连。', '保存后点「测试」确认能收到。'] },
+    'nas-backup': { title: 'PS5 → NAS 备份', body: '把 PS5 上的文件夹（游戏、截图导出、存档目录等）复制到允许写入的 NAS 连接。',
+      steps: ['先在 NAS 存储里编辑连接、勾选「允许写入」，用「测试连接」确认能建、删文件。', '「镜像」写进固定文件夹，NAS 上已有同名且大小相同的文件会跳过；「快照」每次新建「主机/日期时间」文件夹。', '每个文件先写成 .part，写完核对大小再改名；取消或失败不会留下半截文件，失败的任务可以「重试」补齐。', '存档是加密镜像，绑定这台主机和账号，备份只适合在同一台主机上恢复；本服务不提供恢复。截图、存档等系统目录需要在配置 [ps5] backup_roots 里列出后才会出现在来源里（只读）。'] },
     library: { title: '游戏库', body: '列出 PS5 各存储（/data、/mnt/ext*、/mnt/usb*）上的游戏文件夹：卷根目录下以游戏编号命名的文件夹，以及 [ps5] game_dirs（默认 games、homebrew、etaHEN/games）下的子文件夹。只看一层，不会递归扫描。',
       steps: ['名称来自内置游戏库或文件夹里的 param 文件；封面取 sce_sys/icon0.png。', '大小需要逐个点「计算大小」：FTP 模式下遍历很慢，结果按路径和修改时间缓存。', '「移动」「删除」沿用 PS5 文件页的对话框与任务进度；「注册图标」需要 ps5upload 引擎，只对以游戏编号命名的文件夹可用。', '通过 PKG 安装到系统分区（/user/app）的游戏不在路径白名单内，这里看不到。'] },
     backup: { title: '备份与恢复', body: '把访问策略、活动标签、文件主机、已知主机、NAS 连接和插件仓库打包成一个文件，重装系统或换机器后从备份恢复。',
@@ -8528,6 +8541,102 @@
     }
   }
 
+  /* ── PS5 → NAS 备份 ─────────────────────────────────────────────────── */
+
+  const nasBackup = { busy: false, entry: null };
+
+  function backupSources(entry) {
+    const list = [];
+    if (entry && entry.path) list.push({ path: entry.path, label: entry.path, checked: true });
+    for (const root of nas.backupRoots || []) {
+      if (!list.some((item) => item.path === root)) list.push({ path: root, label: `${root}（预设，只读）`, checked: false });
+    }
+    return list;
+  }
+
+  async function openBackupDialog(entry) {
+    if (!authenticated) return;
+    if (!nas.loaded) await refreshNas();
+    const writable = nas.connections.filter((item) => item.writable === true);
+    if (!writable.length) {
+      toast('还没有允许写入的 NAS 连接：在 NAS 存储里编辑连接，勾选「允许写入」并测试。', 'error');
+      return;
+    }
+    nasBackup.entry = entry;
+    $('backup-nas-sources').replaceChildren(...backupSources(entry).map((source) => {
+      const wrapper = makeElement('label', 'nas-check');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = source.path;
+      input.checked = source.checked;
+      wrapper.append(input, makeElement('span', '', source.label));
+      return wrapper;
+    }));
+    const select = $('backup-nas-target');
+    select.replaceChildren(...writable.map((item) => {
+      const option = makeElement('option', '', str(item.name) || str(item.host));
+      option.value = item.id;
+      return option;
+    }));
+    showFieldMessage('backup-nas-error', '');
+    $('backup-nas-dialog').showModal();
+    $('backup-nas-target').focus({ preventScroll: true });
+  }
+
+  function backupPayload() {
+    return {
+      id: $('backup-nas-target').value,
+      paths: $$('#backup-nas-sources input').filter((input) => input.checked).map((input) => input.value),
+      dest: $('backup-nas-dest').value.trim() || '/',
+      mode: $('backup-nas-mode').value === 'snapshot' ? 'snapshot' : 'mirror',
+      host: files.info && files.info.host ? files.info.host : undefined
+    };
+  }
+
+  async function startBackup(event) {
+    event.preventDefault();
+    if (nasBackup.busy) return;
+    const payload = backupPayload();
+    if (!payload.paths.length) {
+      showFieldMessage('backup-nas-error', '请至少选择一个备份来源。');
+      return;
+    }
+    nasBackup.busy = true;
+    buttonBusy('backup-nas-start', true, '提交中…');
+    try {
+      const result = await api('/api/nas/backup', payload);
+      if (result.job && result.job.id) nasJobs = [result.job, ...nasJobs.filter((job) => job.id !== result.job.id)];
+      $('backup-nas-dialog').close();
+      toast('已开始备份，进度见传输任务。', 'success');
+      files.drawer = true;
+      renderFilesTransfers();
+      ensureFilesPolling();
+      revealFilesTransfers();
+    } catch (error) {
+      if (error.status === 401) { $('backup-nas-dialog').close(); showLogin(error.message); return; }
+      showFieldMessage('backup-nas-error', error.message);
+    } finally {
+      nasBackup.busy = false;
+      buttonBusy('backup-nas-start', false, '开始备份');
+    }
+  }
+
+  function backupTask(job) {
+    const done = job.state === 'done' || job.state === 'done_with_warnings';
+    return {
+      key: `nas:${job.id}`, kind: 'backup', name: job.name, state: job.state,
+      sub: `${job.source} → ${str(job.nas_name) || 'NAS'} ${job.target || job.dest}${job.mode === 'snapshot' ? '（快照）' : ''}`,
+      done: job.bytes_done, total: job.bytes_total, speed: job.speed, elapsed: job.elapsed, eta: job.eta,
+      files: { done: job.files_done, total: job.files_total, skipped: job.files_skipped, failed: job.files_failed, retries: job.retries || 0, resumed: 0 },
+      current: job.state === 'running' ? job.current : '',
+      line: done && job.files_skipped ? `${job.files_skipped} 个文件与 NAS 上的相同，已跳过` : '',
+      error: job.error, errors: job.errors || [],
+      interrupted: job.interrupted === true,
+      cancel: XFER_ACTIVE.has(job.state) ? () => cancelNasJob(job.id) : null,
+      retry: ['failed', 'canceled'].includes(job.state) ? () => retryNasJob(job.id) : null
+    };
+  }
+
   /* ── 游戏库 ─────────────────────────────────────────────────────────── */
 
   const library = { loaded: false, loading: false, games: [], volumes: [], errors: [], sizing: '', host: '' };
@@ -8997,6 +9106,8 @@
   function bindBackupEvents() {
     bindHistoryEvents();
     $('selfcheck-run').addEventListener('click', runSelfcheck);
+    $('backup-nas-form').addEventListener('submit', startBackup);
+    $('backup-nas-cancel').addEventListener('click', () => $('backup-nas-dialog').close());
     $('library-refresh').addEventListener('click', () => loadLibrary(true));
     $('library-search').addEventListener('input', renderLibrary);
     $('library-volume').addEventListener('change', renderLibrary);

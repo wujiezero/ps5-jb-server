@@ -298,6 +298,27 @@ class ConsoleAPITests(unittest.TestCase):
         self.assertEqual(importer.call_args.args[1], ['/g/a cheat.zip'])
         factory.return_value.close.assert_called_once()
 
+    def test_backup_route_and_read_only_connections(self):
+        with mock.patch.object(self.api.transfers, 'start_backup', return_value={'id': 'b1'}) as start:
+            data, headers = json_body({'id': 'n1', 'paths': ['/data/savedata'], 'dest': '/ps5', 'mode': 'snapshot'})
+            handler = StubHandler('/api/nas/backup', data, headers)
+            self.api.handle_post(handler, '/api/nas/backup')
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(start.call_args.args, ('n1', ['/data/savedata'], '/ps5', 'snapshot'))
+        saved = self.api.nas.save({'protocol': 'ftp', 'host': '192.0.2.9'})
+        data, headers = json_body({'id': saved['id'], 'paths': ['/data/savedata'], 'dest': '/ps5'})
+        handler = StubHandler('/api/nas/backup', data, headers)
+        self.api.handle_post(handler, '/api/nas/backup')
+        self.assertEqual(handler.status, 400)
+        self.assertIn('允许写入', handler.payload['error'])
+        self.api.nas.delete(saved['id'])
+
+    def test_nas_overview_lists_read_only_backup_roots(self):
+        handler = StubHandler('/api/nas')
+        with mock.patch.object(self.api.files, 'read_roots', ('/user/av_contents',)):
+            self.api.handle_get(handler)
+        self.assertEqual(handler.payload['backup_roots'], ['/user/av_contents'])
+
     def test_retry_route_queues_the_failed_job_again(self):
         with mock.patch.object(self.api.transfers, 'retry', return_value={'id': 'new', 'retry_of': 'old'}) as retry:
             body, headers = json_body({'id': 'old'})

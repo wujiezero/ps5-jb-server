@@ -31,7 +31,8 @@ class ConsoleAPI:
         self.ps5 = HostManager(settings, catalog)
         self.files = FileProxy(settings.subnet, port=settings.file_port,
                                ftp_port=getattr(settings, 'ftp_port', 2120),
-                               space_port=getattr(settings, 'space_port', 8888))
+                               space_port=getattr(settings, 'space_port', 8888),
+                               read_roots=getattr(settings, 'backup_roots', ()))
         self.state_path = settings.data_dir / 'console.json'
         self._restore()
         self.enabled = settings.ps5_control
@@ -119,7 +120,8 @@ class ConsoleAPI:
             handler.send_body(502, {'error': str(exc)})
         elif isinstance(exc, NasError):
             # Never 401 here: the page treats 401 as "admin session expired".
-            handler.send_body(404 if exc.status == 404 else 502, {'error': str(exc)})
+            # 403 here means "this connection is read-only": a request problem, not a gateway one.
+            handler.send_body(404 if exc.status == 404 else 400 if exc.status == 403 else 502, {'error': str(exc)})
         else:
             logging.exception('console api failed')
             handler.send_body(500, {'error': '操作失败，请检查服务日志'})
@@ -225,7 +227,9 @@ class ConsoleAPI:
                                 'protocols': {'webdav': True, 'smb': smb_available(), 'ftp': True},
                                 'encryption': SecretBox.available(),
                                 'archive': archive.available() or unrar_engine_available(),
-                                'unrar': unrar_engine_available()})
+                                'unrar': unrar_engine_available(),
+                                # [ps5] backup_roots: read-only extra sources offered in the backup dialog.
+                                'backup_roots': list(getattr(self.files, 'read_roots', ()))})
 
     def _get_nas_archive(self, handler):
         handler.send_body(200, self.transfers.inspect_archive(
@@ -349,6 +353,7 @@ class ConsoleAPI:
         '/api/nas/extract': '_post_nas_extract',
         '/api/nas/install': '_post_nas_install',
         '/api/nas/cheats': '_post_nas_cheats',
+        '/api/nas/backup': '_post_nas_backup',
         '/api/transfers/cancel': '_post_transfers_cancel',
         '/api/transfers/clear': '_post_transfers_clear',
         '/api/transfers/retry': '_post_transfers_retry',
@@ -530,6 +535,11 @@ class ConsoleAPI:
         else:
             raise ValueError('未识别到可安装的游戏')
         handler.send_body(200, {'ok': True, 'kind': kind, 'job': job})
+
+    def _post_nas_backup(self, handler, body, path):
+        handler.send_body(200, {'ok': True, 'job': self.transfers.start_backup(
+            body.get('id'), body.get('paths'), body.get('dest'), body.get('mode') or 'mirror',
+            host=body.get('host') or self.files.host)})
 
     def _post_nas_cheats(self, handler, body, path):
         config = self.nas.get(body.get('id'))

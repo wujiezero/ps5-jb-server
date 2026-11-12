@@ -141,5 +141,62 @@ class ProxyTests(unittest.TestCase):
             self.proxy.configure('198.51.100.7')
 
 
+
+class ReadOnlyRootTests(unittest.TestCase):
+    """[ps5] backup_roots widen list / stream only; every write keeps the volume whitelist."""
+
+    ROOT = '/user/av_contents'
+
+    def setUp(self):
+        self.proxy = FileProxy('192.0.2.0/24', host='192.0.2.5', read_roots=(self.ROOT,))
+        self.calls = []
+        self.proxy._call = lambda name, *args, **kwargs: self.calls.append((name,) + args) or {'entries': []}
+
+    def test_list_and_stream_accept_the_root_and_below(self):
+        for path in (self.ROOT, self.ROOT + '/photo', self.ROOT + '/photo/a.jpg'):
+            self.proxy.list(path)
+            self.proxy.stream(path)
+        self.assertEqual(len(self.calls), 6)
+
+    def test_neighbours_and_tricks_stay_refused(self):
+        for path in ('/user/av_contents2', '/user', '/user/av_contents/../home', '/user/./av_contents'):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                self.proxy.list(path)
+        self.assertEqual(self.calls, [])
+
+    def test_every_write_ignores_the_read_only_root(self):
+        inside = self.ROOT + '/photo'
+        writes = {
+            'mkdir': lambda: self.proxy.mkdir(inside),
+            'rename from': lambda: self.proxy.rename(inside, '/data/x'),
+            'rename to': lambda: self.proxy.rename('/data/x', inside),
+            'delete': lambda: self.proxy.delete(inside),
+            'copy from': lambda: self.proxy.copy(inside, '/data/x'),
+            'move from': lambda: self.proxy.copy(inside, '/data/x', move=True),
+            'copy to': lambda: self.proxy.copy('/data/x', inside),
+            'upload': lambda: self.proxy.upload(inside, 'a.bin', iter([b'x']), 1),
+            'folder size': lambda: self.proxy.folder_size(inside),
+            'tar': lambda: self.proxy.stream_folder(inside),
+            'bench': lambda: self.proxy.bench(inside),
+            'file size': lambda: self.proxy.file_size(inside + '/a.jpg'),
+        }
+        for name, action in writes.items():
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                action()
+        self.assertEqual(self.calls, [])
+
+    def test_without_roots_nothing_changes(self):
+        proxy = FileProxy('192.0.2.0/24', host='192.0.2.5')
+        with self.assertRaises(ValueError):
+            proxy.list(self.ROOT)
+
+    def test_settings_roots_are_cleaned_and_empty_by_default(self):
+        from settings import Settings, clean_roots
+        self.assertEqual(Settings(host_ip='1.2.3.4', subnet='1.2.3.0/24').backup_roots, ())
+        self.assertEqual(clean_roots(['/user/av_contents/', '/', 'relative', '/a/../b', '/a//b', '/ok', '/ok']),
+                         ['/user/av_contents', '/ok'])
+        self.assertEqual(clean_roots('/a,/b'), ['/a', '/b'])
+        self.assertEqual(clean_roots(None), [])
+
 if __name__ == '__main__':
     unittest.main()

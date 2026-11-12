@@ -210,6 +210,31 @@ etaHEN 的布局（`json` / `shn` / `mc4`）把文件写到 `/data/etaHEN/cheats
 
 **需真机验证**：装一个真实 PKG 并能启动（主机直连与引擎中转两种情况）；导入一份金手指后 etaHEN 能识别。
 
+## PS5 → NAS 备份
+
+**NAS 写入**：三种客户端都有 `mkdir` / `write` / `rename` / `delete` / `rmdir`。WebDAV 用 `MKCOL` / 流式 `PUT` /
+`MOVE`（`Overwrite: T`）/ `DELETE`；SMB 用 smbc 的 `mkdir` / `open(O_CREAT|O_TRUNC)` / `rename` / `unlink` / `rmdir`；
+FTP 用 `MKD` / `STOR` / `RNFR`+`RNTO` / `DELE` / `RMD`。每个文件先写 `<名字>.part`，写完核对大小，再删掉旧文件、改名到位。
+连接默认只读，必须在 NAS 对话框里勾选「允许写入」（`writable`）；关闭时所有写方法直接报错。开启后「测试连接」会建一个
+`.ps5jb-write-test-*` 文件夹、写入并删除一个小文件，再删掉文件夹。
+
+WebDAV 的流式 `PUT` 不能在 401 质询后重发，所以写入前先用一个不带认证的 `PROPFIND` 看服务器要哪种认证：Basic 就在 `PUT`
+上直接带 `Authorization`，只接受 Digest 的服务器直接报错（读取不受影响）。
+
+**备份任务**：`TransferManager` 的 `backup` 类型，`POST /api/nas/backup {id, dest, paths, mode, host}`。逐级列出 PS5 文件夹
+（`FileProxy.list`），逐文件 `FileProxy.stream()` → NAS `put_file()`。镜像（默认）写进 `dest`，NAS 上同名且大小相同的文件跳过；
+快照写进 `dest/<主机>/<YYYYMMDD-HHMMSS>/`。网络错误按 B4 的规则重试（备份不续传，重写整个文件）；取消或失败都删掉 `.part`。
+有文件没备份成功时任务记为失败，「重试」用同一个目标文件夹补齐。结束时发 `backup.finished` / `backup.failed` 通知。
+
+**只读附加根目录**：`[ps5] backup_roots`（默认空列表）里的路径只对 `FileProxy.list()` 和 `stream()` 生效，
+上传、建目录、改名、复制 / 移动、删除、文件夹大小、打包下载一律仍按 `/data`、`/mnt/ext*`、`/mnt/usb*` 白名单检查。
+
+**调研状态（2026-11-12，未连真机）**：截图 / 录像预期在 `/user/av_contents`，存档预期在 `/user/home/<用户>/savedata*`，
+但 FTP 插件能否读取、实际目录名都没有确认，**所以没有写成默认值**。确认后可在配置里写，例如
+`backup_roots = ["/user/av_contents"]`。存档是加密镜像，绑定主机与账号，只适合在同一台主机上恢复；恢复不在本服务范围内。
+
+**需真机验证**：把一个游戏目录分别备份到 WebDAV、SMB、FTP 三种 NAS，对比文件数与总大小；确认上述系统目录的实际路径。
+
 ## 游戏名称（标题 ID → 游戏名）
 
 「PS5 文件」和 NAS 列表里，名称中带 PS4/PS5 标题 ID 的条目（`CUSA36464`、`PPSA03671`、

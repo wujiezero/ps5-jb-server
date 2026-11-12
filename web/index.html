@@ -1789,6 +1789,9 @@
             <label class="nas-check"><input id="nas-tls" type="checkbox"> <span id="nas-tls-label">使用 HTTPS</span></label>
             <label class="nas-check"><input id="nas-verify" type="checkbox"> <span>校验证书（自签证书请勿勾选）</span></label>
           </div>
+          <div class="field-group field-full nas-checks">
+            <label class="nas-check"><input id="nas-writable" type="checkbox"> <span>允许写入（PS5 → NAS 备份用；测试连接时会建、删一个临时文件夹）</span></label>
+          </div>
         </div>
         <p id="nas-hint" class="field-help"></p>
         <p id="nas-dialog-status" class="upload-status" role="status"></p>
@@ -1805,6 +1808,46 @@
         <button id="nas-save" class="button button-primary" type="submit">
           <span class="spinner" aria-hidden="true" hidden></span>
           <span class="button-label">保存</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="backup-nas-dialog" class="dialog dialog-wide" aria-labelledby="backup-nas-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <form id="backup-nas-form" class="dialog-content" novalidate>
+      <header class="card-head">
+        <h2 id="backup-nas-title">备份到 NAS <button class="help-tip" type="button" data-help="nas-backup"></button></h2>
+      </header>
+      <p class="field-help">把 PS5 上的文件夹复制到 NAS。由服务器执行，可以关闭页面；只读，不会改动 PS5 上的文件。</p>
+      <div class="form-grid">
+        <div class="field-group field-full">
+          <span class="field-label">备份来源</span>
+          <div id="backup-nas-sources" class="nas-checks" role="group" aria-label="备份来源"></div>
+        </div>
+        <div class="field-group">
+          <label for="backup-nas-target">NAS 连接</label>
+          <select id="backup-nas-target"></select>
+        </div>
+        <div class="field-group">
+          <label for="backup-nas-dest">NAS 上的文件夹</label>
+          <input id="backup-nas-dest" type="text" autocomplete="off" spellcheck="false" value="/ps5-backup">
+        </div>
+        <div class="field-group field-full">
+          <label for="backup-nas-mode">方式</label>
+          <select id="backup-nas-mode">
+            <option value="mirror">镜像：固定文件夹，已有且大小相同的文件跳过</option>
+            <option value="snapshot">快照：每次新建「主机/日期时间」文件夹</option>
+          </select>
+        </div>
+      </div>
+      <p id="backup-nas-note" class="field-help">存档是加密的镜像，绑定这台主机和账号，备份只适合在同一台主机上恢复；本服务不提供恢复。</p>
+      <p id="backup-nas-error" class="field-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="backup-nas-cancel" class="button button-secondary" type="button">取消</button>
+        <button id="backup-nas-start" class="button button-primary" type="submit">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">开始备份</span>
         </button>
       </div>
     </form>
@@ -1846,6 +1889,10 @@
     <button id="files-menu-move" class="files-menu-item" type="button" role="menuitem" data-files-menu="move" aria-label="移动所选项目到…">
       <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-move"></use></svg>
       <span>移动到…</span>
+    </button>
+    <button id="files-menu-backup" class="files-menu-item" type="button" role="menuitem" data-files-menu="backup" aria-label="把所选文件夹备份到 NAS">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="#i-upload"></use></svg>
+      <span>备份到 NAS…</span>
     </button>
     <hr aria-hidden="true">
     <button id="files-menu-delete" class="files-menu-item" type="button" role="menuitem" data-files-menu="delete" data-tone="danger" aria-label="删除所选项目">
