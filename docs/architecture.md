@@ -117,6 +117,8 @@
 - 路径白名单：`/data`、`/mnt/ext<数字>`、`/mnt/usb<数字>`，拒绝 `.`/`..`/相对路径；
 - 只代理配置网段内地址；写操作要会话 + `X-CSRF-Token`；
 - 选择的文件主机持久化到 `console.json`（0600，原子写）。
+- NAS 传输与解压任务列表写在 `transfers.json`，已发现的 PS5 写在 `hosts.json`（都是 0600，原子写），服务重启后读回；
+  单文件网络错误自动重试，PS5 走 FTP 且支持 `REST STREAM` 时断点续传，细节见 [文件管理](file-manager.md)。
 
 ## 会话与登录
 
