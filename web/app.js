@@ -677,7 +677,7 @@
     $(id).dataset.tone = tone;
   }
 
-  function renderLogs(logs) {
+  function renderQueryLogs(logs) {
     const entries = Array.isArray(logs) ? logs.filter((entry) => entry && typeof entry === 'object') : [];
     let allowed = 0;
     let blocked = 0;
@@ -820,7 +820,7 @@
       ? '检测到主机已开启 IPv6 转发。当前策略仅控制 IPv4；请确认家庭网络仍关闭 IPv6 互联网。'
       : '家庭网络已关闭 IPv6 互联网；本页网关策略不提供 IPv6 访问控制。';
 
-    renderLogs(data.logs);
+    renderQueryLogs(data.logs);
     renderFirewall(data.firewall);
     renderQuickLinks();
     setConnection('状态已同步', 'good');

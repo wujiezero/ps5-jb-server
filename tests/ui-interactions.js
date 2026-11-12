@@ -69,6 +69,7 @@ function fixture(extra = {}) {
       nas, nasArchiveSelection, extractTask, packageTask, filesTransferTasks, filesTransferCard, normalizePs5,
       setNasJobs(value) { nasJobs = value; },
       renderRestoreResult, backupFilename, renderSelfcheck, renderNotify, notifyState, normalizeNotify,
+      renderQueryLogs, renderLogs, logs,
       library, normalizeLibrary, libraryCard, libraryVisible, renderLibrary, backupSources, backupTask,
       actHistory, renderStats, renderHistory, setActivityMode,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
@@ -822,6 +823,14 @@ test('backup sources add read-only presets once; backup cards show target, skips
   assert.match(ui.backupTask({ ...base, state: 'done', files_skipped: 3 }).line, /3 个文件.*跳过/);
   ui.setNasJobs([{ ...base, state: 'queued' }]);
   assert.equal(ui.filesTransferTasks()[0].kind, 'backup');
+});
+
+test('overview DNS preview has its own renderer and never writes into the run-log viewer', () => {
+  const ui = fixture();
+  assert.notEqual(ui.renderQueryLogs, ui.renderLogs);
+  ui.renderQueryLogs([{ action: 'allowed', domain: 'a.example' }, { action: 'blocked', domain: 'b.example' }, { action: 'cached' }]);
+  assert.equal(ui.node('query-total').textContent, '3');
+  assert.equal(ui.node('logs-view').children.length, 0);
 });
 
 test('restore results are listed as text with their state; backup names are sanitized', () => {
