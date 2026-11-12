@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from activity import Classifier, FlowObserver, LabelsStore, make_poller
 from backup import BackupError, BackupService
 from selfcheck import Context as CheckContext, SelfCheck
+from notify import EVENTS as NOTIFY_EVENTS, TYPES as NOTIFY_TYPES, NotifyError
 from api_console import ConsoleAPI
 import logbook
 import netproxy
@@ -1223,6 +1224,39 @@ class AdminHandler(BaseHTTPRequestHandler):
     def post_console(self):
         self.server.app.console_post(self, self.path.split('?', 1)[0])
 
+    # ---------- notifications ----------
+    def _notify_parts(self):
+        console = getattr(self.server.app, 'console', None)
+        store = getattr(console, 'notify_store', None)
+        if store is None:
+            self.send_body(503, {'error': '通知功能未启用'})
+        return console, store
+
+    def get_notify(self):
+        console, store = self._notify_parts()
+        if store is not None:
+            self.send_body(200, {'channels': store.list_public(), 'events': NOTIFY_EVENTS, 'types': NOTIFY_TYPES})
+
+    def post_notify(self, body):
+        """POST /api/notify/{save,delete,test}."""
+        console, store = self._notify_parts()
+        if store is None:
+            return
+        action = self.path.split('?', 1)[0].rsplit('/', 1)[-1]
+        try:
+            if action == 'save':
+                channel = store.save(body.get('channel'))
+                logging.info('notify channel saved: %s (%s)', channel['name'], channel['type'])
+                self.send_body(200, {'channel': channel, 'channels': store.list_public()})
+            elif action == 'delete':
+                store.delete(str(body.get('id') or ''))
+                self.send_body(200, {'channels': store.list_public()})
+            else:
+                console.notifier.test(str(body.get('id') or ''))
+                self.send_body(200, {'ok': True})
+        except NotifyError as exc:
+            self.send_body(502 if action == 'test' and str(exc).startswith('发送失败') else 400, {'error': str(exc)})
+
     # ---------- self-check ----------
     def _selfcheck(self):
         service = getattr(self.server.app, 'selfcheck', None)
@@ -1399,6 +1433,7 @@ GET_ROUTES = {
     '/api/repo/upstream/progress': Route('get_upstream_progress', exact=True),
     '/api/backup': Route('get_backup'),
     '/api/selfcheck': Route('get_selfcheck', exact=True),
+    '/api/notify': Route('get_notify', exact=True),
 }
 # Checked in order after GET_ROUTES; a prefix also matches longer paths.
 GET_PREFIXES = (
@@ -1429,6 +1464,7 @@ POST_ROUTES = {
     '/api/repo/upload': Route('handle_upload', auth=None, tracked=True, body='raw'),
     '/api/backup': _json_route('post_backup'),
     '/api/selfcheck': _json_route('post_selfcheck'),
+    **{f'/api/notify/{action}': _json_route('post_notify') for action in ('save', 'delete', 'test')},
     '/api/backup/restore': Route('post_backup_restore', auth=None, tracked=True, body='raw'),
 }
 POST_PREFIXES = (
@@ -1625,7 +1661,8 @@ def main():
                              max_upload=settings.max_upload)
     admin.app.repo = admin.repo
     admin.app.backup = BackupService(data, policy=store.snapshot, apply_policy=engine.change_config,
-                                     labels=labels, console=admin.app.console, repo=admin.repo)
+                                     labels=labels, console=admin.app.console, repo=admin.repo,
+                                     notify=admin.app.console.notify_store)
     admin.app.backup.cleanup()
     admin.app.selfcheck = SelfCheck(lambda: CheckContext(settings, engine=engine, console=admin.app.console,
                                                          repo=admin.repo, units=admin.app.units))
@@ -1639,6 +1676,8 @@ def main():
     ctx.load_cert_chain(cert, key)
     admin.tls_context = ctx
     dns_servers = start_dns(engine, '0.0.0.0', dns_port)
+    admin.app.console.notifier.watch(update_status=admin.app.updates.status,
+                                     gateway_error=lambda: engine.gateway_error)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())

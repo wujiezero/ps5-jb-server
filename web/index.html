@@ -860,6 +860,18 @@
             <ul id="selfcheck-list" class="selfcheck-list" aria-live="polite" hidden></ul>
           </section>
 
+          <section id="notify-card" class="card" aria-labelledby="notify-title">
+            <header class="card-head">
+              <div><h2 id="notify-title">通知 <button class="help-tip" type="button" data-help="notify"></button></h2><p class="card-sub">传输、解压、服务更新完成或网关出错时推送到手机。</p></div>
+              <button id="notify-add" class="button button-secondary button-small" type="button">
+                <span class="button-label">添加渠道</span>
+              </button>
+            </header>
+            <ul id="notify-list" class="notify-list" hidden></ul>
+            <p id="notify-empty" class="secondary-note">还没有通知渠道。</p>
+            <p class="footnote">通知里会带上任务名、文件夹名和错误原因，这些内容会发送到你配置的外部服务。</p>
+          </section>
+
           <section id="backup-card" class="card" aria-labelledby="backup-title">
             <header class="card-head">
               <div><h2 id="backup-title">备份与恢复 <button class="help-tip" type="button" data-help="backup"></button></h2><p class="card-sub">导出访问策略、标签、NAS 连接与插件仓库，重装或换机后从备份恢复。</p></div>
@@ -1074,6 +1086,87 @@
       <button id="rollback-cancel" class="button button-secondary" type="button">取消</button>
       <button id="rollback-confirm" class="button button-primary" type="button">确认回滚</button>
     </div>
+  </dialog>
+
+  <dialog id="notify-dialog" class="dialog dialog-wide" aria-labelledby="notify-dialog-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <form id="notify-form" class="dialog-form" novalidate>
+      <div class="dialog-content">
+        <h2 id="notify-dialog-title">添加通知渠道</h2>
+        <div class="field-grid two">
+          <div class="field-group">
+            <label for="notify-name">名称</label>
+            <input id="notify-name" type="text" maxlength="40" autocomplete="off" placeholder="例如：我的手机">
+          </div>
+          <div class="field-group">
+            <label for="notify-type">类型</label>
+            <select id="notify-type">
+              <option value="bark">Bark（iOS）</option>
+              <option value="ntfy">ntfy</option>
+              <option value="telegram">Telegram</option>
+              <option value="webhook">通用 Webhook（POST JSON）</option>
+            </select>
+          </div>
+        </div>
+        <div class="field-grid two notify-type-group" data-notify-type="webhook" hidden>
+          <div class="field-group field-full">
+            <label for="notify-url">Webhook 地址</label>
+            <input id="notify-url" type="password" maxlength="500" autocomplete="off" spellcheck="false" placeholder="https://…">
+          </div>
+        </div>
+        <div class="field-grid two notify-type-group" data-notify-type="bark">
+          <div class="field-group">
+            <label for="notify-bark-server">服务器</label>
+            <input id="notify-bark-server" type="url" maxlength="500" autocomplete="off" spellcheck="false" placeholder="https://api.day.app">
+          </div>
+          <div class="field-group">
+            <label for="notify-bark-key">设备密钥</label>
+            <input id="notify-bark-key" type="password" maxlength="64" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="field-grid two notify-type-group" data-notify-type="ntfy" hidden>
+          <div class="field-group">
+            <label for="notify-ntfy-server">服务器</label>
+            <input id="notify-ntfy-server" type="url" maxlength="500" autocomplete="off" spellcheck="false" placeholder="https://ntfy.sh">
+          </div>
+          <div class="field-group">
+            <label for="notify-ntfy-topic">主题</label>
+            <input id="notify-ntfy-topic" type="password" maxlength="64" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field-group">
+            <label for="notify-ntfy-token">访问令牌（可选）</label>
+            <input id="notify-ntfy-token" type="password" maxlength="200" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="field-grid two notify-type-group" data-notify-type="telegram" hidden>
+          <div class="field-group">
+            <label for="notify-tg-token">机器人令牌</label>
+            <input id="notify-tg-token" type="password" maxlength="120" autocomplete="off" spellcheck="false" placeholder="123456:ABC…">
+          </div>
+          <div class="field-group">
+            <label for="notify-tg-chat">chat_id</label>
+            <input id="notify-tg-chat" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="数字，群组为负数">
+          </div>
+        </div>
+        <fieldset class="notify-events">
+          <legend>推送这些事件</legend>
+          <div id="notify-events" class="nas-checks"></div>
+        </fieldset>
+        <div class="nas-checks">
+          <label class="nas-check" for="notify-enabled"><input id="notify-enabled" type="checkbox" checked> <span>启用</span></label>
+          <label class="nas-check" for="notify-proxy"><input id="notify-proxy" type="checkbox" checked> <span>公网地址走服务代理</span></label>
+        </div>
+        <p id="notify-secret-note" class="field-help" hidden>密钥类字段已保存，留空表示不修改。</p>
+        <p id="notify-form-error" class="field-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions">
+        <button id="notify-cancel" class="button button-secondary" type="button">取消</button>
+        <button id="notify-save" class="button button-primary" type="submit">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">保存</span>
+        </button>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="restore-dialog" class="dialog" aria-labelledby="restore-title" aria-describedby="restore-description">

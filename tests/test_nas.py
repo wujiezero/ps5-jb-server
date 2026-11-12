@@ -699,6 +699,17 @@ class RetryTests(unittest.TestCase):
         self.assertLess(time.time() - started, 2)
         self.assertNotIn('/data/big.bin', ps5.files)
 
+    def test_listeners_hear_each_finished_job_once_and_cannot_break_the_queue(self):
+        heard = []
+        manager = TransferManager(self.store, ResumablePs5(resume=False), client_factory=lambda config: FakeClient(self.BIG))
+        manager.listeners.append(lambda job: (_ for _ in ()).throw(RuntimeError('listener bug')))
+        manager.listeners.append(lambda job: heard.append((job['id'], job['state'])))
+        first = manager.start(self.ident, ['/big.bin'], '/data')['id']
+        second = manager.start(self.ident, ['/big.bin'], '/data')['id']
+        wait(manager, first)
+        wait(manager, second)
+        self.assertEqual(heard, [(first, 'done'), (second, 'done')])
+
     def test_setting_limits_and_default(self):
         self.assertEqual(Settings.from_mapping({}).transfer_retries, 3)
         self.assertEqual(Settings.from_mapping({'limits': {'transfer_retries': 0}}).transfer_retries, 0)

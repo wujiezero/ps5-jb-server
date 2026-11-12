@@ -13,6 +13,7 @@ import selfcheck
 from selfcheck import Check, Context, SelfCheck
 
 HOST = '192.0.2.10'
+PASSWORD = 'a-long-test-password'
 
 
 def make_cert(days, names=('manuals.playstation.net',), pem=False):
@@ -289,16 +290,15 @@ class SelfCheckHTTPTests(unittest.TestCase):
     def test_post_runs_with_csrf_and_get_returns_the_latest(self):
         import http.client
         from server import AdminHandler, AdminServer, AuthManager
-        password = 'a-long-test-password'
         server = AdminServer(('127.0.0.1', 0), AdminHandler)
-        server.auth = AuthManager(AuthManager.make_credentials(password))
+        server.auth = AuthManager(AuthManager.make_credentials(PASSWORD))
         checker = SelfCheck(lambda: context(), clock=lambda: 1800000000)
         server.app = SimpleNamespace(settings=SimpleNamespace(subnet='127.0.0.1/32', host_ip='127.0.0.1'),
                                      selfcheck=checker)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         conn = http.client.HTTPConnection(*server.server_address, timeout=15)
         try:
-            conn.request('POST', '/api/login', json.dumps({'password': password}), {'Content-Type': 'application/json'})
+            conn.request('POST', '/api/login', json.dumps({'password': PASSWORD}), {'Content-Type': 'application/json'})
             reply = conn.getresponse()
             cookie, csrf = reply.getheader('Set-Cookie').split(';')[0], json.loads(reply.read())['csrf']
 

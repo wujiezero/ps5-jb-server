@@ -898,6 +898,7 @@ class TransferManager:
         self._persist_lock = threading.Lock()
         self._last_persist = 0.0
         self.adopted = {}           # job id -> unit handle of an unrar worker that outlived a restart
+        self.listeners = []         # callables(job copy) run once when a job ends (notifications)
         self._load()
 
     # -- persistence --
@@ -1202,6 +1203,16 @@ class TransferManager:
             finally:
                 self._set(job, finished=time.time(), speed=0, eta=None,
                           elapsed=round(time.time() - (job['started'] or time.time()), 1))
+                self._announce(job)
+
+    def _announce(self, job):
+        with self.lock:
+            snapshot = dict(job)
+        for listener in list(self.listeners):
+            try:
+                listener(snapshot)
+            except Exception:
+                logging.exception('transfer listener failed')
 
     def _set(self, job, **fields):
         with self.lock:

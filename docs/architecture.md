@@ -159,6 +159,23 @@
 结果里只有状态、说明和建议，代理地址按 `netproxy.masked()` 隐去账号。`install.sh doctor` 复用其中不依赖服务运行的四项
 （conntrack、IPv6、可选组件、资源），在原有输出后追加几行。
 
+## 通知
+
+`server/notify.py`。渠道存在 `<data>/notify.json`（0600，原子写），最多 10 个，类型为通用 Webhook（POST JSON）、Bark
+（`POST <server>/push`）、ntfy（`POST <server>/` JSON 发布，可带 Bearer 令牌）、Telegram（`sendMessage`）。
+Webhook 地址、Bark 设备密钥、ntfy 主题与令牌、Telegram 机器人令牌用 NAS 的 `SecretBox` 加密，附加数据为
+`ps5jb-nas:notify:<渠道 ID>`，与 NAS 账号共用 `nas.key`（所以备份时一起处理）；接口只返回 `has_secret`。
+
+- 事件：`transfer.finished/failed`、`extract.finished/failed`（`TransferManager` 每个任务结束时通知监听者一次，取消不通知）、
+  `update.finished/failed`、`gateway.error`；`package.*`、`backup.*` 预留给 PKG 安装与 PS5 备份。每个渠道勾选订阅。
+- 发送：有界队列（100 条，满了丢最旧的）+ 一个后台线程，绝不阻塞传输线程。每次 5 秒超时，网络错误重试 2 次，
+  4xx（除 408/429）不重试；同一事件键 60 秒内只发一次。只允许 http/https，拒绝改变协议的重定向。
+- 出口：目标解析到私有地址时直连，否则走 `netproxy.opener()`；渠道可关掉代理。日志只写渠道名、类型和失败类型
+  （`HTTP 401`、连接失败、超时），不写 URL（Telegram 的令牌就在 URL 里）。
+- 升级结果：后台每 15 秒看一次升级状态，任务到达 `done` / `failed` / `rolled_back` 时通知一次，已通知的任务号记在
+  `<data>/notify-state.json`；一小时前就结束的结果只记下、不补发。网关错误在 `gateway_error` 由空变为非空时通知。
+- 接口：`GET /api/notify`、`POST /api/notify/{save,delete,test}`。测试直接发送一次（不排队、不重试），失败返回 502 和失败类型。
+
 ## 备份与恢复
 
 `server/backup.py`。备份是一个 `tar.gz`，成员只能是固定的几种名字：

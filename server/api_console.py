@@ -13,6 +13,7 @@ import archive
 from files import FileServiceError, FileProxy
 from nas import NasError, NasStore, SecretBox, TransferManager, check_connection, client_for, \
     clean_path, smb_available, unrar_engine_available
+from notify import Notifier, NotifyStore
 from power import EngineClient, PowerError, PowerManager
 from game_services import GameServices
 from game_sources import plan_sources
@@ -42,6 +43,10 @@ class ConsoleAPI:
                                          state_path=settings.data_dir / 'transfers.json',
                                          retries=getattr(settings, 'transfer_retries', 3))
         self.power = PowerManager(self.engine, self.ps5.validate_ip)
+        # Channel secrets share the NAS key (and its backup / restore).
+        self.notify_store = NotifyStore(settings.data_dir / 'notify.json', self.nas.box)
+        self.notifier = Notifier(self.notify_store, state_path=settings.data_dir / 'notify-state.json')
+        self.transfers.listeners.append(self.notifier.job_finished)
         if autoscan and self.enabled:
             # The discovery cache is in memory; without this the host list is
             # empty after every restart until someone presses "rescan".

@@ -3164,3 +3164,16 @@ tbody[data-enter="true"] > tr:nth-child(n+6) { animation-delay: 60ms; }
 .selfcheck-title { font-weight: 600; font-size: 0.875rem; }
 .selfcheck-detail, .selfcheck-fix { margin: 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
 .selfcheck-fix { opacity: 0.85; }
+
+/* 通知 */
+.notify-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.notify-list[hidden] { display: none; }
+.notify-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+.notify-item-main { flex: 1 1 200px; min-width: 0; display: grid; gap: 2px; }
+.notify-item-name { font-weight: 600; font-size: 0.875rem; overflow-wrap: anywhere; }
+.notify-item-meta { font-size: 0.75rem; color: var(--mut); }
+.notify-item-meta[data-tone="warn"] { color: var(--warn); }
+.notify-item-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.notify-type-group[hidden] { display: none; }
+.notify-events { margin: 12px 0; padding: 0; border: 0; min-width: 0; }
+.notify-events legend { font-size: 0.8125rem; font-weight: 600; margin-bottom: 8px; }

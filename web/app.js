@@ -453,6 +453,7 @@
     if (section === 'repository' && !repo.loaded) refreshRepo();
     if (section === 'settings') {
       if (!selfcheck.loaded) loadSelfcheck();
+      if (!notifyState.loaded) loadNotify();
       if (!updates.current) loadVersion();
       refreshUpdates();
       startLogs();
@@ -7821,6 +7822,8 @@
       steps: ['安装时用 install.sh --proxy 设置，或给 systemd 服务加 drop-in 设置环境变量后重启服务。'] },
     selfcheck: { title: '自检', body: '一次检查 PS5 用到的各个环节：本机 DNS 是否劫持内置域名、用户手册与管理页证书、插件仓库、网关规则与网卡、上游 DNS、conntrack、每台已知 PS5 的 DNS 和网关是否指向本机、IPv6 绕过风险、可选组件和磁盘空间。',
       steps: ['自检会主动发出 DNS 查询和连接，每项最多几秒，整体不超过 10 秒。', '「PS5 网络指向」看的是最近的 DNS 记录和连接表：PS5 待机或刚开机时可能显示「注意」，开机用一会儿后再检查。', '最近一次结果会附在「导出日志」的诊断摘要里。', '服务器上也可以运行 sudo ./install.sh doctor 查看其中不依赖服务运行的几项。'] },
+    notify: { title: '通知', body: '任务结束或出问题时推送消息：NAS 传输、解压安装完成或失败，服务更新结果，网关出错。支持 Bark、ntfy、Telegram 和通用 Webhook（POST JSON）。',
+      steps: ['令牌、设备密钥、主题和 Webhook 地址加密保存，页面不会再显示；编辑时留空表示不修改。', '同一事件 1 分钟内只发一次；发送失败会重试两次，不影响任务本身。', '公网地址默认走服务代理（Telegram 常需要），局域网地址始终直连。', '保存后点「测试」确认能收到。'] },
     backup: { title: '备份与恢复', body: '把访问策略、活动标签、文件主机、已知主机、NAS 连接和插件仓库打包成一个文件，重装系统或换机器后从备份恢复。',
       steps: ['NAS 账号在备份里仍是密文；不勾选「包含 NAS 密钥」时，换机恢复后需要重新填写 NAS 用户名和密码。', '勾选「包含 NAS 密钥」时整个备份用口令加密（.ps5bak），口令不保存，请自己记好。', '「包含插件文件」会把仓库里的 .elf / .bin 和历史版本一起打包，文件会大很多。', '恢复时访问策略立即应用、当前策略成为「上一版」；插件仓库只补上当前没有的插件。', '不包含管理密码、登录会话、证书和活动历史。'] },
     password: { title: '修改管理密码', body: '修改登录本管理页的密码，至少 10 个字符。修改后所有设备上的登录都会失效，需要用新密码重新登录。' },
@@ -8155,6 +8158,155 @@
     }
   }
 
+  /* ── 通知 ───────────────────────────────────────────────────────────── */
+
+  const NOTIFY_TYPES = { webhook: '通用 Webhook', bark: 'Bark', ntfy: 'ntfy', telegram: 'Telegram' };
+  // Element id -> request field, per channel type. Secret fields stay blank when editing.
+  const NOTIFY_FIELDS = {
+    webhook: { 'notify-url': 'url' },
+    bark: { 'notify-bark-server': 'server', 'notify-bark-key': 'device_key' },
+    ntfy: { 'notify-ntfy-server': 'server', 'notify-ntfy-topic': 'topic', 'notify-ntfy-token': 'token' },
+    telegram: { 'notify-tg-token': 'token', 'notify-tg-chat': 'chat_id' }
+  };
+  const NOTIFY_PUBLIC = new Set(['server', 'chat_id']);
+  const NOTIFY_DEFAULT_EVENTS = ['transfer.finished', 'transfer.failed', 'extract.finished', 'extract.failed', 'update.finished', 'update.failed', 'gateway.error'];
+  const notifyState = { loaded: false, channels: [], events: {}, editing: null, busy: false };
+
+  function normalizeNotify(data) {
+    const channels = Array.isArray(data && data.channels) ? data.channels.filter((item) => item && typeof item.id === 'string') : [];
+    const events = data && data.events && typeof data.events === 'object' ? data.events : notifyState.events;
+    return { channels, events };
+  }
+
+  function notifyItem(channel) {
+    const node = makeElement('li', 'notify-item');
+    const main = makeElement('div', 'notify-item-main');
+    main.append(makeElement('span', 'notify-item-name', str(channel.name) || NOTIFY_TYPES[channel.type] || '渠道'));
+    const events = Array.isArray(channel.events) ? channel.events.length : 0;
+    const parts = [NOTIFY_TYPES[channel.type] || str(channel.type), `${events} 个事件`];
+    if (channel.enabled === false) parts.push('已停用');
+    const meta = makeElement('span', 'notify-item-meta', parts.join(' · '));
+    if (!channel.has_secret || channel.secret_ok === false) {
+      meta.textContent += ' · 需要重新填写密钥';
+      meta.dataset.tone = 'warn';
+    }
+    main.append(meta);
+    const actions = makeElement('div', 'notify-item-actions');
+    const button = (label, handler) => {
+      const element = makeElement('button', 'button button-secondary button-small', label);
+      element.type = 'button';
+      element.addEventListener('click', handler);
+      return element;
+    };
+    actions.append(button('测试', () => testNotify(channel.id)), button('编辑', () => openNotifyDialog(channel)),
+      button('删除', () => deleteNotify(channel)));
+    node.append(main, actions);
+    return node;
+  }
+
+  function renderNotify() {
+    const list = $('notify-list');
+    list.replaceChildren(...notifyState.channels.map(notifyItem));
+    list.hidden = !notifyState.channels.length;
+    $('notify-empty').hidden = notifyState.channels.length > 0;
+  }
+
+  async function loadNotify() {
+    if (!authenticated) return;
+    try {
+      Object.assign(notifyState, normalizeNotify(await api('/api/notify')), { loaded: true });
+      renderNotify();
+    } catch (error) {
+      if (error.status === 401) showLogin(error.message);
+    }
+  }
+
+  function showNotifyType(type) {
+    for (const group of $$('.notify-type-group')) group.hidden = group.dataset.notifyType !== type;
+  }
+
+  function openNotifyDialog(channel = null) {
+    if (!authenticated) return;
+    notifyState.editing = channel;
+    $('notify-dialog-title').textContent = channel ? '编辑通知渠道' : '添加通知渠道';
+    $('notify-name').value = channel ? str(channel.name) : '';
+    const type = channel && NOTIFY_FIELDS[channel.type] ? channel.type : 'bark';
+    $('notify-type').value = type;
+    $('notify-type').disabled = Boolean(channel);
+    for (const fields of Object.values(NOTIFY_FIELDS)) {
+      for (const [id, key] of Object.entries(fields)) $(id).value = channel && NOTIFY_PUBLIC.has(key) ? str(channel[key]) : '';
+    }
+    const chosen = new Set(channel ? channel.events || [] : NOTIFY_DEFAULT_EVENTS);
+    $('notify-events').replaceChildren(...Object.entries(notifyState.events).map(([event, label]) => {
+      const wrapper = makeElement('label', 'nas-check');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = event;
+      input.checked = chosen.has(event);
+      wrapper.append(input, makeElement('span', '', str(label)));
+      return wrapper;
+    }));
+    $('notify-enabled').checked = !channel || channel.enabled !== false;
+    $('notify-proxy').checked = !channel || channel.use_proxy !== false;
+    $('notify-secret-note').hidden = !channel;
+    showFieldMessage('notify-form-error', '');
+    showNotifyType(type);
+    $('notify-dialog').showModal();
+    $('notify-name').focus({ preventScroll: true });
+  }
+
+  function notifyFormPayload() {
+    const type = $('notify-type').value;
+    const channel = { type, name: $('notify-name').value.trim(), enabled: $('notify-enabled').checked,
+      use_proxy: $('notify-proxy').checked,
+      events: $$('#notify-events input').filter((input) => input.checked).map((input) => input.value) };
+    if (notifyState.editing) channel.id = notifyState.editing.id;
+    for (const [id, key] of Object.entries(NOTIFY_FIELDS[type] || {})) channel[key] = $(id).value.trim();
+    return channel;
+  }
+
+  async function saveNotify(event) {
+    event.preventDefault();
+    if (notifyState.busy) return;
+    notifyState.busy = true;
+    buttonBusy('notify-save', true);
+    showFieldMessage('notify-form-error', '');
+    try {
+      const data = await api('/api/notify/save', { channel: notifyFormPayload() });
+      Object.assign(notifyState, normalizeNotify(data));
+      renderNotify();
+      $('notify-dialog').close();
+      toast('通知渠道已保存，可以点「测试」确认。', 'success');
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      showFieldMessage('notify-form-error', error.message);
+    } finally {
+      notifyState.busy = false;
+      buttonBusy('notify-save', false);
+    }
+  }
+
+  async function testNotify(id) {
+    try {
+      await api('/api/notify/test', { id }, 20000);
+      toast('测试消息已发出，请到手机上查看。', 'success');
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      toast(error.message, 'error');
+    }
+  }
+
+  async function deleteNotify(channel) {
+    if (!window.confirm(`删除通知渠道「${str(channel.name)}」？`)) return;
+    try {
+      Object.assign(notifyState, normalizeNotify(await api('/api/notify/delete', { id: channel.id })));
+      renderNotify();
+    } catch (error) {
+      if (error.status === 401) { showLogin(error.message); return; }
+      toast(error.message, 'error');
+    }
+  }
+
   /* ── 备份与恢复 ─────────────────────────────────────────────────────── */
 
   const BACKUP_MAGIC = 'PS5JBBK1';
@@ -8305,6 +8457,10 @@
 
   function bindBackupEvents() {
     $('selfcheck-run').addEventListener('click', runSelfcheck);
+    $('notify-add').addEventListener('click', () => openNotifyDialog(null));
+    $('notify-type').addEventListener('change', () => showNotifyType($('notify-type').value));
+    $('notify-form').addEventListener('submit', saveNotify);
+    $('notify-cancel').addEventListener('click', () => $('notify-dialog').close());
     $('backup-key').addEventListener('change', () => {
       $('backup-passphrase-group').hidden = !$('backup-key').checked;
       showFieldMessage('backup-error', '');

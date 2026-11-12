@@ -68,7 +68,7 @@ function fixture(extra = {}) {
       files, filesRow, nasRow, filesVisibleEntries, titleIdOf, titleNames, flushTitleNames, normalizeFilesEntries,
       nas, nasArchiveSelection, extractTask, filesTransferTasks, filesTransferCard, normalizePs5,
       setNasJobs(value) { nasJobs = value; },
-      renderRestoreResult, backupFilename, renderSelfcheck,
+      renderRestoreResult, backupFilename, renderSelfcheck, renderNotify, notifyState, normalizeNotify,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
       normalizeRepo, renderUpstream, categoryChoices,
@@ -769,6 +769,27 @@ test('self-check results show a badge, detail and a fix only for problems', () =
   assert.match(ui.node('selfcheck-time').textContent, /1 项异常/);
   ui.renderSelfcheck(null);
   assert.equal(list.hidden, true);
+});
+
+test('notification channels list type, events and a missing secret, never a secret value', () => {
+  const ui = fixture();
+  Object.assign(ui.notifyState, ui.normalizeNotify({ channels: [
+    { id: 'a', name: '手机', type: 'bark', enabled: true, events: ['transfer.finished', 'transfer.failed'], has_secret: true, secret_ok: true },
+    { id: 'b', name: '', type: 'telegram', enabled: false, events: [], has_secret: false, secret_ok: true },
+    { name: 'no id' }
+  ], events: { 'transfer.finished': 'NAS 传输完成' } }));
+  ui.renderNotify();
+  const list = ui.node('notify-list');
+  assert.equal(list.hidden, false);
+  assert.equal(ui.node('notify-empty').hidden, true);
+  assert.equal(list.children.length, 2, 'entries without an id are dropped');
+  assert.match(textOf(list.children[0]), /手机.*Bark · 2 个事件/);
+  assert.match(textOf(list.children[1]), /Telegram.*已停用.*需要重新填写密钥/);
+  assert.match(textOf(list.children[0]), /测试.*编辑.*删除/);
+  Object.assign(ui.notifyState, ui.normalizeNotify({ channels: [] }));
+  ui.renderNotify();
+  assert.equal(ui.node('notify-empty').hidden, false);
+  assert.deepEqual(Object.keys(ui.notifyState.events), ['transfer.finished'], 'event labels are kept');
 });
 
 test('hosts remembered from an earlier run are marked until the scan reaches them', () => {
