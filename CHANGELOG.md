@@ -1,5 +1,16 @@
 # 变更记录
 
+## 1.14.1 — 2026-11-14
+
+**改动**
+- 游戏库按 ShadowMount+ 的配置找游戏：读主机上的 `/data/shadowmount/config.ini`（扫描路径和深度），没有路径时用它的默认路径，
+  和 ShadowMount+ 看到的游戏一致。新增识别 `.ffpfsc` / `.ffpfs` / `.exfat` / `.ffpkg` 镜像游戏（直接显示大小，封面取 ShadowMount+ 的封面缓存）。
+  `[ps5] game_dirs` 只在主机上没有 ShadowMount+ 配置时作为额外的扫描文件夹。
+- 迁移游戏的「从 / 到」改为 ShadowMount+ 的扫描路径（去掉「放到」选项），镜像游戏也能迁移；同一存储内的两个扫描路径之间直接移动。
+  `POST /api/library/migrate` 的 `target` 改为扫描路径，不再接受 `folder`；`GET /api/library` 新增 `scan_paths`、`scan_config`，
+  游戏带 `kind`（`folder` / `image`）、`format`、`scan_root`，不再返回 `game_dirs`。
+- 卸载支持镜像游戏：删除镜像文件，并移除 ShadowMount+ 挂载时注册的主屏幕图标。
+
 ## 1.14.0 — 2026-11-14
 
 **新功能**
