@@ -2,11 +2,12 @@
 
 TransferManager runs these as 'uninstall' jobs. Two kinds of game:
 
-- a game folder on /data, /mnt/ext* or /mnt/usb* (what the library lists): its
-  home-screen entry is removed through the ps5upload engine, but only when the
-  engine says the title was registered from this very folder; a PKG install or a
-  registration from another copy of the same title is left alone. Then the folder
-  is deleted through FileProxy;
+- a game folder or image file (.ffpfsc and friends) on /data, /mnt/ext* or
+  /mnt/usb* (what the library lists): its home-screen entry is removed through
+  the ps5upload engine, but only when the engine says the title was registered
+  from this very folder (for an image: from a ShadowMount+ image mount); a PKG
+  install or a registration from another copy of the same title is left alone.
+  Then the folder or file is deleted through FileProxy;
 - a PKG install (origin 'pkg' in the engine's list): the engine runs Sony's
   uninstall (sceAppInstUtilAppUninstall), which removes the app and its icon.
 
@@ -32,8 +33,13 @@ class UninstallError(MigrationError):
     pass
 
 
-def _registered_here(entry, folder):
+IMAGE_MOUNTS = '/mnt/shadowmnt/'
+
+
+def _registered_here(entry, folder, image=False):
     source = (entry.get('source') or '').rstrip('/')
+    if image:
+        return bool(entry.get('image_backed')) or source.startswith(IMAGE_MOUNTS)
     return bool(source) and (source == folder or source.startswith(folder + '/'))
 
 
@@ -44,12 +50,12 @@ class UninstallJobs:
 
     def start_uninstall(self, path='', title='', origin='folder', delete_saves=False, delete_cheats=True,
                         host=None, name=''):
-        if origin not in ('folder', 'pkg'):
+        if origin not in ('folder', 'image', 'pkg'):
             raise UninstallError('未知的游戏类型')
-        if origin == 'folder':
+        if origin != 'pkg':
             if (not isinstance(path, str) or posixpath.normpath(path) != path or not volume_root(path)
                     or path == volume_root(path)):
-                raise UninstallError('游戏文件夹必须在 /data、/mnt/ext*、/mnt/usb* 下')
+                raise UninstallError('游戏必须在 /data、/mnt/ext*、/mnt/usb* 下')
         else:
             path = ''
         if title:
@@ -137,10 +143,11 @@ class UninstallJobs:
         path, title = job['path'], job['title']
         self._set(job, state='scanning', phase='check', started=time.time())
         present = None
+        image = job['origin'] == 'image'
         if path:
             present = self._ps5_entry(path)
-            if present is not None and not present.get('dir', True):
-                raise UninstallError(f'{path} 不是文件夹')
+            if present is not None and bool(present.get('dir', True)) == image:
+                raise UninstallError(f'{path} 不是{"游戏镜像文件" if image else "文件夹"}')
         installed, engine_error = None, ''
         if title and services is not None:
             try:
@@ -158,7 +165,8 @@ class UninstallJobs:
                 raise UninstallError(f'主机上没有以 PKG 安装的 {title}，请刷新后重试')
             unregister = True
         elif title:
-            mine = [item for item in entries if item['origin'] == 'registered' and _registered_here(item, path)]
+            mine = [item for item in entries
+                    if item['origin'] == 'registered' and _registered_here(item, path, image)]
             others = [item for item in entries if item not in mine]
             unregister = bool(mine)
             if installed is None:

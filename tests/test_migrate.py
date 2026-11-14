@@ -1,4 +1,5 @@
-"""Game migration between the console's volumes (internal /data <-> M.2 / USB)."""
+"""Game migration between ShadowMount+ scan paths (internal /data <-> M.2 / USB)."""
+import io
 import sys
 import tempfile
 import threading
@@ -15,6 +16,8 @@ from migrate import MigrationError, migration_target, volume_root  # noqa: E402
 from nas import NasStore, TransferManager  # noqa: E402
 
 GAME = '/data/games/PPSA01234'
+IMAGE = '/data/games/PPSA05555.ffpfsc'
+SCAN_CONFIG = b'[scan]\npath = /data/games\npath = /mnt/ext0/games\npath = /data/homebrew\n'
 
 
 class FakeConsole:
@@ -32,6 +35,12 @@ class FakeConsole:
         self.hold.set()
         self.fail_delete = False
         self.calls = []
+        self.blobs = {'/data/shadowmount/config.ini': SCAN_CONFIG}
+
+    def stream(self, path):
+        if path not in self.blobs:
+            raise FileServiceError('missing', status=404)
+        return io.BytesIO(self.blobs[path])
 
     # -- listing --
     def _children(self, path):
@@ -80,7 +89,7 @@ class FakeConsole:
             self.dirs.add(target + d[len(source):])
             if not keep:
                 self.dirs.discard(d)
-        for k in [k for k in self.files if k.startswith(source + '/')]:
+        for k in [k for k in self.files if k == source or k.startswith(source + '/')]:
             if k == self.drop:
                 continue
             self.files[target + k[len(source):]] = self.files[k]
@@ -90,9 +99,9 @@ class FakeConsole:
     # -- console copy job --
     def copy(self, source, target, move=False):
         self.calls.append(('copy', source, target))
-        if target in self.dirs:
+        if target in self.dirs or target in self.files:
             raise FileServiceError('exists', status=409)
-        total = self.folder_size(source)['size']
+        total = self.files[source] if source in self.files else self.folder_size(source)['size']
         self.state = {'state': 'copying', 'kind': 'copy', 'name': source.rsplit('/', 1)[-1],
                       'done': 0, 'total': total}
         self.pending = (source, target, total, self.copy_steps)
@@ -135,20 +144,14 @@ def wait(manager, ident, timeout=10):
 class TargetTests(unittest.TestCase):
     game = {'path': GAME, 'name': 'Demo'}
 
-    def test_keeps_the_path_below_the_volume_by_default(self):
-        self.assertEqual(migration_target(self.game, '/mnt/ext0'), '/mnt/ext0/games/PPSA01234')
-        self.assertEqual(migration_target({'path': '/mnt/usb1/CUSA00001'}, '/data'), '/data/CUSA00001')
+    def test_the_game_lands_in_the_target_scan_path(self):
+        self.assertEqual(migration_target(self.game, '/mnt/ext0/games'), '/mnt/ext0/games/PPSA01234')
+        self.assertEqual(migration_target({'path': '/mnt/usb1/x/CUSA00001'}, '/data/homebrew'),
+                         '/data/homebrew/CUSA00001')
+        self.assertEqual(migration_target({'path': IMAGE}, '/data/homebrew'), '/data/homebrew/PPSA05555.ffpfsc')
 
-    def test_folder_choice(self):
-        dirs = ('games', 'etaHEN/games')
-        self.assertEqual(migration_target(self.game, '/mnt/ext0', '', dirs), '/mnt/ext0/PPSA01234')
-        self.assertEqual(migration_target(self.game, '/mnt/ext0', 'etaHEN/games', dirs),
-                         '/mnt/ext0/etaHEN/games/PPSA01234')
-        with self.assertRaises(MigrationError):
-            migration_target(self.game, '/mnt/ext0', '../etc', dirs)
-
-    def test_rejects_same_volume_and_foreign_targets(self):
-        for target in ('/data', '/etc', '/mnt/ext0/games', ''):
+    def test_rejects_its_own_folder_and_foreign_targets(self):
+        for target in ('/data/games', '/etc', '', GAME, GAME + '/sub', '/data/../etc', '/user/app'):
             with self.assertRaises(MigrationError, msg=target):
                 migration_target(self.game, target)
         self.assertEqual(volume_root('/mnt/ext12/a'), '/mnt/ext12')
@@ -233,7 +236,7 @@ class MigrateJobTests(unittest.TestCase):
         self.console.fail_delete = True
         job = wait(manager, manager.start_migrate(GAME, '/mnt/ext0/games/PPSA01234')['id'])
         self.assertEqual(job['state'], 'done_with_warnings')
-        self.assertIn('原文件夹没删掉', job['source_error'])
+        self.assertIn('原来的那份没删掉', job['source_error'])
         self.assertIn('/mnt/ext0/games/PPSA01234/eboot.bin', self.console.files)
 
     def test_registration_failure_is_a_warning(self):
@@ -276,12 +279,54 @@ class MigrateJobTests(unittest.TestCase):
         self.assertEqual(retried['retry_of'], job['id'])
         self.assertEqual(wait(manager, retried['id'])['state'], 'done')
 
+    def test_image_file_is_copied_through_a_visible_staging_name(self):
+        self.console.files[IMAGE] = 5000
+        services = mock.Mock()
+        manager = self.manager(game_services=services)
+        job = wait(manager, manager.start_migrate(IMAGE, '/mnt/ext0/games/PPSA05555.ffpfsc', register=True,
+                                                  title='PPSA05555', kind='image')['id'])
+        self.assertEqual(job['state'], 'done', job)
+        self.assertEqual((job['bytes_total'], job['files_total']), (5000, 1))
+        self.assertIn(('copy', IMAGE, '/mnt/ext0/games/PPSA05555.ffpfsc.migrating'), self.console.calls)
+        self.assertIn(('rename', '/mnt/ext0/games/PPSA05555.ffpfsc.migrating', '/mnt/ext0/games/PPSA05555.ffpfsc'),
+                      self.console.calls)
+        self.assertEqual(self.console.files.get('/mnt/ext0/games/PPSA05555.ffpfsc'), 5000)
+        self.assertNotIn(IMAGE, self.console.files)
+        services.register.assert_not_called()       # ShadowMount+ registers images itself
+
+    def test_image_verification_failure_keeps_the_source(self):
+        self.console.files[IMAGE] = 5000
+        self.console.drop = IMAGE
+        manager = self.manager()
+        job = wait(manager, manager.start_migrate(IMAGE, '/mnt/ext0/games/PPSA05555.ffpfsc', kind='image')['id'])
+        self.assertEqual(job['state'], 'failed')
+        self.assertIn('校验没通过', job['error'])
+        self.assertIn(IMAGE, self.console.files)
+        self.assertFalse([key for key in self.console.files if key.startswith('/mnt/ext0/')])
+
+    def test_wrong_kind_is_refused(self):
+        manager = self.manager()
+        job = wait(manager, manager.start_migrate(GAME, '/mnt/ext0/games/PPSA01234', kind='image')['id'])
+        self.assertEqual(job['state'], 'failed')
+        self.assertIn('不存在', job['error'])
+
+    def test_same_volume_is_a_rename(self):
+        manager = self.manager()
+        job = wait(manager, manager.start_migrate(GAME, '/data/homebrew/PPSA01234', keep_source=True)['id'])
+        self.assertEqual(job['state'], 'done', job)
+        self.assertFalse([call for call in self.console.calls if call[0] == 'copy'])
+        self.assertIn(('rename', GAME, '/data/homebrew/PPSA01234'), self.console.calls)
+        self.assertIn('/data/homebrew/PPSA01234/eboot.bin', self.console.files)
+        self.assertNotIn(GAME, self.console.dirs)
+
     def test_bad_requests(self):
         manager = self.manager()
-        for source, target in ((GAME, '/data/other/PPSA01234'), (GAME, '/mnt/ext0/games/OTHER'),
+        for source, target in ((GAME, GAME), (GAME, GAME + '/x/PPSA01234'), (GAME, '/mnt/ext0/games/OTHER'),
                                ('/user/app/X', '/mnt/ext0/X'), (GAME, '/mnt/ext0')):
             with self.assertRaises(MigrationError, msg=(source, target)):
                 manager.start_migrate(source, target)
+        with self.assertRaises(MigrationError):
+            manager.start_migrate(IMAGE, '/mnt/ext0/games/PPSA05555.ffpfsc', kind='disc')
         self.console.hold.clear()          # keep the first job busy
         try:
             first = manager.start_migrate(GAME, '/mnt/ext0/games/PPSA01234')
@@ -323,19 +368,26 @@ class MigrateApiTests(unittest.TestCase):
         return handler.result
 
     def test_queues_one_job_per_game_with_registration_for_title_folders(self):
-        status, data = self.post({'paths': [GAME], 'target': '/mnt/ext0', 'host': '192.0.2.5'})
+        self.api.library.files.files[IMAGE] = 5000
+        status, data = self.post({'paths': [GAME, IMAGE], 'target': '/mnt/ext0/games/', 'host': '192.0.2.5'})
         self.assertEqual(status, 200, data)
-        self.api.transfers.start_migrate.assert_called_once_with(
-            GAME, '/mnt/ext0/games/PPSA01234', register=True, keep_source=False, host='192.0.2.5',
-            title='PPSA01234', name='PPSA01234')
+        calls = self.api.transfers.start_migrate.call_args_list
+        self.assertEqual(calls[0], mock.call(GAME, '/mnt/ext0/games/PPSA01234', register=True, keep_source=False,
+                                             host='192.0.2.5', title='PPSA01234', name='PPSA01234', kind='folder'))
+        self.assertEqual(calls[1], mock.call(IMAGE, '/mnt/ext0/games/PPSA05555.ffpfsc', register=False,
+                                             keep_source=False, host='192.0.2.5', title='',
+                                             name='PPSA05555.ffpfsc', kind='image'))
 
-    def test_rejects_unknown_games_volumes_and_folders(self):
-        for body in ({'paths': ['/data/games/NOPE'], 'target': '/mnt/ext0'},
-                     {'paths': [GAME], 'target': '/mnt/ext9'},
-                     {'paths': [GAME], 'target': '/data'},
-                     {'paths': [GAME], 'target': '/mnt/ext0', 'folder': 'secret'},
-                     {'paths': [], 'target': '/mnt/ext0'},
-                     {'paths': [GAME, GAME], 'target': '/mnt/ext0'}):
+    def test_targets_must_be_scan_paths(self):
+        status, data = self.post({'paths': [GAME], 'target': '/data/homebrew'})
+        self.assertEqual(status, 200, data)
+        self.api.transfers.start_migrate.reset_mock()
+        for body in ({'paths': ['/data/games/NOPE'], 'target': '/mnt/ext0/games'},
+                     {'paths': [GAME], 'target': '/mnt/ext9/games'},
+                     {'paths': [GAME], 'target': '/mnt/ext0'},
+                     {'paths': [GAME], 'target': '/data/games'},
+                     {'paths': [], 'target': '/mnt/ext0/games'},
+                     {'paths': [GAME, GAME], 'target': '/mnt/ext0/games'}):
             status, data = self.post(body)
             self.assertEqual(status, 400, (body, data))
         self.api.transfers.start_migrate.assert_not_called()

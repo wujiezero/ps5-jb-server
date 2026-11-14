@@ -268,8 +268,7 @@ class ConsoleAPI:
 
     def _get_library(self, handler):
         refresh = self._arg(handler, 'refresh') in ('1', 'true', 'yes')
-        result = self.library.scan(refresh=refresh)
-        handler.send_body(200, {**result, 'game_dirs': self.library.game_dirs})
+        handler.send_body(200, self.library.scan(refresh=refresh))
 
     def _get_library_apps(self, handler):
         """What the ps5upload engine says is installed; never fails the page when the engine is away."""
@@ -288,14 +287,14 @@ class ConsoleAPI:
 
     def _get_library_icon(self, handler):
         try:
-            data, etag = self.library.icon(self._arg(handler, 'path'))
+            data, etag, ctype = self.library.icon(self._arg(handler, 'path'))
         except LibraryError as exc:
             handler.send_body(404, {'error': str(exc)})
             return
         if handler.headers.get('If-None-Match') == etag:
-            handler.send_body(304, b'', ctype='image/png', cache='private, max-age=86400', etag=etag)
+            handler.send_body(304, b'', ctype=ctype, cache='private, max-age=86400', etag=etag)
             return
-        handler.send_body(200, data, ctype='image/png', cache='private, max-age=86400', etag=etag)
+        handler.send_body(200, data, ctype=ctype, cache='private, max-age=86400', etag=etag)
 
     def _get_transfers(self, handler):
         handler.send_body(200, {'jobs': self.transfers.snapshot()})
@@ -580,38 +579,33 @@ class ConsoleAPI:
 
     def _post_library_register(self, handler, body, path):
         game = self.library.known(body.get('path'))
-        if not game['title'] or game['folder'] != game['title']:
+        if game['kind'] != 'folder' or not game['title'] or game['folder'] != game['title']:
             raise ValueError('只有以游戏编号命名的文件夹可以注册主屏幕图标（例如 …/CUSA12345）')
         host = body.get('host') or self.files.host
         handler.send_body(200, {'ok': True, 'result': self.game_services.register(
             host, {'title': game['title'], 'path': game['path'], 'name': game['name']})})
 
     def _post_library_migrate(self, handler, body, path):
-        """Queue moving library games to another volume: one 'migrate' job per game."""
+        """Queue moving library games to another ShadowMount+ scan path: one 'migrate' job per game."""
         paths = body.get('paths')
         if not isinstance(paths, list) or not 0 < len(paths) <= MIGRATE_LIMIT or len(set(map(str, paths))) != len(paths):
             raise ValueError(f'请选择 1–{MIGRATE_LIMIT} 个要迁移的游戏')
         target = body.get('target')
         if not isinstance(target, str) or not target:
-            raise ValueError('请选择目标存储')
-        scan = self.library.scan()
-        if target.rstrip('/') not in {volume['path'] for volume in scan.get('volumes', [])}:
-            raise ValueError('PS5 上没有这个存储，请刷新游戏库')
-        folder = body.get('folder')
-        if folder is not None and not isinstance(folder, str):
-            raise ValueError('目标文件夹不正确')
+            raise ValueError('请选择目标路径')
+        target = self.library.scan_path(target)['path']
         host = body.get('host') or self.files.host
         register = bool(body.get('register', True))
         planned = []      # validate everything before queueing anything
         for item in paths:
             game = self.library.known(item)
-            destination = migration_target(game, target.rstrip('/'), folder, self.library.game_dirs)
+            destination = migration_target(game, target)
             # Registration needs a folder named after the title (…/CUSA12345).
-            title = game['title'] if game['title'] and game['folder'] == game['title'] else ''
+            title = game['title'] if game['kind'] == 'folder' and game['title'] and game['folder'] == game['title'] else ''
             planned.append((game, destination, title))
         jobs = [self.transfers.start_migrate(game['path'], destination, register=register and bool(title),
                                              keep_source=bool(body.get('keep_source')), host=host,
-                                             title=title, name=game['name'])
+                                             title=title, name=game['name'], kind=game['kind'])
                 for game, destination, title in planned]
         handler.send_body(200, {'ok': True, 'jobs': jobs})
 
@@ -631,7 +625,7 @@ class ConsoleAPI:
                 key = title
             else:
                 game = self.library.known(item.get('path'))
-                planned.append({'path': game['path'], 'title': game['title'], 'origin': 'folder',
+                planned.append({'path': game['path'], 'title': game['title'], 'origin': game['kind'],
                                 'name': game['name']})
                 key = game['path']
             if key in seen:

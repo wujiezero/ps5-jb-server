@@ -56,7 +56,7 @@ module.exports = async (page) => {
       case '/api/nas': json = { connections: [] }; break;
       case '/api/titles': json = { titles: {} }; break;
       case '/api/files/job': json = { state: 'idle' }; break;
-      case '/api/library': json = { host: host.ip, games: [{ title: 'CUSA12345', name: '一个名字很长很长的游戏用来检查卡片在窄屏上会不会撑破页面', folder: 'CUSA12345', path: '/data/games/CUSA12345', volume: '/data', volume_label: '内置存储', platform: 'PS4', mtime: 1794200000, size: null }], volumes: [{ path: '/data', label: '内置存储' }], errors: [], game_dirs: ['games'] }; break;
+      case '/api/library': json = { host: host.ip, games: [{ title: 'CUSA12345', name: '一个名字很长很长的游戏用来检查卡片在窄屏上会不会撑破页面', folder: 'CUSA12345', path: '/data/games/CUSA12345', volume: '/data', volume_label: '内置存储', platform: 'PS4', mtime: 1794200000, size: null, kind: 'folder', scan_root: '/data/games' }], volumes: [{ path: '/data', label: '内置存储' }], errors: [], scan_paths: [{ path: '/data/games', volume: '/data', exists: true, games: 1 }], scan_config: { source: 'config', file: '/data/shadowmount/config.ini', depth: 1, skipped: [] } }; break;
       case '/api/library/icon': return route.fulfill({ status: 404, json: { error: '这个游戏没有封面' } });
       default: return route.fulfill({ status: 404, json: { error: 'Unknown fixture API: ' + url.pathname } });
     }

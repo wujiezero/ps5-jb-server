@@ -127,6 +127,25 @@ class UninstallJobTests(unittest.TestCase):
         self.assertEqual(job['state'], 'done_with_warnings')
         self.assertIn('设置 → 存储', job['warnings'][0])
 
+    def test_image_game_uses_its_shadowmount_registration_and_deletes_the_file(self):
+        image = '/data/games/PPSA01234.ffpfsc'
+        self.console.files[image] = 5000
+        mounted = {**registered('/mnt/shadowmnt/PPSA01234_1a2b3c4d'), 'image_backed': True}
+        services = FakeServices([mounted])
+        job = self.run_job(services, path=image, origin='image', delete_cheats=False)
+        self.assertEqual(job['state'], 'done', job)
+        self.assertEqual(services.calls, [('unregister', 'PPSA01234')])
+        self.assertNotIn(image, self.console.files)
+        self.assertIn(GAME + '/eboot.bin', self.console.files)
+        # A folder copy's registration is not the image's to remove.
+        self.console.files[image] = 5000
+        services = FakeServices([registered()])
+        job = self.run_job(services, path=image, origin='image', delete_cheats=False)
+        self.assertEqual((job['state'], services.calls), ('done_with_warnings', []))
+        self.assertNotIn(image, self.console.files)
+        job = self.run_job(FakeServices([]), path=GAME, origin='image')
+        self.assertIn('不是游戏镜像文件', job['error'])
+
     def test_bad_requests(self):
         manager = TransferManager(self.store, self.console)
         for kwargs in ({'path': '/data'}, {'path': '/user/app/PPSA01234'}, {'path': '/data/../etc'},
@@ -185,14 +204,17 @@ class UninstallApiTests(unittest.TestCase):
         self.api.handle_post(handler, route)
         return handler.result
 
-    def test_queues_folders_and_pkg_installs_saves_off_by_default(self):
-        status, data = self.post({'items': [{'path': GAME}, {'origin': 'pkg', 'title': 'PPSA05555', 'name': 'P'}],
+    def test_queues_folders_images_and_pkg_installs_saves_off_by_default(self):
+        self.api.library.files.files['/data/games/PPSA07777.exfat'] = 10
+        status, data = self.post({'items': [{'path': GAME}, {'origin': 'pkg', 'title': 'PPSA05555', 'name': 'P'},
+                                            {'path': '/data/games/PPSA07777.exfat', 'origin': 'folder'}],
                                   'host': '192.0.2.5'})
         self.assertEqual(status, 200, data)
         calls = [call.kwargs for call in self.api.transfers.start_uninstall.call_args_list]
         self.assertEqual(calls[0], {'path': GAME, 'title': 'PPSA01234', 'origin': 'folder', 'name': 'PPSA01234',
                                     'delete_saves': False, 'delete_cheats': True, 'host': '192.0.2.5'})
         self.assertEqual(calls[1]['origin'], 'pkg')
+        self.assertEqual((calls[2]['origin'], calls[2]['title']), ('image', 'PPSA07777'))
 
     def test_rejects_unknown_folders_and_duplicates(self):
         for body in ({'items': [{'path': '/data/games/NOPE'}]}, {'items': []},

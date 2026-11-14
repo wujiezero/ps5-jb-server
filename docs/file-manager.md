@@ -236,22 +236,23 @@ WebDAV 的流式 `PUT` 不能在 401 质询后重发，所以写入前先用一�
 
 **需真机验证**：把一个游戏目录分别备份到 WebDAV、SMB、FTP 三种 NAS，对比文件数与总大小；确认上述系统目录的实际路径。
 
-## 游戏迁移（内置存储 ↔ M.2 / USB 硬盘）
+## 游戏迁移（在 ShadowMount+ 扫描路径之间）
 
 `server/migrate.py`，`TransferManager` 的 `migrate` 任务。入口：游戏库卡片的「迁移」、游戏库和 PS5 文件页工具栏的「迁移游戏」。
-`POST /api/library/migrate {paths, target, folder?, register, keep_source, host}`：`paths` 必须是游戏库扫描到的文件夹（1–50 个），
-`target` 是扫描到的另一个存储卷；每个游戏一个任务，按顺序执行。目标路径默认保持卷内相对位置
-（`/data/games/X` → `/mnt/ext0/games/X`），`folder` 为 `''` 时放到卷根目录，其它值只能是 `[ps5] game_dirs` 之一。
+`POST /api/library/migrate {paths, target, register, keep_source, host}`：`paths` 必须是游戏库扫描到的游戏（文件夹或镜像文件，1–50 个），
+`target` 必须是游戏库的扫描路径之一（即 ShadowMount+ 配置里的路径，见架构文档「游戏库」）；游戏放到 `<target>/<原名字>`，
+每个游戏一个任务，按顺序执行。对话框里「从 / 到」两个下拉框就是这些扫描路径。
 
-数据不经过本机：`FileProxy.copy()` 让 PS5 上的文件服务自己从一块盘复制到另一块（tom-ps5-usbnet `/fs/copy`，
+源和目标在同一个存储卷上时直接改名，不复制（`keep_source` 不起作用）。跨卷时数据不经过本机：`FileProxy.copy()` 让 PS5 上的文件服务自己从一块盘复制到另一块（tom-ps5-usbnet `/fs/copy`，
 或 FTP 后备的两条连接 `RETR`→`STOR`），服务每秒读一次 `/fs/job` 换算进度。步骤：
 
 1. 检查：原文件夹存在、目标没有同名文件夹、主机上没有别的复制任务（最多等 30 秒）、`folder_size` 得到大小和文件数、
    目标卷剩余空间 ≥ 游戏大小 + 1 GiB（卷容量未知时跳过这一项）；
-2. 复制到目标父目录下的隐藏文件夹 `.migrate-<名字>`（上次中断留下的同名暂存目录先删掉），ShadowMount / etaHEN 不会扫到半截游戏；
-3. 校验：暂存目录的总字节数和文件数必须与原文件夹一致；
-4. 同盘改名放到位，然后删除原文件夹（`keep_source` 时保留）；
-5. 以游戏编号命名的文件夹可在新位置重新注册主屏幕图标（ps5upload 引擎）。
+2. 复制到暂存位置（上次中断留下的先删掉）：文件夹复制成隐藏的 `.migrate-<名字>`，镜像复制成 `<名字>.migrating`
+   （扩展名不再是 `.ffpfsc` 等），ShadowMount+ / etaHEN 都不会扫到半截游戏；
+3. 校验：暂存副本的总字节数（文件夹还要文件数）必须与原来的一致；
+4. 同盘改名放到位，然后删除原来的那份（`keep_source` 时保留）；
+5. 以游戏编号命名的文件夹可在新位置重新注册主屏幕图标（ps5upload 引擎）；镜像游戏由 ShadowMount+ 自己挂载、注册。
 
 第 4 步改名之前的任何失败或取消都删除暂存目录，原文件夹不动；`/fs/job` 报失败、10 分钟没有进展、连续 30 次读不到进度都算失败。
 改名之后游戏已完整在目标位置，原文件夹删不掉或注册失败只记为「完成（有提醒）」。失败的任务可以「重试」。
@@ -260,12 +261,13 @@ WebDAV 的流式 `PUT` 不能在 401 质询后重发，所以写入前先用一�
 PKG 安装的游戏不在文件白名单里，请用主机的「设置 → 存储」移动。
 
 **需真机验证**：tom-ps5-usbnet 的 `/fs/job` 在复制结束后报 `done` 还是 `idle`（两种都按「结束、交给校验」处理）；
-FTP 后备在内置盘和 M.2 之间复制一个大游戏的速度。
+FTP 后备在内置盘和 M.2 之间复制一个大游戏的速度；`/fs/copy` 复制单个大镜像文件；迁移一个已挂载的镜像后
+ShadowMount+ 是否自动卸下旧挂载、挂上新位置。
 
 ## 游戏卸载
 
 `server/uninstall.py`，`TransferManager` 的 `uninstall` 任务。入口：游戏库卡片的「卸载」和工具栏的「卸载游戏」。
-`POST /api/library/uninstall {items, delete_cheats, delete_saves, host}`：`items` 里是游戏库文件夹 `{path}`，
+`POST /api/library/uninstall {items, delete_cheats, delete_saves, host}`：`items` 里是游戏库的游戏 `{path}`（文件夹或镜像文件），
 或 PKG 安装的游戏 `{origin: "pkg", title}`；`delete_cheats` 默认开，`delete_saves` 默认关。
 
 用到 ps5upload 引擎的四个接口（按 v12.4.16 源码核对，`engine/crates/ps5upload-engine` 与 `payload/src/register.c`）：
@@ -282,11 +284,13 @@ FTP 后备在内置盘和 M.2 之间复制一个大游戏的速度。
 
 - 文件夹游戏只在引擎显示图标**是从这个文件夹注册的**（`origin == registered` 且 `source` 是这个文件夹或其下级）时才调用卸载接口；
   同编号的图标属于另一份游戏或 PKG 安装时保留不动，任务里提醒。没注册过图标的文件夹直接删除。
+- 镜像游戏：引擎显示该编号是从 ShadowMount+ 的镜像挂载（`image_backed`，`source` 在 `/mnt/shadowmnt/` 下）注册的时候移除图标，
+  然后删除镜像文件。
 - 移除图标失败（例如游戏正在运行、卸载 nullfs 失败）时任务失败，什么都不删。
 - 主机拒绝卸载或卸载后仍在「设置 → 存储」里列出：PKG 游戏记为失败；文件夹游戏照常删除，记为「完成（有提醒）」。
 - 引擎不可用时文件夹游戏仍会删除，图标和存档跳过并提醒；PKG 游戏需要引擎。系统应用（NPXS）不能卸载。
 
-**需真机验证**：直接删除存档文件夹后，「设置 → 存档数据」里是否还留有条目（存档数据库在
+**需真机验证**：引擎的 `unregister` 对 ShadowMount+ 挂载的镜像游戏是否成功；直接删除存档文件夹后，「设置 → 存档数据」里是否还留有条目（存档数据库在
 `/system_data/savedata_prospero/<用户>/db/user/savedata.db`，本服务不改它）；FTP 后备删除一个几万文件的游戏文件夹要多久。
 
 ## 游戏名称（标题 ID → 游戏名）

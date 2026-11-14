@@ -275,8 +275,9 @@ class GameServices:
     def installed(self, host):
         """Titles on the console now: [{title, name, origin, source, system}].
 
-        origin is 'registered' (a folder game registered by ps5upload; source is its folder),
-        'pkg' (installed by Sony's installer) or 'system'.
+        origin is 'registered' (a folder game registered by ps5upload; source is its folder,
+        or a ShadowMount+ image mount when image_backed), 'pkg' (installed by Sony's
+        installer) or 'system'.
         """
         result = self._request('GET', '/api/ps5/apps/installed?' + urllib.parse.urlencode({'addr': host}),
                                timeout=30)
@@ -286,6 +287,7 @@ class GameServices:
                 continue
             titles.append({'title': item['title_id'], 'name': str(item.get('title_name') or ''),
                            'origin': str(item.get('origin') or ''), 'source': str(item.get('source') or ''),
+                           'image_backed': bool(item.get('image_backed')),
                            'system': bool(item.get('system')) or item['title_id'].startswith('NPXS')})
         return {'titles': titles, 'incomplete': bool(result.get('incomplete')),
                 'registered_unavailable': bool(result.get('registered_unavailable'))}

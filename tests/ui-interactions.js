@@ -77,7 +77,7 @@ function fixture(extra = {}) {
       renderRestoreResult, backupFilename, renderSelfcheck, renderNotify, notifyState, normalizeNotify,
       renderQueryLogs, renderLogs, logs,
       library, normalizeLibrary, libraryCard, libraryVisible, renderLibrary, backupSources, backupTask,
-      migrateTask, uninstallTask, libraryPackages, volumeKind,
+      migrateTask, uninstallTask, libraryPackages, volumeKind, libraryScanNote, libraryCounts,
       actHistory, renderStats, renderHistory, setActivityMode,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
@@ -782,12 +782,15 @@ test('game library cards: cover only for title IDs, register only for ID-named f
   const ui = fixture();
   ui.setAuthenticated(true);
   const data = ui.normalizeLibrary({ host: '192.0.2.5', games: [
-    { title: 'CUSA12345', name: '某游戏', folder: 'CUSA12345', path: '/data/CUSA12345', volume: '/data', volume_label: 'data', platform: 'PS4', size: null },
-    { title: 'PPSA01234', name: 'Big', folder: 'PPSA01234-app', path: '/mnt/ext0/games/PPSA01234-app', volume: '/mnt/ext0', platform: 'PS5', size: 5 << 30 },
-    { title: '', name: 'Homebrew<script>', folder: 'Homebrew', path: '/data/games/Homebrew', volume: '/data', size: 1024 },
+    { title: 'CUSA12345', name: '某游戏', folder: 'CUSA12345', path: '/data/homebrew/CUSA12345', volume: '/data', volume_label: 'data', platform: 'PS4', size: null, kind: 'folder', scan_root: '/data/homebrew' },
+    { title: 'PPSA01234', name: 'Big', folder: 'PPSA01234-app', path: '/mnt/ext0/games/PPSA01234-app', volume: '/mnt/ext0', platform: 'PS5', size: 5 << 30, scan_root: '/mnt/ext0/games' },
+    { title: '', name: 'Homebrew<script>', folder: 'Homebrew', path: '/data/homebrew/Homebrew', volume: '/data', size: 1024, scan_root: '/data/homebrew' },
     { name: 'bad' }
-  ], volumes: [{ path: '/data', label: 'data' }, { path: '/mnt/ext0', label: 'ext0' }] });
+  ], volumes: [{ path: '/data', label: 'data' }, { path: '/mnt/ext0', label: 'ext0' }],
+  scan_paths: [{ path: '/data/homebrew', volume: '/data', exists: true, games: 2 }, { path: '/mnt/ext0/games', volume: '/mnt/ext0', exists: true, games: 1 }],
+  scan_config: { source: 'config', file: '/data/shadowmount/config.ini', depth: 1, skipped: ['/mnt/smb/x'] } });
   assert.equal(data.games.length, 3);
+  assert.equal(data.scanPaths.length, 2);
   const buttons = (card) => {
     const out = [];
     const walk = (node) => { if (node.tagName === 'button') out.push(node.textContent); node.children.forEach(walk); };
@@ -800,7 +803,7 @@ test('game library cards: cover only for title IDs, register only for ID-named f
   assert.ok(buttons(big).includes('5.0 GB') || buttons(big).some((label) => /GB/.test(label)));
   assert.equal(homebrew.children[0].tagName, 'span', 'no cover request without a title ID');
   assert.equal(plain.children[0].tagName, 'img');
-  assert.match(plain.children[0].src, /\/api\/library\/icon\?path=%2Fdata%2FCUSA12345/);
+  assert.match(plain.children[0].src, /\/api\/library\/icon\?path=%2Fdata%2Fhomebrew%2FCUSA12345/);
   assert.match(textOf(homebrew), /Homebrew<script>/, 'names are text, never markup');
   Object.assign(ui.library, data, { loaded: true });
   ui.node('library-sort').value = 'size';
@@ -809,8 +812,35 @@ test('game library cards: cover only for title IDs, register only for ID-named f
   ui.node('library-search').value = 'cusa';
   assert.deepEqual(ui.libraryVisible().map((game) => game.title), ['CUSA12345']);
   ui.node('library-search').value = '';
-  ui.node('library-volume').value = '/mnt/ext0';
+  ui.node('library-volume').value = '/mnt/ext0/games';
   assert.deepEqual(ui.libraryVisible().map((game) => game.name), ['Big']);
+  const note = ui.libraryScanNote();
+  assert.match(note, /config\.ini/);
+  assert.match(note, /\/data\/homebrew、\/mnt\/ext0\/games/);
+  assert.match(note, /\/mnt\/smb\/x/);
+  assert.equal(ui.libraryCounts(), '3 个游戏文件夹');
+});
+
+test('image games: listed with their format, no register button, registration from the ShadowMount+ mount', () => {
+  const ui = fixture();
+  ui.setAuthenticated(true);
+  Object.assign(ui.library, ui.normalizeLibrary({ host: '192.0.2.5', games: [
+    { title: 'PPSA01476', name: 'Rift Apart', folder: 'PPSA01476.ffpfsc', path: '/mnt/ext0/games/PPSA01476.ffpfsc', volume: '/mnt/ext0',
+      platform: 'PS5', size: 37 << 30, kind: 'image', format: 'ffpfsc', scan_root: '/mnt/ext0/games' },
+    { title: 'PPSA03671', name: 'Folder', folder: 'PPSA03671', path: '/mnt/ext0/games/PPSA03671', volume: '/mnt/ext0', kind: 'folder', scan_root: '/mnt/ext0/games' }
+  ], volumes: [{ path: '/data' }, { path: '/mnt/ext0' }], scan_paths: [{ path: '/mnt/ext0/games', volume: '/mnt/ext0' }, { path: '/data/homebrew', volume: '/data' }] }), { loaded: true });
+  ui.library.apps = { loaded: true, loading: false, available: true, error: '', titles: [
+    { title: 'PPSA01476', name: 'Rift Apart', origin: 'registered', source: '/mnt/shadowmnt/PPSA01476_944c3c47', system: false, imageBacked: true }] };
+  const image = ui.libraryCard(ui.library.games[0]);
+  const labels = [];
+  const walk = (node) => { if (node.tagName === 'button') labels.push(node.textContent); node.children.forEach(walk); };
+  walk(image);
+  assert.ok(!labels.includes('注册图标'), 'ShadowMount+ registers images itself');
+  assert.ok(labels.includes('迁移'));
+  assert.match(textOf(image), /镜像 FFPFSC/);
+  assert.match(textOf(image), /已注册图标/);
+  assert.doesNotMatch(textOf(ui.libraryCard(ui.library.games[1])), /已注册图标/, 'the folder copy is not the mounted image');
+  assert.equal(ui.libraryCounts(), '1 个游戏文件夹、1 个镜像');
 });
 
 test('PKG installs join the library as uninstall-only cards; registered folders are marked', () => {

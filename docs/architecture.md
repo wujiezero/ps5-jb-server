@@ -151,10 +151,20 @@
 
 ## 游戏库
 
-`server/library.py`。对 `files.volumes()` 的每个卷，列卷根目录（名字含游戏编号的文件夹）和 `[ps5] game_dirs` 下一层；
-名字里没有编号的子文件夹只再列一次它的 `sce_sys/` 看有没有 param 文件。结果按主机缓存 60 秒，删除 / 移动后作废。
-名称走 `TitleCatalog.lookup()`（带文件夹，缺中文名时读 param）。大小、封面只对扫描到的路径开放：大小一次算一个，
-按「路径 + 修改时间」存到 `<data>/library-cache.json`；封面限 PNG 文件头和 2 MiB，存到 `<data>/library-icons/`（最多 1000 张）。
+`server/library.py`。扫描哪里跟 ShadowMount+ 一致：读主机上的 `/data/shadowmount/config.ini`，取 `[scan]` 下所有 `path`
+（兼容 v1 的 `scanpath=`）和 `depth`（1 或 2，默认 1）；配置里没有路径时用 ShadowMount+ 内置的默认路径
+（`/data/homebrew`、`/data/etaHEN/games`、各 M.2 / USB 的 `homebrew`、`etaHEN/games` 和卷根目录）；
+没有配置文件（没装 ShadowMount+）时再加上各卷下的 `[ps5] game_dirs`。只扫 `/data`、`/mnt/ext*`、`/mnt/usb*` 上、
+且存储卷存在的路径，其它（SMB、`/mnt/shadowmnt` 镜像挂载点）记在 `scan_config.skipped`。
+
+每个扫描路径按 ShadowMount+ 的规则走：名字含游戏编号或 `sce_sys/` 里有 param 文件的文件夹算游戏（不再往下），
+`.ffpkg` / `.exfat` / `.ffpfs` / `.ffpfsc` 文件算镜像游戏，跳过点开头的条目和根下的 `backports/`，
+子文件夹本身是另一个扫描路径时留给它自己扫。结果按主机缓存 60 秒，迁移 / 卸载后作废；`GET /api/library` 返回
+`games`（`kind` 为 `folder` / `image`，带 `scan_root`）、`scan_paths`、`scan_config`、`volumes`。
+名称走 `TitleCatalog.lookup()`（带文件夹，缺中文名时读 param）。大小、封面只对扫描到的路径开放：镜像的大小来自列表，
+文件夹大小一次算一个，按「路径 + 修改时间」存到 `<data>/library-cache.json`；封面先取 `sce_sys/icon0.png`，
+没有时（以及镜像游戏）取 ShadowMount+ 的 `/data/shadowmount/icon-cache/<编号>-*.jpg`，限 PNG / JPEG 文件头和 2 MiB，
+存到 `<data>/library-icons/`（最多 1000 张）。
 
 PKG 安装的游戏和「哪些文件夹注册过图标」来自 ps5upload 引擎的 `GET /api/ps5/apps/installed`（`GET /api/library/apps`，
 引擎不可用时返回 `available: false`，页面照常显示文件夹）。迁移（`server/migrate.py`）和卸载（`server/uninstall.py`）

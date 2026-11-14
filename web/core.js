@@ -39,7 +39,7 @@ const SECTION_META = {
   activity: { title: '网络活动', subtitle: '网关连接、DNS 查询与本机服务事件' },
   ps5: { title: 'PS5 主机', subtitle: '发现局域网主机，安装并运行插件载荷' },
   files: { title: 'PS5 文件', subtitle: '浏览主机存储、上传与整理文件' },
-  library: { title: '游戏库', subtitle: 'PS5 存储上的游戏文件夹、大小与封面' },
+  library: { title: '游戏库', subtitle: 'ShadowMount+ 扫描路径里的游戏、大小与封面' },
   repository: { title: '插件仓库', subtitle: '维护 PS5 插件载荷（.elf / .bin）' },
   settings: { title: '设置', subtitle: '管理密码、服务信息与停用说明' }
 };

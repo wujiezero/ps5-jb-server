@@ -1195,7 +1195,8 @@ class TransferManager(MigrationJobs, UninstallJobs):
         if job['kind'] == 'migrate':
             created = self.start_migrate(job['paths'][0], job['target'], register=job.get('auto_register', False),
                                          keep_source=job.get('keep_source', False), host=job.get('host'),
-                                         title=job.get('title') or '', name=job.get('name') or '')
+                                         title=job.get('title') or '', name=job.get('name') or '',
+                                         kind=job.get('game_kind') or 'folder')
             with self.lock:
                 self.jobs[created['id']]['retry_of'] = ident
             self._persist(force=True)

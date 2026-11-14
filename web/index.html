@@ -804,7 +804,7 @@
                     <span class="button-label">传输任务</span>
                     <span id="files-transfers-count" class="files-count-badge" data-files-transfers-count hidden></span>
                   </button>
-                  <button id="files-migrate" class="button button-secondary button-small" type="button" aria-label="在内置和外置存储之间迁移游戏">
+                  <button id="files-migrate" class="button button-secondary button-small" type="button" aria-label="在扫描路径之间迁移游戏">
                     <svg class="icon" aria-hidden="true"><use href="#i-transfer"></use></svg>
                     <span class="button-label">迁移游戏</span>
                   </button>
@@ -848,7 +848,7 @@
             <header class="card-head">
               <div>
                 <h2 id="library-title">游戏库 <button class="help-tip" type="button" data-help="library"></button></h2>
-                <p id="library-summary" class="card-sub">PS5 存储上的游戏文件夹。</p>
+                <p id="library-summary" class="card-sub">ShadowMount+ 扫描路径里的游戏。</p>
               </div>
               <button id="library-refresh" class="button button-secondary button-small" type="button" aria-label="重新扫描游戏库">
                 <span class="spinner" aria-hidden="true" hidden></span>
@@ -860,14 +860,14 @@
                 <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
                 <input id="library-search" type="search" placeholder="搜索名称或游戏编号" autocomplete="off" spellcheck="false" aria-label="搜索游戏">
               </label>
-              <label class="visually-hidden" for="library-volume">按存储筛选</label>
-              <select id="library-volume"><option value="">全部存储</option></select>
+              <label class="visually-hidden" for="library-volume">按扫描路径筛选</label>
+              <select id="library-volume"><option value="">全部路径</option></select>
               <label class="visually-hidden" for="library-sort">排序</label>
               <select id="library-sort">
                 <option value="name">按名称</option>
                 <option value="size">按大小（已计算的在前）</option>
               </select>
-              <button id="library-migrate" class="button button-secondary button-small" type="button" aria-label="在内置和外置存储之间迁移游戏">
+              <button id="library-migrate" class="button button-secondary button-small" type="button" aria-label="在扫描路径之间迁移游戏">
                 <svg class="icon" aria-hidden="true"><use href="#i-transfer"></use></svg>
                 <span class="button-label">迁移游戏</span>
               </button>
@@ -876,10 +876,11 @@
               </button>
             </div>
             <p id="library-error" class="banner banner-error" role="alert" hidden></p>
+            <p id="library-scan-note" class="field-help" hidden></p>
             <p id="library-warnings" class="field-help" hidden></p>
             <ul id="library-grid" class="library-grid" aria-label="游戏列表"></ul>
-            <p id="library-empty" class="empty-state" hidden>没有找到游戏文件夹。</p>
-            <p id="library-apps-note" class="field-help">通过 PKG 安装的游戏由 ps5upload 引擎列出；引擎不可用时这里只显示游戏文件夹。</p>
+            <p id="library-empty" class="empty-state" hidden>没有找到游戏。</p>
+            <p id="library-apps-note" class="field-help">通过 PKG 安装的游戏由 ps5upload 引擎列出；引擎不可用时这里只显示扫描路径里的游戏。</p>
           </section>
         </section>
 
@@ -1887,19 +1888,15 @@
       <header class="card-head">
         <h2 id="migrate-title">迁移游戏 <button class="help-tip" type="button" data-help="migrate"></button></h2>
       </header>
-      <p class="field-help">在 PS5 的内置存储和 M.2 / USB 外接硬盘之间搬运游戏文件夹。复制在主机上进行，复制完核对大小和文件数再放到位，最后删除原文件夹；可以关闭页面。</p>
+      <p class="field-help">在 ShadowMount+ 的扫描路径之间搬运游戏（文件夹或镜像文件），比如内置存储和 M.2 / USB 硬盘之间。跨存储时复制在主机上进行，复制完核对大小再放到位，最后删除原来的那份；同一存储内直接移动。可以关闭页面。</p>
       <div class="form-grid">
         <div class="field-group">
-          <label for="migrate-source">从</label>
+          <label for="migrate-source">从（扫描路径）</label>
           <select id="migrate-source"></select>
         </div>
         <div class="field-group">
-          <label for="migrate-target">到</label>
+          <label for="migrate-target">到（扫描路径）</label>
           <select id="migrate-target"></select>
-        </div>
-        <div class="field-group field-full">
-          <label for="migrate-folder">放到</label>
-          <select id="migrate-folder"></select>
         </div>
         <div class="field-group field-full">
           <span class="field-label game-picks-head">
@@ -1910,8 +1907,8 @@
         </div>
       </div>
       <div class="nas-checks">
-        <label class="nas-check" for="migrate-delete"><input id="migrate-delete" type="checkbox" checked> <span>迁移完成后删除原文件夹</span></label>
-        <label class="nas-check" for="migrate-register"><input id="migrate-register" type="checkbox" checked> <span>在新位置重新注册主屏幕图标</span></label>
+        <label class="nas-check" for="migrate-delete"><input id="migrate-delete" type="checkbox" checked> <span>迁移完成后删除原来的那份</span></label>
+        <label class="nas-check" for="migrate-register"><input id="migrate-register" type="checkbox" checked> <span>在新位置重新注册主屏幕图标（以游戏编号命名的文件夹；镜像由 ShadowMount+ 自动处理）</span></label>
       </div>
       <p id="migrate-summary" class="field-help" aria-live="polite"></p>
       <p id="migrate-error" class="field-error" role="alert" hidden></p>

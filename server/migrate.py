@@ -1,20 +1,24 @@
-"""Move a game folder between the console's own volumes (internal /data <-> M.2 / USB).
+"""Move a game between the console's ShadowMount+ scan paths (internal /data <-> M.2 / USB).
 
-TransferManager runs these as 'migrate' jobs, queued with the NAS jobs. The bytes
-never leave the console: FileProxy.copy() asks the file service on the PS5 to copy
-disk to disk (tom-ps5-usbnet /fs/copy, or two FTP connections RETR -> STOR), and
-this module only follows /fs/job. Steps:
+TransferManager runs these as 'migrate' jobs, queued with the NAS jobs. A game is a
+folder or an image file (.ffpfsc and friends). Between scan paths on the same volume
+the move is a rename. Across volumes the bytes never leave the console:
+FileProxy.copy() asks the file service on the PS5 to copy disk to disk
+(tom-ps5-usbnet /fs/copy, or two FTP connections RETR -> STOR), and this module only
+follows /fs/job. Steps:
 
 1. check   - the source exists, the target does not, the target volume has room
-             for the folder plus MIGRATE_MARGIN, no other copy runs on the console;
-2. copy    - into <target parent>/.migrate-<name>, so a half-copied game never
-             sits where ShadowMount or etaHEN would pick it up;
-3. verify  - the copy has the source's byte count and file count;
-4. finish  - rename the staging folder into place (same volume: instant), then
+             for the game plus MIGRATE_MARGIN, no other copy runs on the console;
+2. copy    - into <target dir>/.migrate-<name> (a folder) or <name>.migrating (an
+             image), so a half-copied game never sits where ShadowMount+ or etaHEN
+             would pick it up;
+3. verify  - the copy has the source's byte count (and file count for folders);
+4. finish  - rename the staging copy into place (same volume: instant), then
              delete the source unless keep_source;
-5. register- optionally register the home-screen icon again at the new path.
+5. register- optionally register the home-screen icon again at the new path (title
+             folders only; ShadowMount+ registers image games itself).
 
-Any failure before step 4 removes the staging folder and leaves the source as it
+Any failure before step 4 removes the staging copy and leaves the source as it
 was. After the rename the game is complete at the target, so a source that cannot
 be deleted or a registration that fails only makes the job done_with_warnings.
 """
@@ -59,29 +63,17 @@ def _size(value):
     return f'{value:.2f} TB'
 
 
-def migration_target(game, target_volume, folder=None, game_dirs=()):
-    """Where a library game lands on target_volume.
-
-    folder None keeps the path below the volume (/data/games/X -> /mnt/ext0/games/X);
-    '' puts it at the volume root; anything else must be one of game_dirs.
-    """
+def migration_target(game, target_dir):
+    """Where a library game lands in target_dir (a scan path): target_dir/<its name>."""
     source = _clean(game['path'])
-    root = volume_root(source)
-    target_root = volume_root(target_volume or '')
-    if not root or not target_root or target_root != target_volume.rstrip('/'):
-        raise MigrationError('目标必须是 PS5 的存储卷（/data、/mnt/ext*、/mnt/usb*）')
-    if target_root == root:
-        raise MigrationError(f'「{game.get("name") or source}」已经在 {target_root} 上')
-    name = posixpath.basename(source)
-    if folder is None:
-        relative = posixpath.dirname(source)[len(root):].strip('/')
-    elif folder == '':
-        relative = ''
-    elif folder in game_dirs:
-        relative = folder
-    else:
-        raise MigrationError('目标文件夹只能是保持原位置、存储根目录或游戏目录之一')
-    return posixpath.join(target_root, relative, name) if relative else posixpath.join(target_root, name)
+    target_dir = _clean(target_dir)
+    if not volume_root(source) or not volume_root(target_dir):
+        raise MigrationError('只能在 /data、/mnt/ext*、/mnt/usb* 上的扫描路径之间迁移')
+    if posixpath.dirname(source) == target_dir:
+        raise MigrationError(f'「{game.get("name") or source}」已经在 {target_dir} 里')
+    if target_dir == source or target_dir.startswith(source + '/'):
+        raise MigrationError('目标路径在游戏自己的文件夹里')
+    return posixpath.join(target_dir, posixpath.basename(source))
 
 
 class MigrationJobs:
@@ -95,17 +87,19 @@ class MigrationJobs:
     MIGRATE_IDLE_WAIT = 30.0      # how long to wait for someone else's copy to end
 
     def start_migrate(self, source, target, register=False, keep_source=False, host=None,
-                      title='', name=''):
+                      title='', name='', kind='folder'):
+        if kind not in ('folder', 'image'):
+            raise MigrationError('未知的游戏类型')
         source, target = _clean(source), _clean(target)
         source_root, target_root = volume_root(source), volume_root(target)
         if not source_root or not target_root:
             raise MigrationError('只能在 /data、/mnt/ext*、/mnt/usb* 之间迁移')
         if source == source_root or target == target_root:
             raise MigrationError('不能迁移整个存储卷')
-        if source_root == target_root:
-            raise MigrationError('源和目标在同一个存储上，用「移动」即可')
+        if source == target or target.startswith(source + '/'):
+            raise MigrationError('目标位置就是游戏本身')
         if posixpath.basename(source) != posixpath.basename(target):
-            raise MigrationError('迁移不改文件夹名')
+            raise MigrationError('迁移不改游戏的名字')
         with self.lock:
             for job in self.jobs.values():
                 if (job.get('kind') == 'migrate' and job.get('state') in ('queued', 'scanning', 'running')
@@ -113,10 +107,13 @@ class MigrationJobs:
                     raise MigrationError(f'{posixpath.basename(source)} 已经在迁移队列里')
         ident = uuid.uuid4().hex[:10]
         parent = posixpath.dirname(target)
-        job = {'id': ident, 'kind': 'migrate', 'source': source_root, 'name': str(name or posixpath.basename(source)),
+        base = posixpath.basename(target)
+        staging = base + '.migrating' if kind == 'image' else '.migrate-' + base
+        job = {'id': ident, 'kind': 'migrate', 'game_kind': kind, 'source': source_root, 'name': str(name or posixpath.basename(source)),
                'paths': [source], 'dest': parent, 'target': target, 'target_volume': target_root,
-               'staging': posixpath.join(parent, '.migrate-' + posixpath.basename(target)),
-               'keep_source': bool(keep_source), 'auto_register': bool(register), 'registration': None,
+               'staging': posixpath.join(parent, staging),
+               'keep_source': bool(keep_source) and source_root != target_root,
+               'auto_register': bool(register) and kind == 'folder', 'registration': None,
                'registration_error': '', 'source_error': '', 'phase': 'queued', 'state': 'queued',
                'files_total': 0, 'files_done': 0, 'files_skipped': 0, 'files_failed': 0,
                'bytes_total': 0, 'bytes_done': 0, 'current': '', 'current_size': 0, 'current_done': 0,
@@ -251,17 +248,24 @@ class MigrationJobs:
     # -- the job --
     def _execute_migrate(self, job, cancel):
         source, target, staging = job['paths'][0], job['target'], job['staging']
+        image = job.get('game_kind') == 'image'
         self._set(job, state='scanning', phase='check', started=time.time())
         entry = self._ps5_entry(source)
-        if entry is None or not entry.get('dir', True):
-            raise MigrationError(f'原游戏文件夹 {source} 不存在，请刷新游戏库')
+        if entry is None or bool(entry.get('dir', True)) == image:
+            raise MigrationError(f'原游戏 {source} 不存在，请刷新游戏库')
         if self._ps5_entry(target) is not None:
-            raise MigrationError(f'目标位置已有 {target}。如果是上次迁移已复制完成，确认游戏能运行后删掉原文件夹即可')
+            raise MigrationError(f'目标位置已有 {target}。如果是上次迁移已复制完成，确认游戏能运行后删掉原来的那份即可')
+        if job['source'] == job['target_volume']:
+            self._move_in_place(job, source, target, cancel)
+            return
         self._wait_console_idle(cancel)
-        measured = self.files.folder_size(source) or {}
-        size = int(measured.get('size') or 0)
-        count = measured.get('files')
-        count = int(count) if isinstance(count, (int, float)) else None
+        if image:
+            size, count = int(entry.get('size') or 0), 1
+        else:
+            measured = self.files.folder_size(source) or {}
+            size = int(measured.get('size') or 0)
+            count = measured.get('files')
+            count = int(count) if isinstance(count, (int, float)) else None
         self._set(job, bytes_total=size, files_total=count or 0)
         free = self._free_space(target)
         if free is not None and free < size + self.MIGRATE_MARGIN:
@@ -275,15 +279,19 @@ class MigrationJobs:
         try:
             self._follow_console_copy(job, source, staging, cancel)
             self._set(job, phase='verify', current=staging, speed=0, eta=None)
-            copied = self.files.folder_size(staging) or {}
-            copied_size = int(copied.get('size') or 0)
-            copied_count = copied.get('files')
+            if image:
+                copied = self._ps5_entry(staging) or {}
+                copied_size, copied_count = int(copied.get('size') or 0), None
+            else:
+                copied = self.files.folder_size(staging) or {}
+                copied_size = int(copied.get('size') or 0)
+                copied_count = copied.get('files')
             if copied_size != size or (count is not None and isinstance(copied_count, (int, float))
                                        and int(copied_count) != count):
                 files = f'，{int(copied_count)} / {count} 个文件' if count is not None and isinstance(
                     copied_count, (int, float)) else ''
                 raise MigrationError(f'校验没通过：复制出 {_size(copied_size)} / {_size(size)}{files}。'
-                                     '原文件夹没有改动，可以点「重试」')
+                                     '原来的游戏没有改动，可以点「重试」')
             if cancel.is_set():
                 raise Canceled()
             self._set(job, phase='finish', bytes_done=size, files_done=count or 0, percent=100)
@@ -296,7 +304,19 @@ class MigrationJobs:
                 self.files.delete(source)
             except (FileServiceError, ValueError) as exc:
                 self._set(job, state='done_with_warnings',
-                          source_error=f'游戏已在 {target}，但原文件夹没删掉（{str(exc)[:120]}），请在 PS5 文件页手动删除')
+                          source_error=f'游戏已在 {target}，但原来的那份没删掉（{str(exc)[:120]}），请在 PS5 文件页手动删除')
+        self._migrate_done(job, target, size)
+
+    def _move_in_place(self, job, source, target, cancel):
+        """Source and target on one volume: a rename, nothing to copy."""
+        if cancel.is_set():
+            raise Canceled()
+        self._set(job, state='running', phase='finish', current=source)
+        self._ps5_mkdirs(job['dest'])
+        self.files.rename(source, target)
+        self._migrate_done(job, target, job.get('bytes_total') or 0)
+
+    def _migrate_done(self, job, target, size):
         if job.get('auto_register') and getattr(self, 'game_services', None) and job.get('title'):
             self._set(job, phase='register')
             self._finish_registration(job, {'game': {'title': job['title'], 'path': target, 'name': job['name']}})
