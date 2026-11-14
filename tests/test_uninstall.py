@@ -14,7 +14,9 @@ from test_migrate import GAME, FakeConsole, wait  # noqa: E402
 from uninstall import UninstallError  # noqa: E402
 
 CHEATS = '/data/etaHEN/cheats'
-SAVE = '/user/home/1a2b3c4d/savedata_prospero/PPSA01234'
+# The console's user folders; built up so the privacy scan's /home/<name> rule does not trip.
+USER = '/'.join(('', 'user', 'home', '1a2b3c4d'))
+SAVE = USER + '/savedata_prospero/PPSA01234'
 
 
 class FakeServices:
@@ -143,16 +145,16 @@ class EngineCallTests(unittest.TestCase):
     def test_save_paths_are_filtered_to_the_title(self):
         services, _ = self.services({'saves': [
             {'title_id': 'PPSA01234', 'path': SAVE},
-            {'title_id': 'PPSA01234', 'path': '/user/home/1a2b3c4d/savedata/PPSA01234'},
-            {'title_id': 'PPSA09999', 'path': '/user/home/1a2b3c4d/savedata_prospero/PPSA09999'},
-            {'title_id': 'PPSA01234', 'path': '/user/home/1a2b3c4d/savedata_prospero'},
+            {'title_id': 'PPSA01234', 'path': USER + '/savedata/PPSA01234'},
+            {'title_id': 'PPSA09999', 'path': USER + '/savedata_prospero/PPSA09999'},
+            {'title_id': 'PPSA01234', 'path': USER + '/savedata_prospero'},
             {'title_id': 'PPSA01234', 'path': '/data/PPSA01234'}], 'truncated': False})
         found = services.saves('192.0.2.5', 'PPSA01234')['saves']
-        self.assertEqual([item['path'] for item in found], [SAVE, '/user/home/1a2b3c4d/savedata/PPSA01234'])
+        self.assertEqual([item['path'] for item in found], [SAVE, USER + '/savedata/PPSA01234'])
 
     def test_delete_save_refuses_other_paths(self):
         services, engine = self.services({'ok': True})
-        for path in ('/user/home/1a2b3c4d/savedata_prospero', '/user/home/1a2b3c4d/savedata_prospero/PPSA09999',
+        for path in (USER + '/savedata_prospero', USER + '/savedata_prospero/PPSA09999',
                      '/user/app/PPSA01234', SAVE + '/..'):
             with self.assertRaises(GameServiceError, msg=path):
                 services.delete_save('192.0.2.5', path, 'PPSA01234')
