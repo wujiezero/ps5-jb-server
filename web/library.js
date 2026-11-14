@@ -2,7 +2,8 @@
 
 /* ── 游戏库 ─────────────────────────────────────────────────────────── */
 
-const library = { loaded: false, loading: false, games: [], volumes: [], errors: [], sizing: '', host: '' };
+const library = { loaded: false, loading: false, games: [], volumes: [], errors: [], sizing: '', host: '', gameDirs: [],
+  apps: { loaded: false, loading: false, available: false, error: '', titles: [] } };
 
 function normalizeLibrary(data) {
   const games = Array.isArray(data && data.games) ? data.games.filter((game) => game && typeof game.path === 'string') : [];
@@ -15,15 +16,18 @@ function normalizeLibrary(data) {
     })),
     volumes: Array.isArray(data && data.volumes) ? data.volumes.filter((v) => v && typeof v.path === 'string') : [],
     errors: Array.isArray(data && data.errors) ? data.errors.map(str) : [],
-    host: str(data && data.host)
+    host: str(data && data.host),
+    gameDirs: Array.isArray(data && data.game_dirs) ? data.game_dirs.map(str).filter(Boolean) : []
   };
 }
 
 function libraryVisible() {
   const text = $('library-search').value.trim().toLowerCase();
   const volume = $('library-volume').value;
-  const list = library.games.filter((game) => (!volume || game.volume === volume)
-    && (!text || game.name.toLowerCase().includes(text) || game.title.toLowerCase().includes(text) || game.path.toLowerCase().includes(text)));
+  const match = (game) => !text || game.name.toLowerCase().includes(text) || game.title.toLowerCase().includes(text) || game.path.toLowerCase().includes(text);
+  const list = library.games.filter((game) => (!volume || game.volume === volume) && match(game));
+  if (!volume || volume === 'pkg') list.push(...libraryPackages().filter(match));
+  if (volume === 'pkg') return list.filter((game) => game.pkg);
   if ($('library-sort').value === 'size') {
     list.sort((a, b) => (b.size === null ? -1 : b.size) - (a.size === null ? -1 : a.size) || a.name.localeCompare(b.name));
   } else {
@@ -47,11 +51,25 @@ function libraryCover(game) {
 
 function libraryCard(game) {
   const node = makeElement('li', 'library-card');
-  node.dataset.path = game.path;
-  node.append(libraryCover(game), makeElement('span', 'library-name', game.name));
+  node.dataset.path = game.path || `pkg:${game.title}`;
+  node.append(game.pkg ? makeElement('span', 'library-cover library-cover-blank', game.platform || 'PKG') : libraryCover(game),
+    makeElement('span', 'library-name', game.name));
   const ids = [game.title, game.platform].filter(Boolean).join(' · ');
   node.append(makeElement('span', 'library-meta', ids || game.folder));
-  node.append(makeElement('span', 'library-meta', `${game.volumeLabel} · ${game.path}`));
+  if (game.pkg) {
+    node.append(makeElement('span', 'library-meta', 'PKG 安装 · 由主机管理'));
+    const actions = makeElement('div', 'library-actions');
+    const remove = makeElement('button', 'button button-secondary button-small', '卸载');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', `卸载：${game.name}`);
+    remove.disabled = !authenticated;
+    remove.addEventListener('click', () => openUninstallDialog([libraryKey(game)]));
+    actions.append(remove);
+    node.append(actions);
+    return node;
+  }
+  const registered = libraryRegistration(game);
+  node.append(makeElement('span', 'library-meta', `${volumeKind(game.volume, game.volumeLabel)} · ${game.path}${registered ? ' · 已注册图标' : ''}`));
   const actions = makeElement('div', 'library-actions');
   const button = (label, aria, handler, disabled = false) => {
     const element = makeElement('button', 'button button-secondary button-small', label);
@@ -65,11 +83,11 @@ function libraryCard(game) {
   actions.append(button(game.size === null ? (sizing ? '计算中…' : '计算大小') : formatBytes(game.size), '计算大小',
     () => sizeLibraryGame(game), Boolean(library.sizing)));
   actions.append(button('打开文件夹', '在 PS5 文件页打开所在文件夹', () => openLibraryFolder(game)));
-  actions.append(button('移动', '移动到其它存储', () => moveLibraryGame(game)));
+  actions.append(button('迁移', '迁移到其它存储', () => openMigrateDialog([game.path]), library.volumes.length < 2));
   if (game.title && game.folder === game.title) {
     actions.append(button('注册图标', '重新注册主屏幕图标', () => registerLibraryGame(game)));
   }
-  actions.append(button('删除', '删除游戏文件夹', () => deleteLibraryGame(game)));
+  actions.append(button('卸载', '卸载游戏', () => openUninstallDialog([libraryKey(game)])));
   node.append(actions);
   return node;
 }
@@ -82,8 +100,9 @@ function renderLibrary() {
     element.value = value;
     return element;
   };
-  select.replaceChildren(option('全部存储', ''), ...library.volumes.map((volume) => option(str(volume.label) || volume.path, volume.path)));
-  select.value = library.volumes.some((volume) => volume.path === chosen) ? chosen : '';
+  select.replaceChildren(option('全部存储', ''), ...library.volumes.map((volume) => option(volumeKind(volume.path, volume.label), volume.path)),
+    ...(libraryPackages().length ? [option('PKG 安装', 'pkg')] : []));
+  select.value = [...select.options].some((item) => item.value === chosen) ? chosen : '';
   const visible = libraryVisible();
   $('library-grid').replaceChildren(...visible.map(libraryCard));
   $('library-grid').hidden = !visible.length;
@@ -91,9 +110,15 @@ function renderLibrary() {
   $('library-empty').textContent = library.games.length ? '没有符合条件的游戏。' : '没有找到游戏文件夹。';
   const known = library.games.filter((game) => game.size !== null);
   const total = known.reduce((sum, game) => sum + game.size, 0);
+  const packages = libraryPackages().length;
   $('library-summary').textContent = library.loaded
-    ? `${library.host ? `PS5 ${library.host} · ` : ''}${library.games.length} 个游戏${known.length ? ` · 已计算 ${known.length} 个，共 ${formatBytes(total)}` : ''}`
+    ? `${library.host ? `PS5 ${library.host} · ` : ''}${library.games.length} 个游戏文件夹${packages ? `、${packages} 个 PKG 安装` : ''}${known.length ? ` · 已计算 ${known.length} 个，共 ${formatBytes(total)}` : ''}`
     : 'PS5 存储上的游戏文件夹。';
+  $('library-apps-note').textContent = library.apps.available
+    ? 'PKG 安装的游戏来自 ps5upload 引擎读取的主机应用列表；系统应用不显示。'
+    : `通过 PKG 安装的游戏由 ps5upload 引擎列出${library.apps.error ? `（现在不可用：${library.apps.error}）` : ''}；引擎不可用时这里只显示游戏文件夹。`;
+  $('library-migrate').disabled = !authenticated || library.volumes.length < 2;
+  $('library-uninstall').disabled = !authenticated || (!library.games.length && !packages);
   $('library-warnings').textContent = library.errors.length ? `部分存储读取失败：${library.errors.join('；')}` : '';
   $('library-warnings').hidden = !library.errors.length;
 }
@@ -106,6 +131,7 @@ async function loadLibrary(refresh = false) {
   try {
     const data = await api(`/api/library${refresh ? '?refresh=1' : ''}`, undefined, 60000);
     Object.assign(library, normalizeLibrary(data), { loaded: true });
+    loadLibraryApps();
   } catch (error) {
     if (error.status === 401) { showLogin(error.message); return; }
     $('library-error').textContent = `游戏库读取失败：${error.message}`;
@@ -148,17 +174,6 @@ function whenClosed(id, handler) {
   $(id).addEventListener('close', handler, { once: true });
 }
 
-function moveLibraryGame(game) {
-  openFilesDest('move', { name: game.folder || game.path.split('/').pop(), path: game.path, dir: true });
-  whenClosed('files-dest-dialog', () => setTimeout(() => loadLibrary(), 1500));
-}
-
-function deleteLibraryGame(game) {
-  openFilesDelete({ name: game.folder || game.path.split('/').pop(), path: game.path, dir: true });
-  $('files-delete-extra').textContent = `游戏「${game.name}」的整个文件夹会被删除${game.size !== null ? `（${formatBytes(game.size)}）` : '（大小未计算）'}，无法恢复。`;
-  whenClosed('files-delete-dialog', () => loadLibrary());
-}
-
 async function registerLibraryGame(game) {
   try {
     await api('/api/library/register', { path: game.path, host: library.host }, 90000);
@@ -167,4 +182,299 @@ async function registerLibraryGame(game) {
     if (error.status === 401) { showLogin(error.message); return; }
     toast(error.message, 'error');
   }
+}
+
+/* ── 存储类型、PKG 安装与图标注册 ───────────────────────────────────── */
+
+function volumeKind(path, label) {
+  const root = str(path);
+  const kind = root === '/data' ? '内置存储' : /^\/mnt\/ext\d+$/.test(root) ? 'M.2 / 扩展存储' : /^\/mnt\/usb\d+$/.test(root) ? 'USB 外接硬盘' : '';
+  const name = str(label) && str(label) !== root ? str(label) : '';
+  if (!kind) return name || root;
+  return name && !name.includes(kind) ? `${name}（${root}）` : `${kind}（${root}）`;
+}
+
+// PKG installs as library cards: from the engine, not on any whitelisted volume.
+function libraryPackages() {
+  return library.apps.titles.filter((app) => app.origin === 'pkg' && !app.system).map((app) => ({
+    pkg: true, title: app.title, name: app.name || app.title, folder: '', path: '', volume: '', volumeLabel: 'PKG 安装',
+    platform: titlePlatform(app.title), size: null, mtime: 0
+  }));
+}
+
+function titlePlatform(title) {
+  if (!title || title.startsWith('NPXS')) return '';
+  return /^(PPSA|ELAS|ECAS|ELJS|ECJS|ELJM|ECJM|ELKS|ECKS)/.test(title) ? 'PS5' : 'PS4';
+}
+
+const libraryKey = (game) => (game.pkg ? `pkg:${game.title}` : game.path);
+
+function libraryRegistration(game) {
+  if (!game.title || !library.apps.available) return null;
+  return library.apps.titles.find((app) => app.title === game.title && app.origin === 'registered'
+    && (app.source === game.path || app.source.startsWith(`${game.path}/`))) || null;
+}
+
+async function loadLibraryApps() {
+  if (!authenticated || library.apps.loading) return;
+  library.apps.loading = true;
+  try {
+    const data = await api(`/api/library/apps${library.host ? `?host=${encodeURIComponent(library.host)}` : ''}`, undefined, 40000);
+    const titles = Array.isArray(data && data.titles) ? data.titles.filter((app) => app && typeof app.title === 'string') : [];
+    library.apps = {
+      loaded: true, loading: false, available: data.available === true, error: str(data.error),
+      titles: titles.map((app) => ({ title: app.title, name: str(app.name), origin: str(app.origin), source: str(app.source).replace(/\/+$/, ''), system: app.system === true }))
+    };
+  } catch (error) {
+    library.apps = { loaded: true, loading: false, available: false, error: error.message, titles: [] };
+    if (error.status === 401) { showLogin(error.message); return; }
+  }
+  renderLibrary();
+}
+
+// files.js calls this when the last running NAS / migrate / uninstall job ends.
+function libraryJobsSettled() {
+  if (library.loaded && !$('view-library').hidden) loadLibrary(true);
+  else library.loaded = false;
+}
+
+function gamePick(value, title, detail, checked) {
+  const wrapper = makeElement('label', 'game-pick');
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.value = value;
+  input.checked = checked;
+  const text = makeElement('span', 'game-pick-text');
+  text.append(makeElement('span', 'game-pick-name', title), makeElement('span', 'game-pick-meta', detail));
+  wrapper.append(input, text);
+  return wrapper;
+}
+
+function syncAllBox(listId, allId) {
+  const boxes = $$(`#${listId} input`);
+  const chosen = boxes.filter((box) => box.checked).length;
+  $(allId).checked = boxes.length > 0 && chosen === boxes.length;
+  $(allId).indeterminate = chosen > 0 && chosen < boxes.length;
+  $(allId).disabled = !boxes.length;
+}
+
+function startedJobs(jobs, message) {
+  const list = Array.isArray(jobs) ? jobs.filter((job) => job && job.id) : [];
+  const ids = new Set(list.map((job) => job.id));
+  nasJobs = [...list, ...nasJobs.filter((job) => !ids.has(job.id))];
+  toast(message, 'success');
+  files.drawer = true;
+  renderFilesTransfers();
+  ensureFilesPolling();
+  revealFilesTransfers();
+}
+
+/* ── 迁移 ─────────────────────────────────────────────────────────── */
+
+const libraryMigrate = { busy: false, chosen: new Set() };
+
+async function openMigrateDialog(paths = []) {
+  if (!authenticated) return;
+  if (!library.loaded) await loadLibrary();
+  if (!library.loaded) { toast('游戏库读取失败，请先在游戏库页面重新扫描。', 'error'); return; }
+  if (library.volumes.length < 2) {
+    toast('PS5 上只找到一个存储。接上 M.2 或 USB 硬盘并在主机上格式化为扩展存储后再迁移。', 'error');
+    return;
+  }
+  const first = library.games.find((game) => game.path === paths[0]);
+  const withGames = library.volumes.find((volume) => library.games.some((game) => game.volume === volume.path));
+  const source = first ? first.volume : (withGames || library.volumes[0]).path;
+  const option = (label, value) => { const element = makeElement('option', '', label); element.value = value; return element; };
+  $('migrate-source').replaceChildren(...library.volumes.map((volume) => option(volumeKind(volume.path, volume.label), volume.path)));
+  $('migrate-source').value = source;
+  $('migrate-folder').replaceChildren(option('保持原来的位置（例如 games/ 下的仍放 games/）', '__keep'), option('存储根目录', '__root'),
+    ...library.gameDirs.map((folder) => option(`${folder}/`, folder)));
+  $('migrate-folder').value = '__keep';
+  libraryMigrate.chosen = new Set(paths);
+  $('migrate-delete').checked = true;
+  $('migrate-register').checked = true;
+  showFieldMessage('migrate-error', '');
+  renderMigrateDialog(true);
+  $('migrate-dialog').showModal();
+  $('migrate-target').focus({ preventScroll: true });
+}
+
+function renderMigrateDialog(resetTarget = false) {
+  const source = $('migrate-source').value;
+  const target = $('migrate-target');
+  const previous = target.value;
+  const others = library.volumes.filter((volume) => volume.path !== source);
+  target.replaceChildren(...others.map((volume) => {
+    const free = Number.isFinite(volume.free) ? ` · 剩余 ${formatBytes(volume.free)}` : '';
+    const element = makeElement('option', '', `${volumeKind(volume.path, volume.label)}${free}`);
+    element.value = volume.path;
+    return element;
+  }));
+  // Internal -> the first external volume; external -> internal.
+  const preferred = source === '/data' ? others.find((volume) => volume.path !== '/data') : others.find((volume) => volume.path === '/data');
+  target.value = !resetTarget && others.some((volume) => volume.path === previous) ? previous : (preferred || others[0] || {}).path || '';
+  const games = library.games.filter((game) => game.volume === source);
+  $('migrate-games').replaceChildren(...games.map((game) => gamePick(game.path, game.name,
+    `${game.path}${game.size !== null ? ` · ${formatBytes(game.size)}` : ''}`, libraryMigrate.chosen.has(game.path))));
+  if (!games.length) $('migrate-games').append(makeElement('p', 'empty-state', '这个存储上没有游戏文件夹。'));
+  syncAllBox('migrate-games', 'migrate-all');
+  updateMigrateSummary();
+}
+
+function migrateChosen() {
+  return library.games.filter((game) => $$('#migrate-games input').some((box) => box.checked && box.value === game.path));
+}
+
+function updateMigrateSummary() {
+  const chosen = migrateChosen();
+  libraryMigrate.chosen = new Set(chosen.map((game) => game.path));
+  const volume = library.volumes.find((item) => item.path === $('migrate-target').value);
+  const known = chosen.filter((game) => game.size !== null);
+  const total = known.reduce((sum, game) => sum + game.size, 0);
+  const parts = [`已选 ${chosen.length} 个游戏`];
+  if (known.length) parts.push(`已知大小 ${formatBytes(total)}${known.length < chosen.length ? `（另有 ${chosen.length - known.length} 个未计算）` : ''}`);
+  if (volume && Number.isFinite(volume.free)) parts.push(`目标剩余 ${formatBytes(volume.free)}`);
+  let text = parts.join(' · ');
+  if (volume && Number.isFinite(volume.free) && total + (1 << 30) > volume.free) text += '。空间可能不够，每个游戏开始前都会再检查一次（另留 1 GB）。';
+  if (!$('migrate-delete').checked) text += '。不删除原文件夹时两边各有一份，ShadowMount 可能同时识别到两个。';
+  $('migrate-summary').textContent = text;
+  buttonBusy('migrate-start', libraryMigrate.busy, chosen.length > 1 ? `迁移 ${chosen.length} 个游戏` : '开始迁移');
+  if (!libraryMigrate.busy) $('migrate-start').disabled = !chosen.length || !volume;
+}
+
+async function startMigrate(event) {
+  event.preventDefault();
+  if (libraryMigrate.busy) return;
+  const chosen = migrateChosen();
+  if (!chosen.length) { showFieldMessage('migrate-error', '请至少选择一个游戏。'); return; }
+  const folder = $('migrate-folder').value;
+  const payload = {
+    paths: chosen.map((game) => game.path), target: $('migrate-target').value,
+    keep_source: !$('migrate-delete').checked, register: $('migrate-register').checked,
+    host: library.host || undefined
+  };
+  if (folder !== '__keep') payload.folder = folder === '__root' ? '' : folder;
+  libraryMigrate.busy = true;
+  buttonBusy('migrate-start', true, '提交中…');
+  try {
+    const result = await api('/api/library/migrate', payload);
+    $('migrate-dialog').close();
+    startedJobs(result.jobs, `已加入传输任务：迁移 ${chosen.length} 个游戏，按顺序执行。`);
+  } catch (error) {
+    if (error.status === 401) { $('migrate-dialog').close(); showLogin(error.message); return; }
+    showFieldMessage('migrate-error', error.message);
+  } finally {
+    libraryMigrate.busy = false;
+    updateMigrateSummary();
+  }
+}
+
+/* ── 卸载 ─────────────────────────────────────────────────────────── */
+
+const libraryUninstall = { busy: false, chosen: new Set() };
+
+function uninstallCandidates() {
+  return [...library.games, ...libraryPackages()];
+}
+
+async function openUninstallDialog(keys = []) {
+  if (!authenticated) return;
+  if (!library.loaded) await loadLibrary();
+  if (!library.loaded) { toast('游戏库读取失败，请先在游戏库页面重新扫描。', 'error'); return; }
+  libraryUninstall.chosen = new Set(keys);
+  $('uninstall-cheats').checked = true;
+  $('uninstall-saves').checked = false;
+  showFieldMessage('uninstall-error', '');
+  renderUninstallDialog();
+  $('uninstall-dialog').showModal();
+  $('uninstall-cancel').focus({ preventScroll: true });
+  if (!library.apps.loaded) loadLibraryApps().then(() => { if ($('uninstall-dialog').open) renderUninstallDialog(); });
+}
+
+function renderUninstallDialog() {
+  const games = uninstallCandidates();
+  $('uninstall-games').replaceChildren(...games.map((game) => {
+    const registered = libraryRegistration(game);
+    const where = game.pkg ? 'PKG 安装' : `${volumeKind(game.volume, game.volumeLabel)} · ${game.path}`;
+    const extra = [game.title, registered ? '已注册图标' : '', game.size !== null ? formatBytes(game.size) : ''].filter(Boolean).join(' · ');
+    return gamePick(libraryKey(game), game.name, `${where}${extra ? ` · ${extra}` : ''}`, libraryUninstall.chosen.has(libraryKey(game)));
+  }));
+  if (!games.length) $('uninstall-games').append(makeElement('p', 'empty-state', '没有找到游戏。'));
+  const apps = library.apps;
+  $('uninstall-engine').textContent = apps.loading || !apps.loaded ? '正在读取主机上已安装的游戏…'
+    : apps.available ? '' : `ps5upload 引擎不可用（${apps.error || '未知原因'}）：只会删除游戏文件夹和金手指，主屏幕图标和存档需要引擎才能处理。`;
+  $('uninstall-engine').hidden = !$('uninstall-engine').textContent;
+  syncAllBox('uninstall-games', 'uninstall-all');
+  updateUninstallSummary();
+}
+
+function uninstallChosen() {
+  const keys = new Set($$('#uninstall-games input').filter((box) => box.checked).map((box) => box.value));
+  return uninstallCandidates().filter((game) => keys.has(libraryKey(game)));
+}
+
+function updateUninstallSummary() {
+  const chosen = uninstallChosen();
+  libraryUninstall.chosen = new Set(chosen.map(libraryKey));
+  const parts = [];
+  const folders = chosen.filter((game) => !game.pkg).length;
+  if (folders) parts.push(`${folders} 个游戏文件夹会被删除，无法恢复`);
+  if (chosen.length - folders) parts.push(`${chosen.length - folders} 个 PKG 安装由主机卸载`);
+  if ($('uninstall-saves').checked) parts.push('这些游戏在主机上所有用户的存档都会被删除');
+  // The same title elsewhere shares its saves and cheats.
+  const keys = new Set(chosen.map(libraryKey));
+  const shared = chosen.filter((game) => game.title && uninstallCandidates().some((other) => other.title === game.title && !keys.has(libraryKey(other))));
+  if (shared.length && ($('uninstall-saves').checked || $('uninstall-cheats').checked)) {
+    parts.push(`${shared.map((game) => game.title).join('、')} 还有另一份没选，它们共用存档和金手指`);
+  }
+  $('uninstall-summary').textContent = parts.length ? `${parts.join('；')}。` : '请选择要卸载的游戏。';
+  buttonBusy('uninstall-start', libraryUninstall.busy, chosen.length > 1 ? `卸载 ${chosen.length} 个游戏` : '卸载');
+  if (!libraryUninstall.busy) $('uninstall-start').disabled = !chosen.length;
+}
+
+async function startUninstall(event) {
+  event.preventDefault();
+  if (libraryUninstall.busy) return;
+  const chosen = uninstallChosen();
+  if (!chosen.length) { showFieldMessage('uninstall-error', '请至少选择一个游戏。'); return; }
+  libraryUninstall.busy = true;
+  buttonBusy('uninstall-start', true, '提交中…');
+  try {
+    const result = await api('/api/library/uninstall', {
+      items: chosen.map((game) => (game.pkg ? { origin: 'pkg', title: game.title, name: game.name } : { path: game.path })),
+      delete_cheats: $('uninstall-cheats').checked, delete_saves: $('uninstall-saves').checked,
+      host: library.host || undefined
+    });
+    $('uninstall-dialog').close();
+    startedJobs(result.jobs, `已加入传输任务：卸载 ${chosen.length} 个游戏。`);
+  } catch (error) {
+    if (error.status === 401) { $('uninstall-dialog').close(); showLogin(error.message); return; }
+    showFieldMessage('uninstall-error', error.message);
+  } finally {
+    libraryUninstall.busy = false;
+    updateUninstallSummary();
+  }
+}
+
+function bindLibraryDialogs() {
+  $('library-migrate').addEventListener('click', () => openMigrateDialog());
+  $('files-migrate').addEventListener('click', () => openMigrateDialog());
+  $('library-uninstall').addEventListener('click', () => openUninstallDialog());
+  $('migrate-source').addEventListener('change', () => { libraryMigrate.chosen.clear(); renderMigrateDialog(true); });
+  for (const id of ['migrate-target', 'migrate-delete', 'migrate-register']) $(id).addEventListener('change', updateMigrateSummary);
+  $('migrate-games').addEventListener('change', () => { syncAllBox('migrate-games', 'migrate-all'); updateMigrateSummary(); });
+  $('migrate-all').addEventListener('change', () => {
+    for (const box of $$('#migrate-games input')) box.checked = $('migrate-all').checked;
+    updateMigrateSummary();
+  });
+  $('migrate-form').addEventListener('submit', startMigrate);
+  $('migrate-cancel').addEventListener('click', () => $('migrate-dialog').close());
+  for (const id of ['uninstall-cheats', 'uninstall-saves']) $(id).addEventListener('change', updateUninstallSummary);
+  $('uninstall-games').addEventListener('change', () => { syncAllBox('uninstall-games', 'uninstall-all'); updateUninstallSummary(); });
+  $('uninstall-all').addEventListener('change', () => {
+    for (const box of $$('#uninstall-games input')) box.checked = $('uninstall-all').checked;
+    updateUninstallSummary();
+  });
+  $('uninstall-form').addEventListener('submit', startUninstall);
+  $('uninstall-cancel').addEventListener('click', () => $('uninstall-dialog').close());
 }

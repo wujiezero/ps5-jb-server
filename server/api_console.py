@@ -18,6 +18,8 @@ from power import EngineClient, PowerError, PowerManager
 from game_services import GameServices, parse_cheat_zip, write_cheats
 from game_sources import plan_sources
 from library import Library, LibraryError
+from migrate import MIGRATE_LIMIT, migration_target
+from uninstall import UNINSTALL_LIMIT
 from pkg_host import PkgHost
 from ps5 import ConsoleError, HostManager
 
@@ -57,6 +59,7 @@ class ConsoleAPI:
         self.notify_store = NotifyStore(settings.data_dir / 'notify.json', self.nas.box)
         self.notifier = Notifier(self.notify_store, state_path=settings.data_dir / 'notify-state.json')
         self.transfers.listeners.append(self.notifier.job_finished)
+        self.transfers.listeners.append(self._migrated)
         if autoscan and self.enabled:
             # The discovery cache is in memory; without this the host list is
             # empty after every restart until someone presses "rescan".
@@ -160,6 +163,7 @@ class ConsoleAPI:
         '/api/library': '_get_library',
         '/api/library/size': '_get_library_size',
         '/api/library/icon': '_get_library_icon',
+        '/api/library/apps': '_get_library_apps',
         '/api/files/transfers': '_get_file_transfers',
     }
 
@@ -267,6 +271,18 @@ class ConsoleAPI:
         result = self.library.scan(refresh=refresh)
         handler.send_body(200, {**result, 'game_dirs': self.library.game_dirs})
 
+    def _get_library_apps(self, handler):
+        """What the ps5upload engine says is installed; never fails the page when the engine is away."""
+        host = self._arg(handler, 'host') or self.files.host
+        if not host:
+            handler.send_body(200, {'available': False, 'error': '还没有选择 PS5 主机', 'titles': []})
+            return
+        try:
+            result = self.game_services.installed(self.ps5.validate_ip(host))
+            handler.send_body(200, {'available': True, 'error': '', **result})
+        except Exception as exc:
+            handler.send_body(200, {'available': False, 'error': str(exc)[:300], 'titles': []})
+
     def _get_library_size(self, handler):
         handler.send_body(200, self.library.size(self._arg(handler, 'path')))
 
@@ -359,6 +375,8 @@ class ConsoleAPI:
         '/api/transfers/retry': '_post_transfers_retry',
         '/api/files/bench': '_post_bench',
         '/api/library/register': '_post_library_register',
+        '/api/library/migrate': '_post_library_migrate',
+        '/api/library/uninstall': '_post_library_uninstall',
     }
     # Raw request bodies: the handler checks session and CSRF itself.
     RAW_POST_ROUTES = {'/api/files/upload': '_upload', '/api/files/cheats': '_upload_cheats'}
@@ -567,6 +585,66 @@ class ConsoleAPI:
         host = body.get('host') or self.files.host
         handler.send_body(200, {'ok': True, 'result': self.game_services.register(
             host, {'title': game['title'], 'path': game['path'], 'name': game['name']})})
+
+    def _post_library_migrate(self, handler, body, path):
+        """Queue moving library games to another volume: one 'migrate' job per game."""
+        paths = body.get('paths')
+        if not isinstance(paths, list) or not 0 < len(paths) <= MIGRATE_LIMIT or len(set(map(str, paths))) != len(paths):
+            raise ValueError(f'请选择 1–{MIGRATE_LIMIT} 个要迁移的游戏')
+        target = body.get('target')
+        if not isinstance(target, str) or not target:
+            raise ValueError('请选择目标存储')
+        scan = self.library.scan()
+        if target.rstrip('/') not in {volume['path'] for volume in scan.get('volumes', [])}:
+            raise ValueError('PS5 上没有这个存储，请刷新游戏库')
+        folder = body.get('folder')
+        if folder is not None and not isinstance(folder, str):
+            raise ValueError('目标文件夹不正确')
+        host = body.get('host') or self.files.host
+        register = bool(body.get('register', True))
+        planned = []      # validate everything before queueing anything
+        for item in paths:
+            game = self.library.known(item)
+            destination = migration_target(game, target.rstrip('/'), folder, self.library.game_dirs)
+            # Registration needs a folder named after the title (…/CUSA12345).
+            title = game['title'] if game['title'] and game['folder'] == game['title'] else ''
+            planned.append((game, destination, title))
+        jobs = [self.transfers.start_migrate(game['path'], destination, register=register and bool(title),
+                                             keep_source=bool(body.get('keep_source')), host=host,
+                                             title=title, name=game['name'])
+                for game, destination, title in planned]
+        handler.send_body(200, {'ok': True, 'jobs': jobs})
+
+    def _post_library_uninstall(self, handler, body, path):
+        """Queue uninstalls: library folders by path, PKG installs by title ID."""
+        items = body.get('items')
+        if not isinstance(items, list) or not 0 < len(items) <= UNINSTALL_LIMIT:
+            raise ValueError(f'请选择 1–{UNINSTALL_LIMIT} 个要卸载的游戏')
+        host = body.get('host') or self.files.host
+        planned, seen = [], set()
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError('卸载项格式不正确')
+            if item.get('origin') == 'pkg':
+                title = item.get('title')
+                planned.append({'title': title, 'origin': 'pkg', 'name': str(item.get('name') or title)[:120]})
+                key = title
+            else:
+                game = self.library.known(item.get('path'))
+                planned.append({'path': game['path'], 'title': game['title'], 'origin': 'folder',
+                                'name': game['name']})
+                key = game['path']
+            if key in seen:
+                raise ValueError('同一个游戏选了两次')
+            seen.add(key)
+        jobs = [self.transfers.start_uninstall(delete_saves=bool(body.get('delete_saves', False)),
+                                               delete_cheats=bool(body.get('delete_cheats', True)),
+                                               host=host, **item) for item in planned]
+        handler.send_body(200, {'ok': True, 'jobs': jobs})
+
+    def _migrated(self, job):
+        if job.get('kind') in ('migrate', 'uninstall'):
+            self.library.forget()
 
     def _post_bench(self, handler, body, path):
         handler.send_body(200, {'ok': True, 'result': self.files.bench(body.get('path'))})

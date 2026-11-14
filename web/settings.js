@@ -770,6 +770,7 @@ function bindBackupEvents() {
   $('library-search').addEventListener('input', renderLibrary);
   $('library-volume').addEventListener('change', renderLibrary);
   $('library-sort').addEventListener('change', renderLibrary);
+  bindLibraryDialogs();
   $('notify-add').addEventListener('click', () => openNotifyDialog(null));
   $('notify-type').addEventListener('change', () => showNotifyType($('notify-type').value));
   $('notify-form').addEventListener('submit', saveNotify);

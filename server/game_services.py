@@ -29,6 +29,19 @@ def _is_busy(result):
     return result.get('busy') is True or error == 'busy' or 'busy' in error
 
 
+# Any PS4 / PS5 title ID the engine can manage; NPXS system apps are refused.
+APP_TITLE = re.compile(r'[A-Z]{4}\d{5}\Z')
+# Save folders as the engine lists them: /user/home/<8 hex>/savedata_prospero/<TITLE> (PS5)
+# or .../savedata/<TITLE> (PS4). Nothing else may be deleted through the engine.
+SAVE_PATH = re.compile(r'/user/home/[0-9a-f]{8}/(?:savedata_prospero|savedata)/([A-Z]{4}\d{5})\Z')
+
+
+def check_app_title(title):
+    if not isinstance(title, str) or not APP_TITLE.fullmatch(title) or title.startswith('NPXS'):
+        raise GameServiceError('游戏编号无效（系统应用不能卸载）')
+    return title
+
+
 # Engine phases -> the task card's steps (准备 → 传输 → 安装 → 确认).
 PACKAGE_PHASES = {'queued': 'prepare', 'resolve': 'prepare', 'deliver': 'transfer',
                   'install': 'install', 'verify': 'verify', 'done': 'verify'}
@@ -258,6 +271,53 @@ class GameServices:
             raise GameServiceError('ps5upload 注册返回的游戏编号与实际游戏不一致')
         return {'state': 'done', 'title': title, 'name': result.get('title_name') or game.get('name') or title,
                 'path': path, 'used_nullfs': bool(result.get('used_nullfs'))}
+
+    def installed(self, host):
+        """Titles on the console now: [{title, name, origin, source, system}].
+
+        origin is 'registered' (a folder game registered by ps5upload; source is its folder),
+        'pkg' (installed by Sony's installer) or 'system'.
+        """
+        result = self._request('GET', '/api/ps5/apps/installed?' + urllib.parse.urlencode({'addr': host}),
+                               timeout=30)
+        titles = []
+        for item in result.get('titles') or []:
+            if not isinstance(item, dict) or not isinstance(item.get('title_id'), str):
+                continue
+            titles.append({'title': item['title_id'], 'name': str(item.get('title_name') or ''),
+                           'origin': str(item.get('origin') or ''), 'source': str(item.get('source') or ''),
+                           'system': bool(item.get('system')) or item['title_id'].startswith('NPXS')})
+        return {'titles': titles, 'incomplete': bool(result.get('incomplete')),
+                'registered_unavailable': bool(result.get('registered_unavailable'))}
+
+    def unregister(self, host, title):
+        """Remove a title's home-screen entry; for a PKG install this is Sony's uninstall."""
+        check_app_title(title)
+        result = self._request('POST', '/api/ps5/app/unregister', {'addr': host, 'title_id': title},
+                               timeout=600, allow_error=True)
+        if result.get('error') or result.get('ok') is False:
+            raise GameServiceError('ps5upload 卸载失败：' + str(result.get('error') or '操作失败'))
+        return {'refused': bool(result.get('sony_uninstall_refused')),
+                'rc': str(result.get('sony_uninstall_rc') or ''),
+                'still_present': result.get('still_present') if isinstance(result.get('still_present'), bool) else None}
+
+    def saves(self, host, title):
+        """Save folders of one title, for every user on the console."""
+        check_app_title(title)
+        result = self._request('GET', '/api/ps5/saves/list?' + urllib.parse.urlencode({'addr': host}), timeout=30)
+        found = []
+        for item in result.get('saves') or []:
+            path = item.get('path') if isinstance(item, dict) else None
+            match = SAVE_PATH.fullmatch(path) if isinstance(path, str) else None
+            if match and match.group(1) == title and item.get('title_id') in (title, None):
+                found.append({'path': path, 'size': int(item.get('size') or 0), 'user': item.get('user_id')})
+        return {'saves': found, 'truncated': bool(result.get('truncated'))}
+
+    def delete_save(self, host, path, title):
+        match = SAVE_PATH.fullmatch(path) if isinstance(path, str) else None
+        if not match or match.group(1) != check_app_title(title):
+            raise GameServiceError('只能删除这个游戏自己的存档文件夹')
+        self._request('POST', '/api/ps5/fs/delete', {'addr': host, 'path': path}, timeout=600)
 
     def package_install(self, host, source, timeout=None, progress=None, cancel=None):
         """Install one PKG through the engine and wait for its verdict.

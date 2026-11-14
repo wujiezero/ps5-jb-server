@@ -570,7 +570,8 @@ async function retryNasJob(id) {
   try {
     const result = await api('/api/transfers/retry', { id });
     if (result.job && result.job.id) nasJobs = [result.job, ...nasJobs.filter((job) => job.id !== result.job.id)];
-    toast(result.job && result.job.kind === 'package' ? '已重新排队安装。' : '已重新排队，PS5 上已有的同名文件会跳过。', 'success');
+    const kind = result.job && result.job.kind;
+    toast(kind === 'package' ? '已重新排队安装。' : kind === 'migrate' ? '已重新排队迁移。' : '已重新排队，PS5 上已有的同名文件会跳过。', 'success');
     renderFilesTransfers();
     ensureFilesPolling();
   } catch (error) {

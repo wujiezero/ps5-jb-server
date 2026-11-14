@@ -35,6 +35,8 @@ EVENTS = {
     'extract.finished': '解压安装完成', 'extract.failed': '解压安装失败',
     'package.finished': 'PKG 安装完成', 'package.failed': 'PKG 安装失败',
     'backup.finished': 'PS5 备份完成', 'backup.failed': 'PS5 备份失败',
+    'migrate.finished': '游戏迁移完成', 'migrate.failed': '游戏迁移失败',
+    'uninstall.finished': '游戏卸载完成', 'uninstall.failed': '游戏卸载失败',
     'update.finished': '服务更新完成', 'update.failed': '服务更新失败',
     'gateway.error': '网关出错',
 }
@@ -431,15 +433,27 @@ class Notifier:
     def job_finished(self, job):
         """TransferManager listener: called once per job when it ends."""
         state, kind = job.get('state'), job.get('kind')
-        if state == 'canceled' or kind not in ('nas', 'extract', 'package', 'backup'):
+        if state == 'canceled' or kind not in ('nas', 'extract', 'package', 'backup', 'migrate', 'uninstall'):
             return
-        prefix = {'nas': 'transfer', 'extract': 'extract', 'package': 'package', 'backup': 'backup'}[kind]
+        prefix = {'nas': 'transfer', 'extract': 'extract', 'package': 'package', 'backup': 'backup',
+                  'migrate': 'migrate', 'uninstall': 'uninstall'}[kind]
         ok = state in ('done', 'done_with_warnings')
-        label = {'nas': 'NAS 传输', 'extract': '解压安装', 'package': 'PKG 安装', 'backup': 'PS5 备份'}[kind] + ('完成' if ok else '失败')
+        label = {'nas': 'NAS 传输', 'extract': '解压安装', 'package': 'PKG 安装', 'backup': 'PS5 备份',
+                 'migrate': '游戏迁移', 'uninstall': '游戏卸载'}[kind] + ('完成' if ok else '失败')
         if state == 'done_with_warnings':
             label += '（有提醒）'
         name = str(job.get('name') or job.get('source') or '')
-        if ok:
+        if ok and kind == 'uninstall':
+            steps = job.get('steps') or []
+            parts = [text for step, text in (('icon', '已移除主屏幕图标'), ('files', '已删除游戏文件夹'))
+                     if step in steps]
+            if job.get('cheats_deleted'):
+                parts.append(f'删除 {job["cheats_deleted"]} 个金手指文件')
+            if job.get('saves_deleted'):
+                parts.append(f'删除 {job["saves_deleted"]} 个存档')
+            parts += [str(item) for item in (job.get('warnings') or [])[:2]]
+            body = '，'.join(parts) or '已卸载'
+        elif ok:
             size = _size(job.get('bytes_total') or job.get('bytes_done') or 0)
             elapsed = float(job.get('elapsed') or 0)
             speed = (job.get('bytes_done') or 0) / elapsed if elapsed > 0 else 0
@@ -448,8 +462,10 @@ class Notifier:
                 parts.append(f'平均 {_size(speed)}/s')
             if job.get('files_failed'):
                 parts.append(f'{job["files_failed"]} 个失败')
-            if job.get('warning') or job.get('cheat_error'):
-                parts.append(str(job.get('warning') or job.get('cheat_error')))
+            for key in ('warning', 'cheat_error', 'source_error', 'registration_error'):
+                if job.get(key):
+                    parts.append(str(job[key]))
+                    break
             body = '，'.join(parts)
         else:
             body = str(job.get('error') or '未知错误')

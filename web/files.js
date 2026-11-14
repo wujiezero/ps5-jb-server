@@ -1155,7 +1155,10 @@ async function filesTransfersTick() {
       if (requestEpoch !== epoch) return;
       const wasActive = nasJobsActive();
       nasJobs = Array.isArray(data.jobs) ? data.jobs.filter((job) => job && typeof job === 'object' && job.id) : [];
-      if (wasActive && !nasJobsActive() && files.mode === 'ps5' && files.path) refreshFilesPage({ manual: false });
+      if (wasActive && !nasJobsActive()) {
+        if (files.mode === 'ps5' && files.path) refreshFilesPage({ manual: false });
+        libraryJobsSettled();
+      }
     }
     if (files.drawer || files.jobActive) {
       const data = await api('/api/files/job');
@@ -1232,7 +1235,7 @@ const formatDuration = (seconds) => {
 const formatRate = (bytesPerSecond) => (bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : '—');
 const XFER_ACTIVE = new Set(['wait', 'run', 'sync', 'queued', 'scanning', 'running', 'copying', 'moving', 'active', 'pending', 'wait-confirm']);
 const XFER_LABEL = { wait: '等待', run: '传输中', sync: '正在落盘', queued: '排队中', scanning: '正在统计文件', running: '传输中', copying: '复制中', moving: '移动中', active: '进行中', pending: '等待', done: '完成', done_with_warnings: '完成（有提醒）', interrupted: '已中断', fail: '失败', failed: '失败', cancel: '已取消', canceled: '已取消', skip: '已跳过', 'wait-confirm': '等待确认' };
-const XFER_KIND = { upload: '上传', copy: '复制', move: '移动', nas: 'NAS → PS5', extract: '解压安装', package: 'PKG 安装', backup: 'PS5 → NAS', remote: 'PS5' };
+const XFER_KIND = { upload: '上传', copy: '复制', move: '移动', nas: 'NAS → PS5', extract: '解压安装', package: 'PKG 安装', backup: 'PS5 → NAS', migrate: '游戏迁移', uninstall: '游戏卸载', remote: 'PS5' };
 
 function filesTransferTasks() {
   const tasks = [];
@@ -1247,6 +1250,14 @@ function filesTransferTasks() {
     }
     if (job.kind === 'backup') {
       tasks.push(backupTask(job));
+      continue;
+    }
+    if (job.kind === 'migrate') {
+      tasks.push(migrateTask(job));
+      continue;
+    }
+    if (job.kind === 'uninstall') {
+      tasks.push(uninstallTask(job));
       continue;
     }
     tasks.push({
@@ -1296,6 +1307,56 @@ function filesTransferTasks() {
   return tasks;
 }
 
+function stepLine(steps, current) {
+  const index = steps.findIndex(([key]) => key === current);
+  return steps.map(([key, label], at) => (at === index ? `【${label}】` : label)).join(' → ');
+}
+
+function migrateTask(job) {
+  const done = job.state === 'done' || job.state === 'done_with_warnings';
+  const steps = [['check', '检查'], ['copy', '复制'], ['verify', '校验'], ['finish', '放到位']];
+  if (job.auto_register) steps.push(['register', '注册图标']);
+  let line = XFER_ACTIVE.has(job.state) ? stepLine(steps, job.phase) : '';
+  if (done) {
+    line = [`已迁移到 ${job.target}`, job.keep_source ? '保留了原文件夹' : '', job.source_error, job.registration_error]
+      .filter(Boolean).join(' · ');
+  }
+  if (job.state === 'failed' && job.phase && job.phase !== 'check') line = '原文件夹没有改动，失败时已删掉半成品';
+  return {
+    key: `nas:${job.id}`, kind: 'migrate', name: job.name, state: job.state,
+    sub: `${job.paths && job.paths[0] ? job.paths[0] : job.source} → ${job.target}`,
+    done: job.bytes_done, total: job.bytes_total, speed: job.speed, elapsed: job.elapsed, eta: job.eta,
+    line, error: job.error, errors: job.errors || [],
+    interrupted: job.interrupted === true,
+    cancel: XFER_ACTIVE.has(job.state) ? () => cancelNasJob(job.id) : null,
+    retry: ['failed', 'canceled'].includes(job.state) ? () => retryNasJob(job.id) : null,
+    retryTitle: '重新排队迁移，开始前会清掉上次留下的半成品'
+  };
+}
+
+function uninstallTask(job) {
+  const done = job.state === 'done' || job.state === 'done_with_warnings';
+  const steps = [['check', '检查'], ['icon', '移除图标']];
+  if (job.path) steps.push(['files', '删除文件']);
+  if (job.delete_cheats) steps.push(['cheats', '金手指']);
+  if (job.delete_saves) steps.push(['saves', '存档']);
+  let line = XFER_ACTIVE.has(job.state) ? stepLine(steps, job.phase) : '';
+  if (done) {
+    const made = Array.isArray(job.steps) ? job.steps : [];
+    line = [made.includes('icon') ? '已移除主屏幕图标' : '', made.includes('files') ? '已删除游戏文件夹' : '',
+      job.cheats_deleted ? `删除 ${job.cheats_deleted} 个金手指文件` : '', job.saves_deleted ? `删除 ${job.saves_deleted} 个存档` : '',
+      ...(Array.isArray(job.warnings) ? job.warnings : [])].filter(Boolean).join(' · ');
+  }
+  return {
+    key: `nas:${job.id}`, kind: 'uninstall', name: job.name, state: job.state,
+    sub: job.path || `PKG 安装 ${job.title || ''}`.trim(), steps: true,
+    done: null, total: null, speed: 0, elapsed: job.elapsed, eta: null,
+    line, error: job.error, errors: job.errors || [],
+    interrupted: job.interrupted === true,
+    cancel: job.state === 'queued' ? () => cancelNasJob(job.id) : null
+  };
+}
+
 function filesTransferCard(task) {
   const item = makeElement('li', 'xfer');
   item.dataset.state = XFER_ACTIVE.has(task.state) ? 'active' : task.state;
@@ -1311,7 +1372,7 @@ function filesTransferCard(task) {
   if (task.retry) {
     const retry = makeElement('button', 'button button-secondary button-small', '重试');
     retry.type = 'button';
-    retry.title = '重新排队，PS5 上已有的同名文件会跳过';
+    retry.title = task.retryTitle || '重新排队，PS5 上已有的同名文件会跳过';
     retry.setAttribute('aria-label', `重试 ${task.name}`);
     retry.addEventListener('click', task.retry);
     head.append(retry);
@@ -1337,7 +1398,7 @@ function filesTransferCard(task) {
   meter.setAttribute('aria-label', `${task.name} 进度`);
   const fill = document.createElement('i');
   fill.style.width = `${percent}%`;
-  if (task.state === 'scanning' || task.state === 'queued') meter.dataset.indeterminate = 'true';
+  if (task.state === 'scanning' || task.state === 'queued' || (task.steps && XFER_ACTIVE.has(task.state))) meter.dataset.indeterminate = 'true';
   meter.append(fill);
   item.append(meter);
 
@@ -1353,7 +1414,7 @@ function filesTransferCard(task) {
   stat('速度', XFER_ACTIVE.has(task.state) ? formatRate(task.speed) : task.elapsed > 0 && done > 0 ? `平均 ${formatRate(done / task.elapsed)}` : '—');
   stat('用时', task.elapsed !== null && task.elapsed !== undefined ? formatDuration(task.elapsed) : '—');
   stat('预计剩余', XFER_ACTIVE.has(task.state) && task.eta !== null && task.eta !== undefined ? formatDuration(task.eta) : '—');
-  item.append(stats);
+  if (!task.steps) item.append(stats);
 
   if (task.line) item.append(makeElement('p', 'xfer-sub', task.line));
   if (task.files && task.files.total) {

@@ -804,6 +804,10 @@
                     <span class="button-label">传输任务</span>
                     <span id="files-transfers-count" class="files-count-badge" data-files-transfers-count hidden></span>
                   </button>
+                  <button id="files-migrate" class="button button-secondary button-small" type="button" aria-label="在内置和外置存储之间迁移游戏">
+                    <svg class="icon" aria-hidden="true"><use href="#i-transfer"></use></svg>
+                    <span class="button-label">迁移游戏</span>
+                  </button>
                   <label class="files-search" for="files-filter">
                     <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
                     <input id="files-filter" type="search" placeholder="筛选当前文件夹" autocomplete="off" spellcheck="false" aria-label="筛选当前文件夹">
@@ -863,12 +867,19 @@
                 <option value="name">按名称</option>
                 <option value="size">按大小（已计算的在前）</option>
               </select>
+              <button id="library-migrate" class="button button-secondary button-small" type="button" aria-label="在内置和外置存储之间迁移游戏">
+                <svg class="icon" aria-hidden="true"><use href="#i-transfer"></use></svg>
+                <span class="button-label">迁移游戏</span>
+              </button>
+              <button id="library-uninstall" class="button button-secondary button-small" type="button" aria-label="卸载主机上的游戏">
+                <span class="button-label">卸载游戏</span>
+              </button>
             </div>
             <p id="library-error" class="banner banner-error" role="alert" hidden></p>
             <p id="library-warnings" class="field-help" hidden></p>
             <ul id="library-grid" class="library-grid" aria-label="游戏列表"></ul>
             <p id="library-empty" class="empty-state" hidden>没有找到游戏文件夹。</p>
-            <p class="field-help">通过 PKG 安装到系统分区（/user/app）的游戏不在文件白名单内，这里看不到。</p>
+            <p id="library-apps-note" class="field-help">通过 PKG 安装的游戏由 ps5upload 引擎列出；引擎不可用时这里只显示游戏文件夹。</p>
           </section>
         </section>
 
@@ -1865,6 +1876,81 @@
         <button id="backup-nas-start" class="button button-primary" type="submit">
           <span class="spinner" aria-hidden="true" hidden></span>
           <span class="button-label">开始备份</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="migrate-dialog" class="dialog dialog-wide" aria-labelledby="migrate-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <form id="migrate-form" class="dialog-content" novalidate>
+      <header class="card-head">
+        <h2 id="migrate-title">迁移游戏 <button class="help-tip" type="button" data-help="migrate"></button></h2>
+      </header>
+      <p class="field-help">在 PS5 的内置存储和 M.2 / USB 外接硬盘之间搬运游戏文件夹。复制在主机上进行，复制完核对大小和文件数再放到位，最后删除原文件夹；可以关闭页面。</p>
+      <div class="form-grid">
+        <div class="field-group">
+          <label for="migrate-source">从</label>
+          <select id="migrate-source"></select>
+        </div>
+        <div class="field-group">
+          <label for="migrate-target">到</label>
+          <select id="migrate-target"></select>
+        </div>
+        <div class="field-group field-full">
+          <label for="migrate-folder">放到</label>
+          <select id="migrate-folder"></select>
+        </div>
+        <div class="field-group field-full">
+          <span class="field-label game-picks-head">
+            <span>游戏</span>
+            <label class="nas-check" for="migrate-all"><input id="migrate-all" type="checkbox"> <span>全选</span></label>
+          </span>
+          <div id="migrate-games" class="game-picks" role="group" aria-label="要迁移的游戏"></div>
+        </div>
+      </div>
+      <div class="nas-checks">
+        <label class="nas-check" for="migrate-delete"><input id="migrate-delete" type="checkbox" checked> <span>迁移完成后删除原文件夹</span></label>
+        <label class="nas-check" for="migrate-register"><input id="migrate-register" type="checkbox" checked> <span>在新位置重新注册主屏幕图标</span></label>
+      </div>
+      <p id="migrate-summary" class="field-help" aria-live="polite"></p>
+      <p id="migrate-error" class="field-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="migrate-cancel" class="button button-secondary" type="button">取消</button>
+        <button id="migrate-start" class="button button-primary" type="submit">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">开始迁移</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="uninstall-dialog" class="dialog dialog-wide" aria-labelledby="uninstall-title">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <form id="uninstall-form" class="dialog-content" novalidate>
+      <header class="card-head">
+        <h2 id="uninstall-title">卸载游戏 <button class="help-tip" type="button" data-help="uninstall"></button></h2>
+      </header>
+      <p class="field-help">移除主屏幕图标，删除游戏文件夹（内置、M.2、USB 硬盘都可以），再清理这个游戏的金手指文件。PKG 安装的游戏由主机自带的卸载程序删除。</p>
+      <div class="field-group field-full">
+        <span class="field-label game-picks-head">
+          <span>游戏</span>
+          <label class="nas-check" for="uninstall-all"><input id="uninstall-all" type="checkbox"> <span>全选</span></label>
+        </span>
+        <div id="uninstall-games" class="game-picks" role="group" aria-label="要卸载的游戏"></div>
+      </div>
+      <p id="uninstall-engine" class="field-help" aria-live="polite"></p>
+      <div class="nas-checks">
+        <label class="nas-check" for="uninstall-cheats"><input id="uninstall-cheats" type="checkbox" checked> <span>删除这个游戏的金手指文件</span></label>
+        <label class="nas-check" for="uninstall-saves"><input id="uninstall-saves" type="checkbox"> <span>同时删除存档（所有用户，无法恢复）</span></label>
+      </div>
+      <p id="uninstall-summary" class="banner banner-warning" aria-live="polite"></p>
+      <p id="uninstall-error" class="field-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="uninstall-cancel" class="button button-secondary" type="button">取消</button>
+        <button id="uninstall-start" class="button button-danger" type="submit">
+          <span class="spinner" aria-hidden="true" hidden></span>
+          <span class="button-label">卸载</span>
         </button>
       </div>
     </form>

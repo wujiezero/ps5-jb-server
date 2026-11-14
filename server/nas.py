@@ -36,6 +36,8 @@ import unrar
 from files import FileServiceError, VOLUME_PATTERN
 from game_services import PACKAGE_PHASES, TITLE, install_timeout, parse_cheat_zip, write_cheats
 from ftp_files import listing
+from migrate import Canceled as _Canceled, MigrationJobs
+from uninstall import UninstallJobs
 
 PROTOCOLS = ('webdav', 'smb', 'ftp')
 DEFAULT_PORTS = {'webdav': 5005, 'smb': 445, 'ftp': 21}
@@ -1033,10 +1035,6 @@ def walk(client, root):
 
 # --------------------------------------------------------------- transfers --
 
-class _Canceled(Exception):
-    pass
-
-
 def atomic_json(path, document, mode=0o600):
     """Write JSON next to path, fsync, then rename over it."""
     path = Path(path)
@@ -1058,14 +1056,14 @@ TERMINAL = frozenset(('done', 'done_with_warnings', 'failed', 'canceled'))
 INTERRUPTED = '服务重启时中断'
 
 
-class TransferManager:
+class TransferManager(MigrationJobs, UninstallJobs):
     """One NAS transfer at a time; the rest wait in order."""
 
     KEEP = 30
     # Progress is written to the state file at most this often; state changes at once.
     PERSIST_EVERY = 5.0
     # Kinds that /api/transfers/retry can queue again (extraction needs a fresh preflight).
-    RETRYABLE = ('nas', 'package', 'backup')
+    RETRYABLE = ('nas', 'package', 'backup', 'migrate')
     BACKUP_MODES = ('mirror', 'snapshot')
     # Largest cheat ZIP read from the NAS into memory.
     CHEAT_ZIP_LIMIT = 16 << 20
@@ -1190,6 +1188,14 @@ class TransferManager:
             # Same target folder: a retried snapshot completes the same snapshot.
             created = self.start_backup(job['nas_id'], job['paths'], job['dest'], job.get('mode') or 'mirror',
                                         host=job.get('host'), target=job.get('target'))
+            with self.lock:
+                self.jobs[created['id']]['retry_of'] = ident
+            self._persist(force=True)
+            return self.snapshot_one(created['id'])
+        if job['kind'] == 'migrate':
+            created = self.start_migrate(job['paths'][0], job['target'], register=job.get('auto_register', False),
+                                         keep_source=job.get('keep_source', False), host=job.get('host'),
+                                         title=job.get('title') or '', name=job.get('name') or '')
             with self.lock:
                 self.jobs[created['id']]['retry_of'] = ident
             self._persist(force=True)
@@ -1672,6 +1678,10 @@ class TransferManager:
                     self._execute_package(job, self.cancels[ident])
                 elif job['kind'] == 'backup':
                     self._execute_backup(job, self.cancels[ident])
+                elif job['kind'] == 'migrate':
+                    self._execute_migrate(job, self.cancels[ident])
+                elif job['kind'] == 'uninstall':
+                    self._execute_uninstall(job, self.cancels[ident])
                 else:
                     self._execute(job, self.cancels[ident])
             except _Canceled:

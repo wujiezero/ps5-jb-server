@@ -156,6 +156,10 @@
 名称走 `TitleCatalog.lookup()`（带文件夹，缺中文名时读 param）。大小、封面只对扫描到的路径开放：大小一次算一个，
 按「路径 + 修改时间」存到 `<data>/library-cache.json`；封面限 PNG 文件头和 2 MiB，存到 `<data>/library-icons/`（最多 1000 张）。
 
+PKG 安装的游戏和「哪些文件夹注册过图标」来自 ps5upload 引擎的 `GET /api/ps5/apps/installed`（`GET /api/library/apps`，
+引擎不可用时返回 `available: false`，页面照常显示文件夹）。迁移（`server/migrate.py`）和卸载（`server/uninstall.py`）
+是 `TransferManager` 的 `migrate` / `uninstall` 任务，和 NAS 任务共用一个队列，细节见 [文件管理](file-manager.md)。
+
 ## 会话与登录
 
 - 登录后写入 `ps5_session` Cookie：`HttpOnly; Secure; SameSite=Lax; Max-Age=30 天`。

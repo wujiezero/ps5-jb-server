@@ -26,6 +26,7 @@ PS5 端的 payload 也不发 CORS 头。因此所有请求都经过本服务的 
 
 ## 本服务的接口（管理页调用）
 
+`/api/library`、`/api/library/{size,icon,apps}`、`/api/library/{register,migrate,uninstall}`、
 `/api/files/info`、`/api/files/configure`、`/api/files/volumes`、`/api/files/list`、
 `/api/files/size`、`/api/files/job`、`/api/files/transfers`、`/api/files/download`、
 `/api/files/tar`、`/api/files/upload`、`/api/files/{mkdir,rename,delete,copy,move,cancel,bench}`。
@@ -234,6 +235,59 @@ WebDAV 的流式 `PUT` 不能在 401 质询后重发，所以写入前先用一�
 `backup_roots = ["/user/av_contents"]`。存档是加密镜像，绑定主机与账号，只适合在同一台主机上恢复；恢复不在本服务范围内。
 
 **需真机验证**：把一个游戏目录分别备份到 WebDAV、SMB、FTP 三种 NAS，对比文件数与总大小；确认上述系统目录的实际路径。
+
+## 游戏迁移（内置存储 ↔ M.2 / USB 硬盘）
+
+`server/migrate.py`，`TransferManager` 的 `migrate` 任务。入口：游戏库卡片的「迁移」、游戏库和 PS5 文件页工具栏的「迁移游戏」。
+`POST /api/library/migrate {paths, target, folder?, register, keep_source, host}`：`paths` 必须是游戏库扫描到的文件夹（1–50 个），
+`target` 是扫描到的另一个存储卷；每个游戏一个任务，按顺序执行。目标路径默认保持卷内相对位置
+（`/data/games/X` → `/mnt/ext0/games/X`），`folder` 为 `''` 时放到卷根目录，其它值只能是 `[ps5] game_dirs` 之一。
+
+数据不经过本机：`FileProxy.copy()` 让 PS5 上的文件服务自己从一块盘复制到另一块（tom-ps5-usbnet `/fs/copy`，
+或 FTP 后备的两条连接 `RETR`→`STOR`），服务每秒读一次 `/fs/job` 换算进度。步骤：
+
+1. 检查：原文件夹存在、目标没有同名文件夹、主机上没有别的复制任务（最多等 30 秒）、`folder_size` 得到大小和文件数、
+   目标卷剩余空间 ≥ 游戏大小 + 1 GiB（卷容量未知时跳过这一项）；
+2. 复制到目标父目录下的隐藏文件夹 `.migrate-<名字>`（上次中断留下的同名暂存目录先删掉），ShadowMount / etaHEN 不会扫到半截游戏；
+3. 校验：暂存目录的总字节数和文件数必须与原文件夹一致；
+4. 同盘改名放到位，然后删除原文件夹（`keep_source` 时保留）；
+5. 以游戏编号命名的文件夹可在新位置重新注册主屏幕图标（ps5upload 引擎）。
+
+第 4 步改名之前的任何失败或取消都删除暂存目录，原文件夹不动；`/fs/job` 报失败、10 分钟没有进展、连续 30 次读不到进度都算失败。
+改名之后游戏已完整在目标位置，原文件夹删不掉或注册失败只记为「完成（有提醒）」。失败的任务可以「重试」。
+服务重启时正在迁移的任务标为中断，主机上的复制可能还在跑；重试时先等它结束，再清掉暂存目录重新复制。
+
+PKG 安装的游戏不在文件白名单里，请用主机的「设置 → 存储」移动。
+
+**需真机验证**：tom-ps5-usbnet 的 `/fs/job` 在复制结束后报 `done` 还是 `idle`（两种都按「结束、交给校验」处理）；
+FTP 后备在内置盘和 M.2 之间复制一个大游戏的速度。
+
+## 游戏卸载
+
+`server/uninstall.py`，`TransferManager` 的 `uninstall` 任务。入口：游戏库卡片的「卸载」和工具栏的「卸载游戏」。
+`POST /api/library/uninstall {items, delete_cheats, delete_saves, host}`：`items` 里是游戏库文件夹 `{path}`，
+或 PKG 安装的游戏 `{origin: "pkg", title}`；`delete_cheats` 默认开，`delete_saves` 默认关。
+
+用到 ps5upload 引擎的四个接口（按 v12.4.16 源码核对，`engine/crates/ps5upload-engine` 与 `payload/src/register.c`）：
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/ps5/apps/installed?addr=` | 每个标题的 `origin`（`registered` / `pkg` / `system`）和注册时的 `source` 文件夹 |
+| `POST /api/ps5/app/unregister {addr, title_id}` | 本服务注册的文件夹游戏：卸下 nullfs、删 `mount.lnk` 和 `/user/appmeta/<id>`；然后调用 Sony 的 `sceAppInstUtilAppUninstall` 清掉主屏幕图标和 app.db 记录（PKG 安装的游戏就是整个卸载）。返回 `sony_uninstall_refused`、`still_present` |
+| `GET /api/ps5/saves/list?addr=` | 所有用户的存档文件夹 `/user/home/<8 位十六进制>/savedata_prospero/<编号>`（PS5）或 `…/savedata/<编号>`（PS4） |
+| `POST /api/ps5/fs/delete {addr, path}` | 只用来删上面这两种存档路径，且编号必须是所卸载的游戏（`game_services.SAVE_PATH`） |
+
+步骤：检查 → 移除图标 → 删除游戏文件夹（`FileProxy.delete`；超时后继续等文件夹消失，最多 30 分钟）→
+删除 `/data/etaHEN/cheats/{json,shn,mc4}/` 下文件名含该编号的文件 → （勾选时）删除存档。
+
+- 文件夹游戏只在引擎显示图标**是从这个文件夹注册的**（`origin == registered` 且 `source` 是这个文件夹或其下级）时才调用卸载接口；
+  同编号的图标属于另一份游戏或 PKG 安装时保留不动，任务里提醒。没注册过图标的文件夹直接删除。
+- 移除图标失败（例如游戏正在运行、卸载 nullfs 失败）时任务失败，什么都不删。
+- 主机拒绝卸载或卸载后仍在「设置 → 存储」里列出：PKG 游戏记为失败；文件夹游戏照常删除，记为「完成（有提醒）」。
+- 引擎不可用时文件夹游戏仍会删除，图标和存档跳过并提醒；PKG 游戏需要引擎。系统应用（NPXS）不能卸载。
+
+**需真机验证**：直接删除存档文件夹后，「设置 → 存档数据」里是否还留有条目（存档数据库在
+`/system_data/savedata_prospero/<用户>/db/user/savedata.db`，本服务不改它）；FTP 后备删除一个几万文件的游戏文件夹要多久。
 
 ## 游戏名称（标题 ID → 游戏名）
 

@@ -77,6 +77,7 @@ function fixture(extra = {}) {
       renderRestoreResult, backupFilename, renderSelfcheck, renderNotify, notifyState, normalizeNotify,
       renderQueryLogs, renderLogs, logs,
       library, normalizeLibrary, libraryCard, libraryVisible, renderLibrary, backupSources, backupTask,
+      migrateTask, uninstallTask, libraryPackages, volumeKind,
       actHistory, renderStats, renderHistory, setActivityMode,
       updates, renderUpdates, loadVersion, refreshUpdates, checkUpdates, applyUpdate,
       scheduleUpdatePoll, stopUpdatePolling,
@@ -794,7 +795,7 @@ test('game library cards: cover only for title IDs, register only for ID-named f
     return out;
   };
   const [plain, big, homebrew] = data.games.map(ui.libraryCard);
-  assert.deepEqual(buttons(plain), ['计算大小', '打开文件夹', '移动', '注册图标', '删除']);
+  assert.deepEqual(buttons(plain), ['计算大小', '打开文件夹', '迁移', '注册图标', '卸载']);
   assert.ok(!buttons(big).includes('注册图标'), 'folder name differs from the title ID');
   assert.ok(buttons(big).includes('5.0 GB') || buttons(big).some((label) => /GB/.test(label)));
   assert.equal(homebrew.children[0].tagName, 'span', 'no cover request without a title ID');
@@ -810,6 +811,59 @@ test('game library cards: cover only for title IDs, register only for ID-named f
   ui.node('library-search').value = '';
   ui.node('library-volume').value = '/mnt/ext0';
   assert.deepEqual(ui.libraryVisible().map((game) => game.name), ['Big']);
+});
+
+test('PKG installs join the library as uninstall-only cards; registered folders are marked', () => {
+  const ui = fixture();
+  ui.setAuthenticated(true);
+  Object.assign(ui.library, ui.normalizeLibrary({ host: '192.0.2.5', games: [
+    { title: 'PPSA01234', name: 'Folder', folder: 'PPSA01234', path: '/data/games/PPSA01234', volume: '/data', size: null }
+  ], volumes: [{ path: '/data' }, { path: '/mnt/ext0' }] }), { loaded: true });
+  ui.library.apps = { loaded: true, loading: false, available: true, error: '', titles: [
+    { title: 'PPSA01234', name: 'Folder', origin: 'registered', source: '/data/games/PPSA01234', system: false },
+    { title: 'PPSA05555', name: 'Pkg', origin: 'pkg', source: '', system: false },
+    { title: 'NPXS40000', name: 'System', origin: 'system', source: '', system: true }] };
+  assert.deepEqual(ui.libraryPackages().map((game) => game.title), ['PPSA05555']);
+  ui.node('library-sort').value = 'name';
+  ui.node('library-search').value = '';
+  ui.node('library-volume').value = '';
+  assert.deepEqual(ui.libraryVisible().map((game) => game.name), ['Folder', 'Pkg']);
+  ui.node('library-volume').value = 'pkg';
+  assert.deepEqual(ui.libraryVisible().map((game) => game.name), ['Pkg']);
+  const buttons = (card) => {
+    const out = [];
+    const walk = (node) => { if (node.tagName === 'button') out.push(node.textContent); node.children.forEach(walk); };
+    walk(card);
+    return out;
+  };
+  assert.deepEqual(buttons(ui.libraryCard(ui.libraryPackages()[0])), ['卸载']);
+  assert.match(textOf(ui.libraryCard(ui.library.games[0])), /已注册图标/);
+  assert.equal(ui.volumeKind('/mnt/usb0', ''), 'USB 外接硬盘（/mnt/usb0）');
+  assert.equal(ui.volumeKind('/data', '/data'), '内置存储（/data）');
+});
+
+test('migrate and uninstall task cards show their steps, results and retry', () => {
+  const ui = fixture();
+  const migrating = ui.migrateTask({ id: 'm1', kind: 'migrate', name: 'Demo', state: 'running', phase: 'verify', auto_register: true,
+    paths: ['/data/games/X'], target: '/mnt/ext0/games/X', bytes_done: 5, bytes_total: 10 });
+  assert.match(migrating.line, /复制 → 【校验】 → 放到位 → 注册图标/);
+  assert.equal(migrating.sub, '/data/games/X → /mnt/ext0/games/X');
+  const failed = ui.migrateTask({ id: 'm2', kind: 'migrate', name: 'Demo', state: 'failed', phase: 'copy', error: 'x', target: '/t' });
+  assert.ok(failed.retry);
+  assert.match(failed.line, /原文件夹没有改动/);
+  const done = ui.migrateTask({ id: 'm3', kind: 'migrate', name: 'Demo', state: 'done_with_warnings', target: '/mnt/ext0/games/X',
+    source_error: '原文件夹没删掉' });
+  assert.match(done.line, /已迁移到 \/mnt\/ext0\/games\/X · 原文件夹没删掉/);
+  const removing = ui.uninstallTask({ id: 'u1', kind: 'uninstall', name: 'Pkg', state: 'running', phase: 'icon', path: '', title: 'PPSA05555',
+    delete_cheats: false, delete_saves: true });
+  assert.equal(removing.line, '检查 → 【移除图标】 → 存档');
+  assert.equal(removing.cancel, null, 'a running uninstall cannot be canceled half way');
+  const removed = ui.uninstallTask({ id: 'u2', kind: 'uninstall', name: 'Folder', state: 'done', path: '/data/games/X', title: 'PPSA01234',
+    steps: ['icon', 'files', 'cheats'], cheats_deleted: 2, warnings: [] });
+  assert.equal(removed.line, '已移除主屏幕图标 · 已删除游戏文件夹 · 删除 2 个金手指文件');
+  const card = ui.filesTransferCard(removed);
+  assert.match(textOf(card), /游戏卸载/);
+  assert.doesNotMatch(textOf(card), /预计剩余/, 'no byte statistics for an uninstall');
 });
 
 test('backup sources add read-only presets once; backup cards show target, skips and retry', () => {
